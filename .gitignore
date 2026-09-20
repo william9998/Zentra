@@ -1,0 +1,51 @@
+# 機密 — 絕對不要提交
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+credentials*
+**/service-account*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / 前端
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+.pnpm-store/
+
+# 測試 / 覆蓋率
+htmlcov/
+.coverage
+coverage/
+playwright-report/
+test-results/
+
+# 基礎設施狀態（含敏感資訊）
+*.tfstate
+*.tfstate.*
+.terraform/
+kubeconfig*
+helm-values.local.yaml
+
+# 本機
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.local
