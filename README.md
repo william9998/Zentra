@@ -32,6 +32,10 @@ The answer is five commitments that the rest of the architecture follows from:
 
 ## Architecture
 
+![Zentra system architecture](docs/architecture/zentra-architecture.svg)
+
+Two node pools inside one Kubernetes cluster. Platform services run on ordinary container runtime; sandboxes run on **dedicated nodes under gVisor**, kept off the same machines by taint/toleration — so a sandbox escape lands the attacker among other sandboxes, not among platform services or credentials.
+
 ```
 L0  Access        REST Gateway · MCP Gateway · SSE · Console BFF
 L1  Control       Agent Service · Registries · Build · Version · Policy · Secrets
@@ -113,6 +117,12 @@ Local development targets Docker via Colima on macOS; production targets Kuberne
 | **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由同一份定義生成。 |
 | **P4** | **沙盒內拿不到任何長期憑證**。對外一律走 Tool / LLM / Egress Proxy，由 Proxy 代持憑證。 |
 | **P5** | **發布的版本不可變**。`agent@semver` 凍結 manifest、bundle 與 lockfile，流量靠 alias 切換。 |
+
+### 架構圖
+
+![Zentra 系統架構](docs/architecture/zentra-architecture.svg)
+
+一個 Kubernetes 叢集、兩個節點池。平台服務跑一般容器 runtime；沙盒跑在 **gVisor 專用節點**上，以 taint/toleration 與平台服務實體分開——即使有人從沙盒逃逸，他落腳的機器上也只有其他沙盒，碰不到平台服務與憑證。
 
 ### 兩個技術核心
 

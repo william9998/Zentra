@@ -3,6 +3,14 @@
 > 本文件是 `Simplified_architecture_diagram.png` 的展開版。
 > 規格定義以 [`specs/SPEC.md`](../../specs/SPEC.md) 為準，本文件只負責「畫清楚」。
 
+## 0. 總覽（基礎設施視角）
+
+下圖是給非工程讀者與簡報用的單張總覽，標注了節點池、VM、Pod 佈署與各區採用的技術。
+本文件其餘章節是工程細節的展開。
+
+![Zentra 系統架構](zentra-architecture.svg)
+
+
 ---
 
 ## 1. 系統全景圖（Layered Architecture）
