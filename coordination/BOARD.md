@@ -8,16 +8,21 @@
 
 | ID | 任務 | 狀態 | 負責 | 依賴 | 交接單 |
 |---|---|---|---|---|---|
-| ZEN-001 | 建立專案骨架與 monorepo 結構 | `BACKLOG` | @platform-eng | — | — |
-| ZEN-002 | Agent Manifest schema 與 Registry 資料模型 | `BACKLOG` | @architect → @backend-dev | ZEN-001 | — |
-| ZEN-003 | Sandbox 最小可行版（gVisor + 五層隔離 + 驗證測試） | `BACKLOG` | @platform-eng | ZEN-001 | — |
-| ZEN-004 | Celery 派工骨架（佇列拓撲 + runner-worker + 冪等） | `BACKLOG` | @backend-dev | ZEN-002 | — |
-| ZEN-005 | Zentra SDK v0（ctx.llm / tools / knowledge）+ Agent 程式碼契約 | `BACKLOG` | @architect → @backend-dev | ZEN-002 | — |
-| ZEN-006 | Run API + SSE 事件串流 | `BACKLOG` | @backend-dev | ZEN-004 | — |
+| **ZEN-000** | **貫穿骨架**：API → Celery → 沙盒 → trivial LangGraph → SSE 串流 | `SPEC_READY` | @platform-eng + @backend-dev | — | [spec](../specs/features/ZEN-000/spec.md) |
+| ZEN-002 | Agent Manifest schema 與 Registry 資料模型 | `BACKLOG` | @architect → @backend-dev | ZEN-000 | — |
+| ZEN-003 | 沙盒五層隔離完整版（K8s driver + gVisor + NetworkPolicy） | `BACKLOG` | @platform-eng | ZEN-000 | — |
+| ZEN-010 | 沙盒安全驗證套件（逃逸 + 租戶隔離回歸測試，CI 上跑） | `BACKLOG` | @qa-verifier | ZEN-003 | — |
+| ZEN-005 | Zentra SDK v1（ctx.llm / tools / knowledge）+ Agent 程式碼契約 | `BACKLOG` | @architect → @backend-dev | ZEN-002 | — |
+| ZEN-004 | Celery 派工完整版（多佇列 tier + 死信 + Beat 排程） | `BACKLOG` | @backend-dev | ZEN-000 | — |
+| ZEN-006 | Run API 完整版（取消 / HITL resume / 列表分頁） | `BACKLOG` | @backend-dev | ZEN-000 | — |
 | ZEN-007 | Interface Generator（一份 entrypoints → REST + MCP schema） | `BACKLOG` | @backend-dev | ZEN-005 | — |
+| ZEN-011 | Build pipeline（uv lock + CVE/License 掃描 + 契約驗證） | `BACKLOG` | @platform-eng | ZEN-002 | — |
+| ZEN-009 | 知識庫 Ingestion + Hybrid Search | `BACKLOG` | @backend-dev | ZEN-002 | — |
 | ZEN-008 | Console：Run 觀測頁（串流 + 節點樹） | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-006 | — |
-| ZEN-009 | 知識庫 Ingestion + Hybrid Search | `BACKLOG` | @backend-dev | ZEN-001 | — |
-| ZEN-010 | 沙盒安全驗證套件（逃逸 + 租戶隔離回歸測試） | `BACKLOG` | @qa-verifier | ZEN-003 | — |
+
+> **順序說明**：ZEN-000 刻意排第一，目的是**盡早證偽架構假設**而非交付功能。
+> 它一次碰到沙盒生命週期、Celery 冪等、平台注入 compile、事件串流四個高風險點。
+> 原本的 ZEN-001（純骨架）已併入 ZEN-000 —— 骨架沒有跑通一條路徑之前，不算骨架。
 
 ## 被阻塞 (BLOCKED)
 

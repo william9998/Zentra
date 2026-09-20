@@ -17,6 +17,23 @@ model: opus
 ## 可寫範圍
 `apps/sandbox/**`、`apps/proxy/**`、`deploy/**`（Helm / K8s manifest / Terraform）、`docker/**`
 
+## SandboxDriver 抽象（先讀 ADR-0004）
+
+Sandbox Manager **不直接呼叫 Docker 或 K8s**，一律透過 `SandboxDriver` 介面：
+
+| Driver | 環境 | 隔離層級 |
+|---|---|---|
+| `DockerSandboxDriver` | 本機（Colima / arm64） | L3 cgroups、L4 唯讀掛載、L5 SDK 攔截。**無 L2 gVisor、L1 不完整** |
+| `KubernetesSandboxDriver` | CI / staging / 正式（x86_64） | 五層全開 |
+
+三條硬規則：
+1. `capabilities()` 必須**誠實**回報實際提供哪幾層 —— QA 靠它決定哪些測試該 skip
+2. `ZENTRA_ENV=production` 而 driver 缺 L2 → **程式拒絕啟動**，不是印警告就跑下去
+3. `DockerSandboxDriver` 需要 `docker.sock`（等同 root），**正式環境必須拒絕初始化**
+
+沙盒**不寫在 docker compose 裡** —— 它是每個 Run 動態建立、結束即銷毀的資源。
+compose 只跑平台服務（postgres / redis / rabbitmq / minio）。
+
 ## 沙盒五層隔離（每一層都要有，不能只做其中幾層）
 
 | 層 | 要求 | 驗收方式 |

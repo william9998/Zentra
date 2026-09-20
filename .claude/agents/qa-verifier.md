@@ -60,6 +60,16 @@ model: opus
 - [ ] A 租戶的 Agent 查 B 租戶的知識庫集合 → 查無結果
 - [ ] Run 結束後沙盒確實銷毀，tmpfs 不殘留
 
+### ⚠️ 本機的安全測試結果不能作為放行依據
+
+依 [ADR-0004](../../specs/adr/ADR-0004-sandbox-driver-and-dev-environment.md)，本機用 `DockerSandboxDriver`，**沒有 L2（gVisor）與完整 L1（NetworkPolicy）**。
+
+因此：
+- 跑安全清單前，先讀 `SandboxDriver.capabilities()`
+- driver 沒提供的隔離層，對應測試標記 **`skipped`，絕不標 `passed`**
+- **只有 CI（x86_64 + Kubernetes + gVisor）的結果能作為 G4 放行依據**
+- 報告要明講：「本機通過 L3/L4/L5，L1/L2 未驗證」，不要只寫「安全測試通過」
+
 ### 非確定性系統的測試策略（這個專案的特殊難點）
 LLM 輸出不固定，所以：
 - **不要斷言 LLM 的確切文字**。斷言**結構**：有沒有呼叫預期的工具、狀態機有沒有走對、輸出 schema 對不對
