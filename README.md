@@ -71,10 +71,13 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 | [`coordination/`](coordination/) | Task board, handoff notes, spec-drift audits |
 | [`.claude/agents/`](.claude/agents/) | Seven role agents — architect, UI, frontend, backend, platform, QA, spec-keeper |
 | [`.claude/commands/`](.claude/commands/) | `/align` `/task` `/handoff` `/verify` `/drift` |
+| [`.codex/agents/`](.codex/agents/) | Seven matching Codex roles, sharing the same project spec |
+| [`.agents/skills/`](.agents/skills/) | Codex workflows: align, task, handoff, verify, drift |
+| [`docs/codex.md`](docs/codex.md) | Codex setup, invocation examples, and collaboration limits |
 
 ## Built by a team of AI agents
 
-This repository is set up so several Claude Code agents can work on it together without stepping on each other. They can't talk directly, so coordination happens through files:
+This repository supports Claude Code and Codex role agents. Durable decisions and handoffs are recorded in shared files; available agent messaging tools can help coordinate the work:
 
 - **One spec** everyone reads before starting ([`specs/SPEC.md`](specs/SPEC.md))
 - **Contract-first** — frontend and backend both target [`api-contract.md`](specs/api-contract.md) instead of waiting on each other
@@ -159,8 +162,8 @@ Console 沒有自己的容器，它是 `api` 服務出去的原生靜態檔，�
 
 ### 由 AI agent 團隊協作開發
 
-這個 repo 設計成可以讓多個 Claude Code agent 一起工作而不互相踩踏。
-它們無法直接對話，所以協作全部落在檔案上：
+這個 repo 支援 Claude Code 與 Codex 的角色分工。
+可用的 agent 訊息工具協助討論，決策與交接仍寫入共用檔案：
 
 - **一份共同規格**，所有人開工前必讀（[`specs/SPEC.md`](specs/SPEC.md)）
 - **契約優先**——前後端各自對齊 [`api-contract.md`](specs/api-contract.md)，不用互相等待
@@ -168,6 +171,7 @@ Console 沒有自己的容器，它是 `api` 服務出去的原生靜態檔，�
 - **spec-keeper agent** 定期稽核程式碼是否偏離規格
 
 完整協議見 [`AGENTS.md`](AGENTS.md)。
+Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)，可先輸入 `$zentra-align ZEN-000` 對齊現況。
 
 ### 從哪裡開始讀
 

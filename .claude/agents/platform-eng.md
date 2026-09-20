@@ -25,13 +25,7 @@ model: opus
 
 Sandbox Manager **不直接呼叫 Docker**，一律透過 `SandboxDriver` 介面：
 
-```python
-class SandboxDriver(Protocol):
-    async def create(self, spec: SandboxSpec) -> SandboxHandle: ...
-    async def wait_ready(self, h: SandboxHandle, timeout: float) -> None: ...
-    async def destroy(self, h: SandboxHandle) -> None: ...      # 必須冪等
-    async def capabilities(self) -> DriverCapabilities: ...     # 誠實回報提供哪幾層
-```
+現行方法為 `create / wait / logs / destroy / capabilities`。完整介面以 ADR-0004 頂端的現況註記及當前 feature spec 為準；不要照搬 ADR 歷史正文的舊介面。
 
 MVP 只有 `DockerSandboxDriver`。**這個介面就是之後要回到 K8s 時的逃生門，不要繞過它。**
 
@@ -40,7 +34,7 @@ MVP 只有 `DockerSandboxDriver`。**這個介面就是之後要回到 K8s 時�
 2. `destroy()` 必須冪等 —— 它會在逾時、取消、崩潰、正常結束四條路徑上被呼叫
 
 沙盒**不寫在 compose 裡** —— 它是每個 Run 動態建立、結束即銷毀的資源。
-compose 只跑五個長駐服務（postgres / redis / api / worker / console）。
+compose 只跑四個長駐服務（postgres / redis / api / worker）；Console 靜態檔由 api 服務。
 
 ## 沙盒四層隔離（每一層都要有，不能只做其中幾層）
 
@@ -67,7 +61,7 @@ compose 只跑五個長駐服務（postgres / redis / api / worker / console）�
 沙盒唯一的網路對端。`@backend-dev` 實作路由，**你負責讓網路拓撲成立**：
 
 - `api` 容器必須**同時**接上 `zentra-net` 與 `zentra-sandbox-net` —— 它是唯一的橋
-- `postgres`、`redis`、`worker`、`console` **絕對不准**接上 `zentra-sandbox-net`
+- `postgres`、`redis`、`worker` **絕對不准**接上 `zentra-sandbox-net`
 - 注入沙盒的環境變數只有三個：`ZENTRA_RUN_TOKEN`、`ZENTRA_GATEWAY`、`ZENTRA_RUN_ID`。
   **多注入任何一個 secret 就是違反 P4**
 
@@ -87,8 +81,8 @@ compose 只跑五個長駐服務（postgres / redis / api / worker / console）�
 - **不做** CVE / License 掃描、不建 per-agent image、不接私有 PyPI 鏡像（ADR-0005 砍掉）
 
 ## compose 拓撲
-- 五個長駐服務，不多不少。要加第六個 → 先開 `SPEC-QUESTION`
-- **只有 `worker` 掛 `docker.sock`。** `api` 與 `console` 不准掛
+- 四個長駐服務，不多不少。要加第五個 → 先開 `SPEC-QUESTION`
+- **只有 `worker` 掛 `docker.sock`。** `api` 不准掛
 - `docker.sock` 等同主機 root —— 這個風險在 v0.2.0 是**常駐的**，記錄在架構文件 §9，不要假裝它不存在
 - 本機與正式是同一套。**不要寫兩份 compose**
 

@@ -11,6 +11,9 @@
 
 ## 1. 團隊編制
 
+本協議由 Claude Code 與 Codex 共用。下表的 Markdown 是角色職責說明；Codex 的同名角色由
+`.codex/agents/<role>.toml` 註冊。兩套角色必須保持一致，產品規格只維護在 `specs/`。
+
 | Agent | 檔案 | 職責 | 唯一可寫區域 |
 |---|---|---|---|
 | 🏛️ **架構師** `architect` | [`.claude/agents/architect.md`](.claude/agents/architect.md) | 系統設計、技術裁決、寫 ADR、維護 SPEC | `specs/**`, `docs/architecture/**` |
@@ -35,9 +38,12 @@
 ```
 
 再加上你自己的角色檔 `.claude/agents/<你>.md`。**沒讀完不准寫程式碼。**
+Codex 子 agent 同樣要讀這份角色 Markdown，並遵守同名 TOML 中的指示。
+有交接單時先讀交接單，再讀以上文件與實作。派工者必須提供任務 ID 與實際存在的檔案路徑；
+缺少 feature spec 或驗收條件時，交給對應角色補齊，不得假裝已讀。
 
 ### 認知對齊檢查（Definition of Aligned）
-開工前，agent 必須能回答下列四題；答不出來就是沒對齊，去讀 SPEC：
+開工前，agent 必須能回答下列五題；答不出來就是沒對齊，去讀 SPEC：
 1. 這個任務屬於 SPEC 的哪一層（L0 接入+控制 / L1 派工 / L2 執行 / L3 資料）？
 2. 它牽動哪些對外契約（`specs/api-contract.md` / `ui-contract.md`）？
 3. 它有沒有觸碰五條核心立場 P1–P5？
@@ -68,7 +74,13 @@
 
 ## 4. 溝通機制（agent 之間怎麼講話）
 
-Claude Code 的 subagent 無法直接互相對話 —— **所有溝通都落在檔案上**，這反而讓交接可追溯、可重播。
+**所有會影響交付的討論結論都落在檔案上**，讓交接可追溯、可重播。
+執行環境若提供子 agent 訊息工具，可用來提問、補充證據與協調；沒有時由主 session 轉交。
+口頭討論不能取代契約：技術裁決寫 ADR／SPEC，任務狀態寫 BOARD，工作交棒寫 handoff。
+前後端的實作依據仍是契約，不能在聊天中私下改欄位。
+
+每個角色均可寫自己負責的交接單；`spec-keeper` 除交接單與 `coordination/DRIFT.md` 外保持唯讀。
+共用 BOARD 的更新由主 session 串行整合；`SPEC_READY` 與 `DONE` 的裁定權仍分別屬於 architect 與 QA。
 
 ### 4.1 任務看板 `coordination/BOARD.md`
 唯一的任務真相。每個任務一列，狀態機：
@@ -162,7 +174,7 @@ flowchart TB
 
 主 session 不自己寫功能程式碼，它負責：
 1. 讀需求 → 更新 `coordination/BOARD.md`
-2. 依 §5 流程決定該叫哪個 agent，用 Task 工具派工
+2. 依 §5 流程決定該叫哪個 agent：Claude Code 用其 Task 工具；Codex 用當前環境提供的子 agent 派工工具
 3. **在 prompt 裡明確告訴 subagent：要讀哪些檔、寫哪個區域、產出什麼交接單**
 4. 收到 subagent 回報 → 更新 BOARD → 派下一棒
 5. 遇到跨角色衝突 → 交給 `architect` 裁決
@@ -175,3 +187,17 @@ flowchart TB
 可寫範圍：<路徑>
 完成後：寫 coordination/handoffs/<id>/<you>-to-<next>.md，並回報做了什麼、哪裡沒做、有無 SPEC-QUESTION。
 ```
+
+## 9. Codex 專案入口
+
+- 根目錄 `AGENTS.md` 是 Codex 的專案指令入口；使用方式見 [`docs/codex.md`](docs/codex.md)。
+- `.codex/agents/*.toml` 定義七個專業角色；按任務需要派工，不為了湊齊角色而全部啟動。
+- `.agents/skills/` 提供 `zentra-align`、`zentra-task`、`zentra-handoff`、`zentra-verify`、`zentra-drift`。
+  Skills 是開發流程，與產品 MVP 外的 Skill Registry 無關。
+- 派工 prompt 要包含角色、範圍、必讀文件、交付物、驗證方式與交接對象。
+  必須提醒子 agent：有其他人同時工作，不得還原他人的修改，並適應已存在的變更。
+- 可獨立且寫入範圍不重疊的工作才平行；有依賴時先等前置交接完成。
+- 若當前客戶端未提供所需角色或派工工具，明確說明；可完成資料整理與交接準備，
+  不得假稱已有獨立 agent 審核，也不得由主 session 冒充 QA 推進 `DONE`。
+- 使用者明確要求協作設定維護（`AGENTS.md`、角色設定、skills、使用說明）時，可由主 session 修改；
+  不因此取得產品實作或 `specs/**` 的寫入權。此類變更不變動產品 SPEC 版本，仍須記錄交接與驗證。

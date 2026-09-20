@@ -48,4 +48,4 @@ model: opus
 - 決定要明確。不要寫「可以考慮 A 或 B」——**選一個，說明為什麼，並寫下什麼情況該改選另一個**。
 
 ## 交接
-完成後寫 `coordination/handoffs/<task-id>/architect-to-<next>.md`，並在 `coordination/BOARD.md` 把任務推進到 `SPEC_READY`。
+完成後寫 `coordination/handoffs/<task-id>/architect-to-<next>.md`，在交接單裁定任務可進 `SPEC_READY`，由主 session 串行整合 `coordination/BOARD.md`。

@@ -27,7 +27,7 @@ model: opus
 寫進 `specs/features/<id>/acceptance.md`，每條都要**可執行、可自動化**：
 
 ❌ 壞的：「Run 應該正確執行」
-✅ 好的：「`POST /v1/agents/{id}/runs` 回 202 且 body 含 `run_id`；3 秒內 `GET /v1/runs/{id}` 狀態為 `RUNNING` 或 `SUCCEEDED`；失敗時 `error.code` 屬於 SPEC §8.4 的枚舉」
+✅ 好的：「`POST /v1/agents/{id}/runs` 回 202 且 body 含 `run_id`；3 秒內 `GET /v1/runs/{id}` 狀態為 `RUNNING` 或 `SUCCEEDED`；失敗時 `error.code` 屬於 `api-contract.md` §0 的枚舉」
 
 每個功能至少涵蓋五類：
 1. **正常路徑** — 最典型的成功情境
@@ -36,7 +36,7 @@ model: opus
 4. **憑證與隔離邊界** — 沙盒摸得到憑證嗎？碰得到資料層嗎？打得出外網嗎？（**每個功能都要問這三題**）
    > 單租戶，所以沒有「A 租戶看到 B 租戶」這題。取而代之的是
    > **「run token A 能不能存取 run B」**——`/internal/*` 每條路由都要驗。
-5. **契約一致性** — 回應是否逐欄位吻合 `api-contract.md v0.2.0`
+5. **契約一致性** — 回應是否逐欄位吻合 當前 `api-contract.md`（回報實際版本）
    （特別檢查：有沒有人寫出 `WAITING_INPUT`、`tool.call`、`tier` 這些已移除的值）
 
 ---
@@ -90,7 +90,7 @@ model: opus
 LLM 輸出不固定，所以：
 - **不要斷言 LLM 的確切文字**。斷言**結構**：有沒有呼叫預期的工具、狀態機有沒有走對、輸出 schema 對不對
 - 單元/整合測試用**錄製回放**（VCR）或 fake LLM，保證可重現
-- 品質面（答得好不好）走 `q.eval` 的評測資料集，追趨勢而非硬性通過/不通過
+- MVP 不建立 `q.eval` 評測佇列；以當前 feature 驗收條件驗證執行結構與結果 schema
 - 測試不准依賴外網。外部服務一律 mock 或 testcontainer
 
 ## 判定規則
@@ -101,4 +101,4 @@ LLM 輸出不固定，所以：
 
 ## 交接
 - 退回 → 寫 `coordination/handoffs/<id>/qa-verifier-to-<原 agent>.md`，含重現步驟
-- 通過 → 更新 `coordination/BOARD.md` 為 `DONE`，並在 handoff 記錄測了什麼、哪些部分是**未覆蓋**的（誠實列出）
+- 通過 → 在 handoff 裁定 `DONE`，由主 session 串行整合 `coordination/BOARD.md`；記錄測了什麼、哪些部分是**未覆蓋**的（誠實列出）

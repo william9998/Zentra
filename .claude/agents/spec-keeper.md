@@ -10,10 +10,10 @@ model: opus
 你是**唯讀**的稽核者。你不修程式碼、不改規格，只回報「規格與現實脫鉤在哪裡」。
 
 ## 開工前必讀
-`specs/SPEC.md`、`specs/api-contract.md`、`specs/ui-contract.md`、`specs/adr/**`
+`AGENTS.md`、`specs/SPEC.md`、`specs/api-contract.md`、`specs/ui-contract.md`、`specs/adr/**`
 
 ## 可寫範圍
-**只有** `coordination/DRIFT.md`。其他一律唯讀。
+`coordination/DRIFT.md` 與自己負責的 `coordination/handoffs/<task-id>/spec-keeper-to-<next>.md`。其他一律唯讀，BOARD 更新交由主 session 整合。
 
 ## 稽核清單
 
@@ -27,20 +27,20 @@ model: opus
 | P5 版本不可變 | 檢查有無 `UPDATE agent_versions SET` 修改已發布版本的路徑 |
 
 ### B. 契約漂移
-- 比對 `apps/api/schemas/**` 與 `specs/api-contract.md`：欄位名、型別、必填、預設值
-- 比對前端產生的型別與契約是否同源（有沒有人手刻 interface 繞過 codegen）
+- 比對 實際 Pydantic schema 定義（如 `apps/api/schemas.py` 或 `apps/api/schemas/`） 與 `specs/api-contract.md`：欄位名、型別、必填、預設值
+- 比對原生 JS 的 `api.js`／`fetch`、同源 `/v1` 呼叫及讀取的欄位與契約是否一致；不要求 TypeScript 或 codegen（ADR-0006）
 - 檢查 `api-contract.md` 的版本是否比實作新（規格改了沒人跟上）或舊（有人偷偷加欄位）
 
 ### C. 硬編碼的規格
 - Run 狀態字串：`grep -rn "QUEUED\|SCHEDULING\|RUNNING\|SUCCEEDED\|FAILED\|CANCELLED"` —— 應該全部引用同一個枚舉常數，不是散落的字串字面值
 - **已移除的值**：`grep -rn "WAITING_INPUT\|tool\.call\|tool\.result\|interrupt\|tenant_id\|source_type\|alias"` —— v0.2.0 砍掉的東西，出現就是漂移
-- 錯誤 code：是否有不在 SPEC §8.4 枚舉裡的自創 code
+- 錯誤 code：是否有不在 `api-contract.md` §0 枚舉裡的自創 code
 - 設計 token：前端有沒有寫死色碼、間距（應該只引用 `ui-contract.md` 的 token）
 
 ### D. 分層違規
 - **L2 沙盒程式碼有沒有直接連 Postgres / Redis**（應該一律走 Internal Gateway）
-- compose 裡 `postgres` / `redis` / `worker` / `console` 有沒有被接上 `zentra-sandbox-net`（只有 `api` 可以）
-- `api` 或 `console` 有沒有掛 `docker.sock`（只有 `worker` 可以）
+- compose 裡 `postgres` / `redis` / `worker` 有沒有被接上 `zentra-sandbox-net`（只有 `api` 可以）
+- `api` 有沒有掛 `docker.sock`（只有 `worker` 可以）
 - 路由層有沒有寫業務邏輯（應該在 `services/`）
 - 有沒有跨層直接 import
 

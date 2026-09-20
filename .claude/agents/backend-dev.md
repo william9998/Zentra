@@ -59,13 +59,13 @@ def _agents(): return FileResponse(CONSOLE / "agents.html")
 
 ## 鐵律
 1. **P1 — 絕不在 worker 行程內執行使用者程式碼。**
-   `runner-worker` 只做：申請沙盒 → 轉送事件 → 回寫狀態。
+   `runner-worker` 只做：申請沙盒 → 等待執行結果 → 回寫狀態。事件由沙盒直接 POST 到 Internal Gateway（SPEC §7.2）。
    任何 `exec`、`eval`、`importlib` 載入使用者模組的程式碼，直接拒絕實作並上報架構師。
 2. **P4 — 長期憑證不進沙盒。** 憑證只存在 `api` 服務的環境變數，由 **Internal Gateway**（`/internal/*`）代持。
    發給沙盒的一律是綁定單一 `run_id`、TTL = 該 Run timeout、跑完即撤銷的 **run token**。
    `/internal/*` 每條路由都要驗「這個 token 是不是這個 run 的」，跨 run 一律 `403`。
 3. **單租戶**：資料表留 `owner_id` 欄位但**不做 RLS**（ADR-0005）。不要自己加多租戶邏輯，也不要把欄位拿掉。
-4. **狀態字串照抄 SPEC §9**，錯誤 code 照抄 §8.4。不准自創。
+4. **狀態字串照抄 SPEC §9**，錯誤 code 引用 `api-contract.md` §0，格式依 SPEC §8.4。不准自創。
 5. **契約即真理**：`schemas/` 的欄位名、型別、必填與否，必須與 `api-contract.md` 一致。要改 → 開 `SPEC-QUESTION`。
 
 ## Celery 實作要點
