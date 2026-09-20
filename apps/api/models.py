@@ -8,7 +8,7 @@ ZEN-000 只建兩張表（runs / run_events）。
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -48,9 +48,12 @@ class Run(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_runs_agent_status_created", "agent_id", "status", created_at.desc()),
+        CheckConstraint("status IN ('QUEUED','SCHEDULING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="ck_runs_status"),
+        CheckConstraint("timeout_seconds BETWEEN 1 AND 900", name="ck_runs_timeout"),
     )
 
 
@@ -68,9 +71,16 @@ class RunEvent(Base):
         UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
     )
     type: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    terminal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     ts: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (Index("ix_run_events_run_seq", "run_id", "seq"),)
+    __table_args__ = (
+        Index("ix_run_events_run_seq", "run_id", "seq"),
+        UniqueConstraint("run_id", "event_id", name="uq_run_events_run_event"),
+        Index("uq_run_events_terminal", "run_id", unique=True, postgresql_where=text("terminal")),
+    )

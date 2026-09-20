@@ -4,7 +4,7 @@
 > 狀態機：`BACKLOG → SPEC_READY → IN_PROGRESS → REVIEW → QA → DONE`（任何階段可轉 `BLOCKED`）
 > 規則：只有 `@architect` 能推進到 `SPEC_READY`；只有 `@qa-verifier` 能推進到 `DONE`。
 >
-> **對齊 SPEC `v0.2.1`（降維後）。** 舊編號 ZEN-001～ZEN-011 已作廢並重排，見 §已作廢。
+> **對齊 SPEC `v0.2.2`（降維後）。** 舊編號 ZEN-001～ZEN-011 已作廢並重排，見 §已作廢。
 
 ## 八週路線圖
 
@@ -25,7 +25,7 @@
 
 | ID | 任務 | 狀態 | 負責 | 依賴 | 交接單 |
 |---|---|---|---|---|---|
-| **ZEN-000** | **貫穿骨架**：API → Celery → 沙盒 → trivial LangGraph → SSE 串流 | `SPEC_READY` | @platform-eng + @backend-dev | — | [spec](../specs/features/ZEN-000/spec.md) |
+| **ZEN-000** | **貫穿骨架**：API → Celery → 沙盒 → trivial LangGraph → SSE 串流 | `REVIEW` | @platform-eng + @backend-dev；@qa-verifier 驗收 | — | [spec](../specs/features/ZEN-000/spec.md) · [acceptance](../specs/features/ZEN-000/acceptance.md) |
 | ZEN-001 | **版本發布**：上傳 bundle → uv venv → 驗證沙盒抽 entrypoints → `PUBLISHED`（P1 + P5） | `BACKLOG` | @architect → @backend-dev + @platform-eng | ZEN-000 | — |
 | ZEN-002 | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `BACKLOG` | @backend-dev | ZEN-001 | — |
 | ZEN-003 | **沙盒四層隔離硬化**：internal 網段、cap_drop、cgroups、唯讀 + `capabilities()` | `BACKLOG` | @platform-eng | ZEN-000 | — |
@@ -33,6 +33,16 @@
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-001 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 上傳新版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 | — |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 | — |
+
+> **ZEN-000 現況（2026-09-21）**：四服務 compose、固定 Agent 的 API → Celery → 沙盒 → SSE 主線已跑通。
+> 主 session 重建映像後執行公開 API 測試 **10 passed**、Gateway DB 整合 **3 passed**，
+> 並執行修正版 [`scripts/verify-zen000.sh`](../scripts/verify-zen000.sh) 得 **27 通過／0 失敗／2 skipped**。
+> QA 另在 Compose 網路執行 **23 passed／1 skipped**，並完成 40 次不同沙盒的冷啟量測：
+> `POST → 首筆 node.start SSE` 的 nearest-rank P95 為 **1.341 秒**，40 個沙盒終態後皆不存在。
+> skipped 是 gVisor 核心隔離與容器逃逸測試，不能算通過（[ADR-0005](../specs/adr/ADR-0005-mvp-single-host-scope.md)）。
+> `coordination/DRIFT.md` 的首次 G1 裁定不通過；後端、平台及驗收腳本已修正列出的漂移，
+> 但需 spec-keeper 重驗；真實故障注入與逾時容器清理等驗收項仍待證據。
+> **維持 `REVIEW`，不得宣稱 `DONE`。** 詳見 [acceptance.md](../specs/features/ZEN-000/acceptance.md)。
 
 > **順序說明**：ZEN-000 刻意排第一，目的是**盡早證偽架構假設**而非交付功能。
 > 它一次碰到沙盒生命週期、Celery 冪等、平台注入 compile、事件串流四個高風險點。
@@ -50,7 +60,7 @@
 
 | # | 提問 | 由 | 狀態 | 裁決 |
 |---|---|---|---|---|
-| Q-001 | 範例：Run 逾時後，已經產生的部分輸出要保留還是丟棄？ | @backend-dev | `OPEN` | — |
+| — | 暫無未決問題 | — | — | — |
 
 **提問格式**（新增時照抄）：
 ```

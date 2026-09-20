@@ -1,4 +1,4 @@
-"""Pydantic 請求/回應 —— 逐欄位對應 specs/api-contract.md v0.2.1。
+"""Pydantic 請求/回應 —— 逐欄位對應 specs/api-contract.md v0.2.2。
 
 **欄位名不准自創。** 契約要改 → 開 SPEC-QUESTION，不要在這裡偷加欄位。
 """
@@ -6,11 +6,15 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from apps.api.enums import ErrorCode, EventType
 
 
 class RunConfig(BaseModel):
-    timeout_seconds: int | None = Field(default=None, ge=1, le=900)
+    timeout_seconds: int = Field(default=900, ge=1, le=900, strict=True)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -55,15 +59,34 @@ class BootstrapResponse(BaseModel):
 
 
 class SandboxEvent(BaseModel):
-    type: str
-    payload: dict[str, Any] = Field(default_factory=dict)
+    event_id: UUID
+    type: EventType
+    payload: dict[str, Any]
 
+    @field_validator("event_id")
+    @classmethod
+    def uuid_version(cls, value: UUID) -> UUID:
+        if value.version != 7:
+            raise ValueError("event_id must be UUID v7")
+        return value
 
-class SandboxEventBatch(BaseModel):
-    events: list[SandboxEvent]
+    @field_validator("type")
+    @classmethod
+    def sandbox_event_type(cls, value: EventType) -> EventType:
+        if value == EventType.RUN_STATUS:
+            raise ValueError("run.status is reserved for the worker")
+        return value
 
 
 class SandboxResult(BaseModel):
-    output: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
-    usage: dict[str, Any] | None = None
+    output: dict[str, Any] | None
+    error: dict[str, Any] | None
+    usage: dict[str, Any] | None
+
+    @model_validator(mode="after")
+    def complete_result(self):
+        if (self.output is None) == (self.error is None):
+            raise ValueError("provide either output or error")
+        if self.error is not None:
+            ErrorCode(self.error.get("code"))
+        return self

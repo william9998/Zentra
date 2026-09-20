@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from redis.asyncio import Redis
 
 from apps.api.config import get_settings
-from apps.api.errors import ZentraError, zentra_error_handler
+from apps.api.errors import ZentraError, internal_error_handler, validation_error_handler, zentra_error_handler
 from apps.api.routers import internal, runs
 
 settings = get_settings()
@@ -21,11 +22,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Zentra API",
-    version="0.2.1",
+    version="0.2.2",
     lifespan=lifespan,
     description="Agent 平台。每個 Agent 天生有 REST + MCP 兩個門面（P3）。",
 )
 app.add_exception_handler(ZentraError, zentra_error_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(Exception, internal_error_handler)
 app.include_router(runs.router)
 app.include_router(internal.router)
 

@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zentra}
       POSTGRES_DB: ${POSTGRES_DB:-zentra}
     volumes:
-      - ./data/pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     ports: ["5432:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zentra}"]
@@ -34,7 +34,18 @@ services:
   api:
     build: { context: ., dockerfile: docker/api.Dockerfile }
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    env_file: [.env]
+    environment:
+      ZENTRA_ENV: ${ZENTRA_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
+      SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
+      SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://api:8000/internal}
+      SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
+    # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。
+    env_file:
+      - path: .env
+        required: false
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -50,7 +61,18 @@ services:
   worker:
     build: { context: ., dockerfile: docker/worker.Dockerfile }
     command: ["celery", "-A", "apps.worker.celery_app", "worker", "-Q", "q.run,q.build", "-l", "info", "--concurrency", "10"]
-    env_file: [.env]
+    environment:
+      ZENTRA_ENV: ${ZENTRA_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
+      SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
+      SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://api:8000/internal}
+      SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
+    # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。
+    env_file:
+      - path: .env
+        required: false
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -67,3 +89,6 @@ networks:
   zentra-sandbox-net:
     name: zentra-sandbox-net
     internal: true                         # L1：沒有對外路由。唯一對端是 api
+
+volumes:
+  pgdata:

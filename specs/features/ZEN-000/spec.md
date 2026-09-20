@@ -4,9 +4,9 @@
 |---|---|
 | 狀態 | `SPEC_READY` |
 | 擁有者 | @architect |
-| 對齊 Spec | `specs/SPEC.md v0.2.1` |
+| 對齊 Spec | `specs/SPEC.md v0.2.2` |
 | 涉及分層 | L0 · L1 · L2 · L3（全部四層） |
-| 相關 ADR | [ADR-0001](../../adr/ADR-0001-sandbox-isolation.md)、[ADR-0002](../../adr/ADR-0002-celery-langgraph-boundary.md)、[ADR-0003](../../adr/ADR-0003-agent-packaging-dual-interface.md)、[ADR-0005](../../adr/ADR-0005-mvp-single-host-scope.md) |
+| 相關 ADR | [ADR-0001](../../adr/ADR-0001-sandbox-isolation.md)、[ADR-0002](../../adr/ADR-0002-celery-langgraph-boundary.md)、[ADR-0003](../../adr/ADR-0003-agent-packaging-dual-interface.md)、[ADR-0004](../../adr/ADR-0004-sandbox-driver-and-dev-environment.md)、[ADR-0005](../../adr/ADR-0005-mvp-single-host-scope.md)、[ADR-0006](../../adr/ADR-0006-vanilla-frontend.md) |
 | 排程 | 第 1–2 週 |
 
 ## 1. 要解決什麼問題
@@ -31,8 +31,9 @@ POST /v1/agents/{id}/runs
   → runner-worker 取件 → SandboxDriver.create()
   → 沙盒啟動 → 平台 compile 一個寫死的 trivial LangGraph（2 節點）
   → 逐節點 emit 事件 → POST /internal/runs/{id}/events → Redis Streams
+  → POST /internal/runs/{id}/result 回寫 output 或 error
   → GET /v1/runs/{id}/events (SSE) 看得到事件
-  → 結束 → runs 表 SUCCEEDED → 沙盒銷毀
+  → worker 確認沙盒退出 → runs 表 SUCCEEDED + 終局事件 → token 撤銷 → 沙盒銷毀
 ```
 
 具體交付物：
@@ -43,8 +44,32 @@ POST /v1/agents/{id}/runs
 5. Celery app（**Redis broker + result**）+ `q.run` + `runner-worker`（`acks_late=True` + 冪等）
 6. `SandboxDriver` 介面 + `DockerSandboxDriver`（含 `capabilities()`）
 7. 沙盒映像 `zentra/agent-runtime`：Python 3.12 + langgraph + 最小 `zentra_sdk`
-8. Internal Gateway 的**最小兩條路由**：`GET /internal/runs/{id}/bootstrap`、`POST /internal/runs/{id}/events`
+8. Internal Gateway 的**最小三條路由**：`GET /internal/runs/{id}/bootstrap`、`POST /internal/runs/{id}/events`、`POST /internal/runs/{id}/result`
 9. 寫死的 trivial agent：`echo_node → finalize_node`，**不呼叫任何 LLM**
+
+### ZEN-000 固定 Agent 與完成權責
+
+- 在 ZEN-001 的 Agent Registry 出現前，僅接受固定 Agent ID `01930000-0000-7000-8000-000000000001`、
+  entrypoint `default`、版本 `0.0.0-builtin`。其他 Agent ID 回 `NOT_FOUND`；
+  其他 entrypoint 回 `VALIDATION_ERROR`，指定其他版本回 `AGENT_NOT_PUBLISHED`，
+  不得悄悄退回到 builtin。省略版本時選此 fixture；這些值不是已發布版本。
+- 這個 fixture 的 input schema 是 `{"question":"<string>"}`；trivial graph 的 output 是
+  `{"echo":"<相同字串>"}`。`question` 缺失或非字串回 `VALIDATION_ERROR`；
+  `GET Run` 成功後可核對原 input 與 output，證明 graph 確實執行而非只改狀態。
+- worker 負責為每個 Run 核發綁定 `run_id` 的短效 token，僅交給該次沙盒；
+  `api` 的 Internal Gateway 驗證 token。worker 在終態後撤銷 token，並以冪等 `destroy()` 回收沙盒。
+- 沙盒用頂層 JSON **事件陣列**回寫 `/events`，並在退出前以 `/result` 回寫 output 或 error。
+  每筆事件帶同一 Run 內唯一、重送時不變的 UUID v7 `event_id`；`run_events` 對 `(run_id,event_id)` 唯一。
+  Postgres commit 後 Redis `XADD` 失敗時，重送必須重用原 DB `seq` 補送，SSE 依 `seq` 去重。
+  `/result` 不轉狀態；worker 確認沙盒退出且結果存在後才可寫 `SUCCEEDED`，
+  由 worker 在同一 DB transaction 寫終態與唯一的終局 `run.status` 事件，再發布 Redis 通知。
+  Redis 失敗時重送任務須補發既有終局事件。無結果、非零 exit code 或啟動失敗必須為 `FAILED`
+  並使用契約已有的錯誤 code，不能僅憑沙盒自報成功就結案。
+- 沙盒執行逾時也必須在 ZEN-000 落 `FAILED` + `SANDBOX_TIMEOUT`；沒有完整 `/result` 時
+  `output=null`，已持久化的部分事件保留供排查。ZEN-004 再補 cancel、續傳及完整 Run API。
+- `acks_late=True` 的同一 `run_id` 重送不得同時建立兩個沙盒，或重複發出終局事件。
+  ZEN-000 的 graph 不觸發 LLM 或其他外部副作用，故可驗證重送路徑；
+  後續加入 LLM 前仍須維持 ADR-0002 的冪等限制。
 
 ### **明確不做**
 - ❌ 認證授權（端點先開著，但 `owner_id` 欄位要存在）
@@ -52,6 +77,7 @@ POST /v1/agents/{id}/runs
 - ❌ `POST /internal/llm/*`（骨架不呼叫 LLM → ZEN-002）
 - ❌ 完整的四層隔離硬化與自動化驗證（→ ZEN-003）
 - ❌ cancel / 列表 / `Last-Event-ID` 續傳（→ ZEN-004）
+- ❌ `Idempotency-Key` 的 24 小時 HTTP 建立 Run 去重（→ ZEN-004；本任務的 Celery／事件冪等仍必做）
 - ❌ MCP 接口（→ ZEN-005）
 - ❌ Console UI 與 `/console/*` 靜態檔路由（用 `curl` 驗證即可 → ZEN-006）
 - ❌ 任何 LLM 呼叫 —— **刻意的**，才不會被非確定性干擾，專心驗證機制
@@ -79,9 +105,10 @@ POST /v1/agents/{id}/runs
 
 ## 5. 契約變更
 
-- [x] 無新增變更。實作 `specs/api-contract.md v0.2.0` 既有端點的子集：
+- [x] 實作 `specs/api-contract.md v0.2.2` 既有公開端點的子集：
   `POST /v1/agents/{id}/runs`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`，
-  以及 §4 Internal Gateway 的 `bootstrap` 與 `events` 兩條
+  以及 §4 Internal Gateway 的 `bootstrap`、`events`、`result` 三條。
+  v0.2.2 澄清事件格式與結果／終態責任，沒有新增公開端點
 - 回應欄位、狀態字串、錯誤 code **必須完全照契約**，不得因為「骨架先簡化」而偷改
 - 狀態機**不得**出現 `WAITING_INPUT`（v0.2.0 已移除）
 
@@ -90,7 +117,7 @@ POST /v1/agents/{id}/runs
 | 角色 | 工作 | 可寫範圍 |
 |---|---|---|
 | @platform-eng | monorepo 骨架、`docker compose`、沙盒網段、`SandboxDriver` + `DockerSandboxDriver`、沙盒映像 | `apps/sandbox/**`、`docker/**`、`compose.yaml` |
-| @backend-dev | `runs` / `run_events` 資料表、三個公開端點、Internal Gateway 兩條路由、Celery app + runner-worker、SSE、最小 `zentra_sdk` | `apps/api/**`、`apps/worker/**`、`packages/sdk/**` |
+| @backend-dev | `runs` / `run_events` 資料表、三個公開端點、Internal Gateway 三條路由、Celery app + runner-worker、SSE、最小 `zentra_sdk` | `apps/api/**`、`apps/worker/**`、`packages/sdk/**` |
 | @qa-verifier | **先**寫 `acceptance.md`，再驗證 | `tests/**`、本目錄 `acceptance.md` |
 
 前端不參與。Console 留到 ZEN-006（屆時是原生 HTML/CSS/JS，由 `api` 服務）。
@@ -104,8 +131,17 @@ POST /v1/agents/{id}/runs
 - **冪等驗證**：同一個 `run_id` 的 Celery task 執行兩次，結果與副作用相同
 - **沙盒不重用驗證**：跑兩個 Run，確認是兩個不同的容器 ID，且第一個已銷毀
 - **L1 網路的最小驗證**：沙盒內連 `postgres:5432`、`redis:6379`、`1.1.1.1` **必須全部失敗**；
-  連 `api:8000/internal` **必須成功**
-- **契約一致性**：三個端點的回應逐欄位對照 `api-contract.md v0.2.0`
+  帶有效 run token 連 `api:8000/internal/runs/{id}/bootstrap` **必須成功**
+- **契約一致性**：三個公開端點的回應逐欄位對照 `api-contract.md v0.2.2`；
+  Internal Gateway 三條路由依 §4 的 body／回應格式驗證
+- **確實執行 graph**：`question` 字串透過兩個節點產出相同字串的 `echo`，
+  `GET Run` 的 `output` 非空；失敗或無結果時不得出現 `SUCCEEDED`
+- **token 邊界**：無 token 或過期 token 回 `UNAUTHENTICATED`，A Run token 打 B Run 回 `PERMISSION_DENIED`；
+  Run 終態後 token 不再可用
+- **事件冪等**：相同 `event_id` 的重送不得產生第二筆 `run_events`；DB commit 後模擬 Redis
+  發布失敗再重送，SSE 只看見該 `seq` 一次，且保持順序
+- **失敗終態**：非零退出、未提交結果、啟動失敗、逾時都不能報 `SUCCEEDED`；
+  逾時用 `SANDBOX_TIMEOUT`，無結果時 `output=null`，既有事件仍可查
 - **`capabilities()` 誠實性**：Docker driver 必須回報 `l2_kernel_isolation: false`，
   安全測試對應項標記 `skipped` 而非 `passed`
 

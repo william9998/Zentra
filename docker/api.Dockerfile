@@ -8,5 +8,5 @@ COPY pyproject.toml ./
 RUN uv pip install --system -r pyproject.toml
 
 COPY alembic.ini ./
-COPY apps ./apps
-COPY packages ./packages
+COPY apps/__init__.py ./apps/__init__.py
+COPY apps/api ./apps/api

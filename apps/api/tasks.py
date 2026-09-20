@@ -14,8 +14,9 @@ RUN_TASK_NAME = "zentra.run.execute"
 RUN_QUEUE = "q.run"
 
 _producer = Celery("zentra-producer", broker=_settings.redis_url, backend=_settings.redis_url)
+_producer.conf.task_routes = {RUN_TASK_NAME: {"queue": RUN_QUEUE}}
 
 
 def dispatch_run(run_id: str) -> str:
-    result = _producer.send_task(RUN_TASK_NAME, args=[run_id], queue=RUN_QUEUE)
+    result = _producer.send_task(RUN_TASK_NAME, args=[run_id], task_id=run_id)
     return result.id

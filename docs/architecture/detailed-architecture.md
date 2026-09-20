@@ -2,7 +2,7 @@
 
 > 規格定義以 [`specs/SPEC.md`](../../specs/SPEC.md) 為準，本文件只負責「畫清楚」。
 >
-> **本文件對應 SPEC `v0.2.1`（降維後）。** 依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
+> **本文件對應 SPEC `v0.2.2`（降維後）。** 依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
 > 與 [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：
 > 單機 docker compose、**4 個**長駐服務、四層分層、一條主線，Console 是 `api` 服務的原生 HTML/CSS/JS 靜態檔。
 > v0.1 的 K8s 拓撲、三個 Proxy、知識層、Agent Flow、Next.js console 服務已移除，對照表見 §10。
@@ -209,11 +209,13 @@ sequenceDiagram
         API-->>C: SSE event
     end
 
-    SB->>GW: POST /internal/runs/{id}/result
-    W->>PG: UPDATE SUCCEEDED + usage
+    SB->>GW: POST /internal/runs/{id}/result（只存 output/error/usage）
+    W->>PG: 確認沙盒退出與結果 → UPDATE 終態
+    W->>PG: INSERT 唯一終局 run.status 事件
+    W->>RD: XADD 終局事件
+    W->>RD: 撤銷 run token
     W->>SM: release
     SM->>SB: destroy（不重用）
-    Note over GW: 撤銷 run token
     API-->>C: SSE run.status SUCCEEDED
 ```
 
@@ -492,6 +494,7 @@ erDiagram
     RUN_EVENT {
         bigint seq PK "SSE 的 Last-Event-ID"
         uuid run_id FK
+        uuid event_id "沙盒事件 UUID v7；run_id 內唯一"
         string type "run.status|node.start|node.end|token|log|custom|error"
         jsonb payload
         timestamp ts
@@ -511,6 +514,8 @@ erDiagram
 **為什麼 `run_events` 要落 Postgres 而不只是 Redis Streams**：
 SSE 要支援 `Last-Event-ID` 續傳，而且 Run 結束後還要能回頭看事件流——這是 Console 最重要的功能。
 Redis Stream 只是即時匯流管道，**持久化的真相在 Postgres**。
+沙盒事件另有重送不變的 `event_id`，資料庫限制 `(run_id,event_id)` 唯一；
+DB 成功但 Redis 發布失敗時用原 `seq` 重送，SSE 以 `seq` 去重排序（[ADR-0007](../../specs/adr/ADR-0007-run-completion-and-event-retry.md)）。
 
 **沒有的表**（對照 v0.1）：`TENANT`、`USER`、`API_KEY`、`TOOL`、`SKILL`、`FLOW`、
 `KNOWLEDGE_COLLECTION`、`DOCUMENT`、`CHUNK`、`EMBEDDING`、`RUN_CHECKPOINT`、`AGENT_ALIAS`、`SANDBOX_INSTANCE`。
@@ -533,6 +538,10 @@ Redis Stream 只是即時匯流管道，**持久化的真相在 Postgres**。
 
 `/` 轉址到 `/console/agents`，靜態資產掛在 `/console/static/*`。
 **沒有前端路由器** —— 深層連結、上一頁、404 全部由伺服器處理（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）。
+
+`/internal/*` 與公開 API 共用 `api:8000`；主機映射埠也能到達該路由。
+MVP 以綁定 Run 的短效 token 控制存取，並未實作來源 IP 封鎖；
+「Internal Gateway」指沙盒唯一可用的網路對端與非公開契約，不代表路由在公開 listener 上不可達。
 
 ```mermaid
 graph TB

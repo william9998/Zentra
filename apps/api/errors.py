@@ -4,6 +4,7 @@
 """
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from apps.api.enums import ErrorCode
@@ -42,6 +43,21 @@ class ZentraError(Exception):
 
 async def zentra_error_handler(_: Request, exc: ZentraError) -> JSONResponse:
     return JSONResponse(status_code=exc.http_status, content=exc.body())
+
+
+async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    # Avoid echoing input, credentials, or non-JSON ValueError objects.
+    details = {"fields": [
+        {"loc": list(error["loc"]), "message": error["msg"], "type": error["type"]}
+        for error in exc.errors()
+    ]}
+    error = ZentraError(ErrorCode.VALIDATION_ERROR, "request validation failed", 422, details=details)
+    return JSONResponse(status_code=422, content=error.body())
+
+
+async def internal_error_handler(_: Request, exc: Exception) -> JSONResponse:
+    error = ZentraError(ErrorCode.INTERNAL_ERROR, "internal service temporarily unavailable", 500)
+    return JSONResponse(status_code=500, content=error.body())
 
 
 def not_found(what: str) -> ZentraError:

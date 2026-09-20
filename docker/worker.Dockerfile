@@ -8,5 +8,9 @@ COPY pyproject.toml ./
 RUN uv pip install --system -r pyproject.toml
 
 COPY alembic.ini ./
-COPY apps ./apps
-COPY packages ./packages
+COPY apps/__init__.py ./apps/__init__.py
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+COPY apps/sandbox/__init__.py ./apps/sandbox/__init__.py
+COPY apps/sandbox/drivers ./apps/sandbox/drivers
+COPY apps/sandbox/manager.py ./apps/sandbox/manager.py

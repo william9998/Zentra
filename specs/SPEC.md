@@ -7,9 +7,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| Spec 版本 | `v0.2.1` |
+| Spec 版本 | `v0.2.2` |
 | 狀態 | `DRAFT` |
-| 最後更新 | 2026-09-20 |
+| 最後更新 | 2026-09-21 |
 | 擁有者 | `@architect` |
 
 > **v0.2.x 是一次降維改版。** 依 [ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md)：
@@ -167,9 +167,12 @@ docker compose（長駐）                    Sandbox Manager 動態建立（不
    → **worker 本身不執行使用者程式碼（P1）**
 4. Sandbox Manager 建立容器：唯讀掛 bundle 與 venv、注入 `ZENTRA_RUN_TOKEN`、接上沙盒網段
 5. 沙盒內 Agent Runtime：`import build()` → 平台 compile（注入事件 hook）→ 逐節點執行
-6. 每個事件 `POST /internal/runs/{run_id}/events` → `api` 寫 `run_events` 表 + `XADD` Redis Stream
+6. 每個事件帶重送時不變的 `event_id`，`POST /internal/runs/{run_id}/events` → `api` 以
+   `(run_id,event_id)` 冪等寫 `run_events` 表，再 `XADD` Redis Stream；SSE 以 DB `seq` 去重
 7. 呼叫者 `GET /v1/runs/{id}/events`（SSE，支援 `Last-Event-ID` 續傳）或輪詢 `GET /v1/runs/{id}`
-8. 結束 → 寫結果與用量 → 撤銷 run token → **銷毀沙盒**
+8. 沙盒先經 `POST /internal/runs/{run_id}/result` 回寫 output 或 error；worker 確認沙盒結束後才決定終態，
+   寫入 `runs` 並發出唯一的終局 `run.status` 事件 → 撤銷 run token → **銷毀沙盒**。
+   沙盒事件或結果請求本身不得宣告 Run 已成功；沙盒崩潰而未回寫結果時，worker 寫 `FAILED` 與錯誤碼。
 
 ### 7.3 沙盒的 LLM 呼叫（P4 的實作）
 
@@ -279,6 +282,7 @@ HITL resume、Agent Flow 視覺化編排、多租戶與 RLS、Alias 流量切換
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.2.2 | 2026-09-21 | 澄清 Run 完成權責：沙盒經 Internal Gateway 回寫結果，worker 確認退出並唯一決定終態、終局 SSE 事件、token 撤銷與沙盒銷毀；事件以 `(run_id,event_id)` 冪等落庫、SSE 以 DB `seq` 去重；不改 P1–P5 或 MVP 範圍 | @architect |
 | v0.1.0 | 2026-09-20 | 初版：確立 P1–P5 五條核心立場、分層、技術選型、對外契約 | @architect |
 | v0.1.1 | 2026-09-20 | 新增 ADR-0004（SandboxDriver 抽象與開發/正式環境分層）；ZEN-000 貫穿骨架排為第一個任務 | @architect |
 | v0.2.1 | 2026-09-20 | **前端降維**（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)）：前端從 Next.js + React + TypeScript + Tailwind 改為**原生 HTML + CSS + ES modules，零建置**；取消 `console` 服務，改由 `api` 以 `StaticFiles` + 五條 `FileResponse` 路由服務，**長駐服務 5 → 4**；移除 Console BFF 這一層，Console 同源直接消費 `/v1`；移除 Vitest 與 pnpm。**P1–P5 不變** | @architect |

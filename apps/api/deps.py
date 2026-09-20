@@ -5,7 +5,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.db import get_session
-from apps.api.enums import ErrorCode
+from apps.api.enums import ErrorCode, RunStatus
 from apps.api.errors import ZentraError, not_found
 from apps.api.models import Run
 from apps.api.services import runtoken
@@ -48,4 +48,7 @@ async def require_run_token(
         raise ZentraError(
             ErrorCode.PERMISSION_DENIED, "run token does not belong to this run", 403, run_id=run_id
         )
-    return await load_run(run_id, session)
+    run = await load_run(run_id, session)
+    if RunStatus(run.status).is_terminal:
+        raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token revoked", 401)
+    return run

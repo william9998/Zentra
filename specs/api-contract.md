@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.2.1` |
+| 契約版本 | `v0.2.2` |
 | 擁有者 | `@architect` |
-| 對齊 Spec | `specs/SPEC.md v0.2.1` |
+| 對齊 Spec | `specs/SPEC.md v0.2.2` |
 
 > **這是前端與後端的唯一交會點。**
 > 後端照此實作，前端照此 mock，QA 照此寫契約測試。
@@ -19,6 +19,9 @@
 > 直接消費這份契約（沒有 BFF、沒有 CORS）。**端點本身沒有任何變更** ——
 > 但這代表 Console 是這份契約的第一個真實消費者，欄位對不上做畫面時就會發現。
 
+> **v0.2.2 澄清 ZEN-000 所需的 Internal Gateway 內容格式與 Run 終態權責**：
+> `events` 的 request body 是事件陣列，`result` 只回寫資料；worker 才能在沙盒退出後決定終態。
+
 ---
 
 ## 0. 通則
@@ -31,7 +34,8 @@
 - 所有時間：RFC 3339 UTC（`2026-09-20T06:30:00Z`）
 - 所有 ID：UUID v7（可排序）
 - 分頁：cursor-based，`?limit=50&cursor=<opaque>`，回應含 `next_cursor`（無下一頁則 `null`）
-- 冪等：寫入端點接受 `Idempotency-Key` header，24 小時內重送回相同結果
+- 冪等：`Idempotency-Key` header 的 24 小時重送保證由 ZEN-004 交付；
+  ZEN-000 只要求同一 `run_id` 的 Celery 重送與 Internal Gateway 事件重送冪等
 
 ### 錯誤格式（全平台唯一）
 ```json
@@ -130,6 +134,11 @@ Response `200`：與 `GET /v1/runs/{run_id}` 相同的完整 Run 物件。
 | `status` | `QUEUED` \| `SCHEDULING` \| `RUNNING` \| `SUCCEEDED` \| `FAILED` \| `CANCELLED` — **照抄 SPEC §9，不得自創** |
 | `trigger` | `API` \| `MCP` \| `CONSOLE` |
 | `cost_usd` | **字串**（decimal，避免浮點誤差） |
+
+`output`、`error`、`usage`、`started_at`、`finished_at` 在尚未產生時為 `null`，欄位仍須出現。
+`SUCCEEDED` 時 `output` 為物件、`error` 為 `null`；`FAILED` 時 `error.code` 必須是 §0 枚舉值。
+不呼叫 LLM 的 Run，其 `usage.llm_calls`、`usage.input_tokens`、`usage.output_tokens` 為 `0`，
+`usage.cost_usd` 為 decimal 字串 `"0"`。
 
 > `WAITING_INPUT` 已於 v0.2.0 移除。前端不得渲染、後端不得寫入、QA 不得斷言這個值。
 
@@ -243,11 +252,15 @@ Response `202`：
 
 ---
 
-## 4. Internal Gateway（沙盒專用，**不對外開放**）
+## 4. Internal Gateway（沙盒使用的非公開契約）
 
-> 這一段給 `@platform-eng` 與 `@backend-dev`，**不是公開 API**。
+> 這一段給 `@platform-eng` 與 `@backend-dev`，**不是公開 API 契約，也不列入公開 OpenAPI**。
 > 它是 P4 的實作：沙盒唯一的網路對端，代持所有長期憑證。
 > 前端永遠不呼叫這些端點。
+
+MVP 的 `/internal/*` 與 `/v1/*` 掛在同一 FastAPI app，主機映射的 `api:8000` 也可到達這些路由；
+「非公開」**不表示已有來源網段封鎖**。每一個 `/internal/runs/*` 請求都必須驗證 run token，
+這是 ZEN-000 的存取控制。不得因為路由名稱是 `internal` 就省略認證。
 
 認證：`Authorization: Bearer <run_token>`。run token 綁定單一 `run_id`，TTL = 該 Run 的 `timeout_seconds`，
 Run 結束立即撤銷。**帶著 A 的 token 存取 B 的 run_id → `403 PERMISSION_DENIED`。**
@@ -260,6 +273,28 @@ Run 結束立即撤銷。**帶著 A 的 token 存取 B 的 run_id → `403 PERMI
 | `POST` | `/internal/llm/v1/chat/completions` | **OpenAI 相容**。平台換上真金鑰、計量 token、寫 `llm_calls` |
 | `POST` | `/internal/versions/{version_id}/validation` | `--mode=validate` 沙盒回報驗證結果與抽出的 entrypoints schema |
 
+ZEN-000 用到的三條路由內容格式如下；這些是沙盒與平台間的契約，公開 `/v1` 的欄位與狀態不因骨架而縮減：
+
+| 路由 | Request | 成功 Response |
+|---|---|---|
+| `GET /internal/runs/{run_id}/bootstrap` | 無 body | `200`：`{"run_id":"<uuid>","entrypoint":"default","input":{},"manifest":{}}` |
+| `POST /internal/runs/{run_id}/events` | **頂層 JSON 陣列**：`[{"event_id":"01930000-0000-7000-8000-000000000003","type":"node.start","payload":{"node":"echo_node","ts":"..."}}]`；沙盒可送 `node.start`、`node.end`、`token`、`log`、`custom`、`error`，`run.status` 只由平台產生 | `202`：`{"accepted":1,"last_seq":42}`；`accepted` 是新寫入的事件數，`last_seq` 是此批最後一筆（含重送）的 SSE id，空陣列時為 `null` |
+| `POST /internal/runs/{run_id}/result` | `{"output":{},"error":null,"usage":{}}`；失敗時 `output=null` 且 `error.code` 為 §0 枚舉值 | `202`：`{"accepted":true}` |
+
+`result` 只保存沙盒回報的 output／error／usage，不轉 Run 狀態，也不發終局 `run.status`。
+worker 以沙盒退出狀態與已保存結果為依據，唯一決定 `SUCCEEDED` 或 `FAILED`，
+在同一 DB transaction 將終態寫入 `runs` 並新增唯一的終局 `run.status` 事件，
+提交後發布 Redis 通知；之後撤銷 token 與銷毀沙盒。重送 worker task 要先檢查原終局事件並補送 Redis 通知，
+不能因 Run 已是終態就略過尚未發布的事件。
+沙盒未回寫結果就退出，不能推定成功。重複派工不能同時建立第二個沙盒或重複發出終局事件（ADR-0002）。
+
+沙盒生成每筆事件的 `event_id`（UUID v7，於同一 Run 內唯一）；**同一事件重送時沿用原值**。
+`run_events` 對 `(run_id, event_id)` 設唯一約束。Gateway 先持久化 Postgres，再 `XADD` 到 Redis；
+若 DB commit 成功而 `XADD` 失敗，回報暫時失敗，沙盒用相同 `event_id` 重試。
+重試查回原事件與原 `seq`，不得再新增 `run_events`；Redis 重複通知可能發生，
+SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資料庫 `seq`，不是 `event_id`。
+平台產生的 `run.status` 不走沙盒事件端點；其終局唯一性由終態轉換的 DB transaction 保證。
+
 `/internal/llm/v1/chat/completions` 刻意做成 OpenAI 相容，
 `ctx.llm()` 因此只是一個設了 `base_url` 與 `api_key=run_token` 的標準 LangChain chat model——SDK 不需要自訂 client。
 
@@ -269,6 +304,7 @@ Run 結束立即撤銷。**帶著 A 的 token 存取 B 的 run_id → `403 PERMI
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.2.2 | 2026-09-21 | 明定 `GET Run` 未產生欄位的 null 語意、無 LLM 用量；§4 補上 bootstrap/events/result schema、事件 `event_id` 冪等與 worker 唯一決定終態；澄清 `/internal/*` 可由主機埠到達且必驗 token。公開端點和枚舉未新增 | @architect |
 | v0.1.0 | 2026-09-20 | 初版：Runs / Agents / MCP / 錯誤枚舉 | @architect |
 | v0.2.1 | 2026-09-20 | Console 改為同源消費本契約（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)）：§0 補上同源 / 認證 / 靜態檔路由說明。**端點、欄位、枚舉全部未變** | @architect |
 | v0.2.0 | 2026-09-20 | **降維改版**（ADR-0005）：移除 Tools / Knowledge 端點群、`runs/{id}/resume`、alias 切換、`config.tier`、MCP `resources/*`；狀態枚舉移除 `WAITING_INPUT`；事件枚舉移除 `tool.*` / `interrupt`，新增 `log` / `custom`；錯誤碼移除 `TOOL_ERROR`，新增 `LLM_ERROR` / `BUILD_FAILED`；版本上傳改為 multipart 直傳 + `version_id` = bundle SHA-256；新增 §4 Internal Gateway | @architect |
