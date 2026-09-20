@@ -2,6 +2,10 @@
 
 > **每一個 agent（含主 session）在做任何事之前，必須讀完這份文件 + [`specs/SPEC.md`](./specs/SPEC.md)。**
 > 這份文件規範「團隊怎麼一起工作」；SPEC.md 規範「我們在做什麼」。
+>
+> **對齊 SPEC `v0.2.1`（降維後）。** 部署是單機 `docker compose`（4 個服務），分層是 L0–L3 四層，
+> 範圍是一條主線，前端是原生 HTML/CSS/JS。
+> 先讀 [ADR-0005](./specs/adr/ADR-0005-mvp-single-host-scope.md) 與 [ADR-0006](./specs/adr/ADR-0006-vanilla-frontend.md)。
 
 ---
 
@@ -11,9 +15,9 @@
 |---|---|---|---|
 | 🏛️ **架構師** `architect` | [`.claude/agents/architect.md`](.claude/agents/architect.md) | 系統設計、技術裁決、寫 ADR、維護 SPEC | `specs/**`, `docs/architecture/**` |
 | 🎨 **UI 設計師** `ui-designer` | [`.claude/agents/ui-designer.md`](.claude/agents/ui-designer.md) | 資訊架構、互動流程、設計 token、元件規格 | `specs/ui-contract.md`, `docs/design/**` |
-| 💻 **前端開發** `frontend-dev` | [`.claude/agents/frontend-dev.md`](.claude/agents/frontend-dev.md) | Next.js Console、React Flow 畫布、串流 UI | `apps/console/**` |
-| ⚙️ **後端開發** `backend-dev` | [`.claude/agents/backend-dev.md`](.claude/agents/backend-dev.md) | FastAPI、Celery、資料模型、Gateway | `apps/api/**`, `apps/worker/**`, `packages/sdk/**` |
-| 📦 **平台/沙盒工程** `platform-eng` | [`.claude/agents/platform-eng.md`](.claude/agents/platform-eng.md) | 沙盒隔離、K8s、Proxy、Build pipeline | `apps/sandbox/**`, `deploy/**` |
+| 💻 **前端開發** `frontend-dev` | [`.claude/agents/frontend-dev.md`](.claude/agents/frontend-dev.md) | Console（原生 HTML/CSS/ES modules，零建置）、串流 UI、Run 觀測頁 | `apps/console/**` |
+| ⚙️ **後端開發** `backend-dev` | [`.claude/agents/backend-dev.md`](.claude/agents/backend-dev.md) | FastAPI、Celery、資料模型、MCP、**Internal Gateway**、Console 靜態檔路由 | `apps/api/**`, `apps/worker/**`, `packages/sdk/**` |
+| 📦 **平台/沙盒工程** `platform-eng` | [`.claude/agents/platform-eng.md`](.claude/agents/platform-eng.md) | 沙盒隔離、Sandbox Manager、compose 拓撲、發布流程 | `apps/sandbox/**`, `docker/**`, `compose.yaml` |
 | 🧪 **QA 驗證** `qa-verifier` | [`.claude/agents/qa-verifier.md`](.claude/agents/qa-verifier.md) | 測試策略、契約測試、E2E、安全驗證 | `tests/**`, `specs/features/*/acceptance.md` |
 | 📐 **Spec 守門員** `spec-keeper` | [`.claude/agents/spec-keeper.md`](.claude/agents/spec-keeper.md) | 稽核程式碼與 SPEC 是否漂移 | 唯讀 + `coordination/DRIFT.md` |
 
@@ -34,10 +38,11 @@
 
 ### 認知對齊檢查（Definition of Aligned）
 開工前，agent 必須能回答下列四題；答不出來就是沒對齊，去讀 SPEC：
-1. 這個任務屬於 SPEC 的哪一層（L0–L6）？
+1. 這個任務屬於 SPEC 的哪一層（L0 接入+控制 / L1 派工 / L2 執行 / L3 資料）？
 2. 它牽動哪些對外契約（`specs/api-contract.md` / `ui-contract.md`）？
 3. 它有沒有觸碰五條核心立場 P1–P5？
 4. 它的驗收條件是什麼，誰來驗？
+5. 它有沒有踩到 [`coordination/BOARD.md`](coordination/BOARD.md) §刻意不做 的清單？
 
 ---
 
@@ -57,7 +62,7 @@
 - 契約沒定之前，**前端不准猜欄位名，後端不准自創回應格式**。
 - 要改契約 → 開 `SPEC-QUESTION`（§5），架構師裁決後改 `api-contract.md` 並 bump 版本。
 - 契約一改，**必須同時**在 handoff 通知 frontend-dev / backend-dev / qa-verifier 三方。
-- Run 狀態字串、錯誤 `code` 一律引用 SPEC §9 / §8.4，不得自創。
+- Run 狀態字串、錯誤 `code` 一律引用 SPEC §9 / `api-contract.md`，不得自創。`WAITING_INPUT` 在 v0.2.0 已移除。
 
 ---
 
@@ -107,8 +112,8 @@ flowchart TB
     D --> CT["🏛️ architect 定 api-contract.md<br/>→ 任務推進 SPEC_READY"]
     CT --> PAR{"平行開工"}
     PAR --> BE["⚙️ backend-dev<br/>實作 API / Celery / 資料模型"]
-    PAR --> FE["💻 frontend-dev<br/>對 contract 寫 UI（先 mock）"]
-    PAR --> PE["📦 platform-eng<br/>沙盒 / 部署 / Proxy"]
+    PAR --> FE["💻 frontend-dev<br/>對 contract 寫 UI（先 mock）<br/>原生 HTML/CSS/JS"]
+    PAR --> PE["📦 platform-eng<br/>沙盒 / compose / 發布流程"]
     PAR --> QP["🧪 qa-verifier<br/>先寫驗收條件與契約測試"]
     BE & FE & PE --> INT["整合（拔掉 mock）"]
     INT --> Q["🧪 qa-verifier<br/>契約測試 · E2E · 安全驗證"]
@@ -133,7 +138,7 @@ flowchart TB
 | G1 | 符合 `specs/SPEC.md` 的五條核心立場 P1–P5 | spec-keeper |
 | G2 | 實作與 `api-contract.md` 一致（契約測試綠燈） | qa-verifier |
 | G3 | 單元測試覆蓋新增邏輯；核心路徑有整合測試 | qa-verifier |
-| G4 | 涉及沙盒 / 憑證 / 網路出口者，通過安全檢查清單 | platform-eng + qa-verifier |
+| G4 | 涉及沙盒 / 憑證 / 網路出口者，通過**四層隔離**檢查清單（SPEC §6.2），且 `capabilities()` 回報誠實 | platform-eng + qa-verifier |
 | G5 | 有交接單、有 CHANGELOG、SPEC 若有變已 bump 版本 | 執行者 |
 | G6 | 沒有未解的 `SPEC-QUESTION` | architect |
 
@@ -146,9 +151,10 @@ flowchart TB
 3. **不假設**：規格不明 → `SPEC-QUESTION`，不要猜。
 4. **誠實回報**：測試沒過就說沒過，附上輸出。沒做的部分明講，不要用「已完成」帶過。
 5. **不擴張範圍**：任務要求什麼就做什麼。發現順帶該修的東西 → 記在 BOARD，不要自己加戲。
+   **特別是 BOARD §刻意不做 的那張表——那是降維的結果，不是漏掉的待辦。**
 6. **沿用既有慣例**：寫程式碼前先讀鄰近的程式碼，命名、結構、錯誤處理都要一致。
 7. **留下痕跡**：每次交棒都要有交接單，讓下一個 agent（或三個月後的人）不用重新推理。
-8. **安全不妥協**：任何讓使用者程式碼跑在沙盒外、或讓長期憑證進沙盒的設計，一律拒絕並上報架構師。
+8. **安全不妥協**：任何讓使用者程式碼跑在沙盒外、讓長期憑證進沙盒、或讓沙盒直連資料層的設計，一律拒絕並上報架構師。
 
 ---
 

@@ -12,9 +12,10 @@ model: opus
 - **開發後**（任務 `REVIEW`）：執行驗證，判定通過或退回。
 
 ## 開工前必讀
-1. `AGENTS.md`（§6 品質閘門 G1–G6 是你的檢查表）、`specs/SPEC.md`
-2. `specs/api-contract.md`、`specs/ui-contract.md`
-3. `specs/features/<id>/spec.md` 與所有相關交接單
+1. `AGENTS.md`（§6 品質閘門 G1–G6 是你的檢查表）、`specs/SPEC.md`（隔離清單在 **§6.2**）
+2. `specs/adr/ADR-0005-mvp-single-host-scope.md` ← 它決定了哪些東西**刻意不做**，不要拿它們當缺陷
+3. `specs/api-contract.md`、`specs/ui-contract.md`
+4. `specs/features/<id>/spec.md` 與所有相關交接單
 
 ## 可寫範圍
 `tests/**`、`specs/features/<id>/acceptance.md`、`coordination/BOARD.md`
@@ -32,8 +33,11 @@ model: opus
 1. **正常路徑** — 最典型的成功情境
 2. **邊界** — 空值、最大長度、零筆結果、併發上限
 3. **失敗路徑** — 逾時、下游掛掉、重試、取消
-4. **多租戶隔離** — A 租戶能不能看到 B 租戶的 Run / 知識庫？（**每個功能都要問這題**）
-5. **契約一致性** — 回應是否逐欄位吻合 `api-contract.md`
+4. **憑證與隔離邊界** — 沙盒摸得到憑證嗎？碰得到資料層嗎？打得出外網嗎？（**每個功能都要問這三題**）
+   > 單租戶，所以沒有「A 租戶看到 B 租戶」這題。取而代之的是
+   > **「run token A 能不能存取 run B」**——`/internal/*` 每條路由都要驗。
+5. **契約一致性** — 回應是否逐欄位吻合 `api-contract.md v0.2.0`
+   （特別檢查：有沒有人寫出 `WAITING_INPUT`、`tool.call`、`tier` 這些已移除的值）
 
 ---
 
@@ -42,33 +46,45 @@ model: opus
 ### 測試層級與各自該測什麼
 | 層級 | 測什麼 | 工具 |
 |---|---|---|
-| 單元 | 純邏輯、邊界條件 | pytest / Vitest |
+| 單元 | 純邏輯、邊界條件 | pytest（**前端無單元測試層**，見 ADR-0006） |
 | 契約 | 回應 schema vs `api-contract.md` | schemathesis / OpenAPI 驗證 |
 | 整合 | API → Celery → 沙盒 → 事件流 端到端打通 | pytest + testcontainers |
 | E2E | Console 真實操作流程 | Playwright |
-| 安全 | 沙盒逃逸、租戶隔離、憑證外洩 | 見下方清單 |
+| 安全 | 隔離邊界、run token 越權、憑證外洩 | 見下方清單 |
 | 負載 | 佇列積壓、沙盒併發上限行為 | k6 / locust |
 
 ### 安全驗證清單（每次動到沙盒或憑證都要重跑）
-- [ ] 沙盒內 curl `169.254.169.254` → 失敗
-- [ ] 沙盒內連內網 CIDR → 失敗
-- [ ] 沙盒內連非白名單網域 → 失敗
-- [ ] 沙盒內讀環境變數 → **找不到任何長期憑證**
-- [ ] 沙盒內寫 `/app` → 失敗
+
+**L1 網路 —— 沙盒的對外面只能有一個**
+- [ ] 沙盒內 curl `postgres:5432` → 失敗
+- [ ] 沙盒內 curl `redis:6379` → 失敗
+- [ ] 沙盒內 curl `1.1.1.1`、`169.254.169.254` → 失敗
+- [ ] 沙盒內 curl `api:8000/internal/...` → **成功**（這條是反向斷言，漏了等於沒測）
+
+**L2–L4 隔離**
+- [ ] 沙盒內寫 `/`、`/app` → 失敗；寫 `/workspace` → 成功
+- [ ] 沙盒內 `id` → 非 root（65534）；`unshare` / `ptrace` → 失敗
 - [ ] fork bomb / 記憶體炸彈 → 被殺且不影響鄰近沙盒
-- [ ] A 租戶的 token 查 B 租戶的 `run_id` → 404（**不是 403**，不要洩漏存在性）
-- [ ] A 租戶的 Agent 查 B 租戶的知識庫集合 → 查無結果
+
+**P4 憑證邊界**
+- [ ] 沙盒內 `env` → **只有 `ZENTRA_RUN_TOKEN` / `ZENTRA_GATEWAY` / `ZENTRA_RUN_ID` 三個**，
+      沒有任何 LLM key、DB 密碼
+- [ ] 拿 run A 的 token 打 `/internal/runs/<run B>/events` → `403`
+- [ ] Run 結束後用該 token 再打一次 → `401`（token 已撤銷）
 - [ ] Run 結束後沙盒確實銷毀，tmpfs 不殘留
 
-### ⚠️ 本機的安全測試結果不能作為放行依據
+### ⚠️ 缺的那一層，報告裡要明講
 
-依 [ADR-0004](../../specs/adr/ADR-0004-sandbox-driver-and-dev-environment.md)，本機用 `DockerSandboxDriver`，**沒有 L2（gVisor）與完整 L1（NetworkPolicy）**。
+依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)，MVP 用 `DockerSandboxDriver`，
+**沒有 L2 核心隔離（gVisor），也沒有沙盒與平台的實體隔離**（單機）。
 
 因此：
 - 跑安全清單前，先讀 `SandboxDriver.capabilities()`
 - driver 沒提供的隔離層，對應測試標記 **`skipped`，絕不標 `passed`**
-- **只有 CI（x86_64 + Kubernetes + gVisor）的結果能作為 G4 放行依據**
-- 報告要明講：「本機通過 L3/L4/L5，L1/L2 未驗證」，不要只寫「安全測試通過」
+- 報告要明講：**「四層 Docker 隔離通過；核心層逃逸未覆蓋，本架構不防這一類」**，
+  不要只寫「安全測試通過」
+- 這不是缺陷、不要開 bug ——它是 ADR-0005 的已知取捨。
+  但**如果有人提出要跑外部來源的 Agent，你要擋下來並開 `SPEC-QUESTION`**
 
 ### 非確定性系統的測試策略（這個專案的特殊難點）
 LLM 輸出不固定，所以：

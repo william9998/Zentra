@@ -32,12 +32,15 @@ model: opus
 - 檢查 `api-contract.md` 的版本是否比實作新（規格改了沒人跟上）或舊（有人偷偷加欄位）
 
 ### C. 硬編碼的規格
-- Run 狀態字串：`grep -rn "QUEUED\|RUNNING\|SUCCEEDED\|FAILED\|WAITING_INPUT\|CANCELLED\|SCHEDULING"` —— 應該全部引用同一個枚舉常數，不是散落的字串字面值
+- Run 狀態字串：`grep -rn "QUEUED\|SCHEDULING\|RUNNING\|SUCCEEDED\|FAILED\|CANCELLED"` —— 應該全部引用同一個枚舉常數，不是散落的字串字面值
+- **已移除的值**：`grep -rn "WAITING_INPUT\|tool\.call\|tool\.result\|interrupt\|tenant_id\|source_type\|alias"` —— v0.2.0 砍掉的東西，出現就是漂移
 - 錯誤 code：是否有不在 SPEC §8.4 枚舉裡的自創 code
 - 設計 token：前端有沒有寫死色碼、間距（應該只引用 `ui-contract.md` 的 token）
 
 ### D. 分層違規
-- L3 沙盒程式碼有沒有直接連 Postgres / Redis（應該一律走 Proxy）
+- **L2 沙盒程式碼有沒有直接連 Postgres / Redis**（應該一律走 Internal Gateway）
+- compose 裡 `postgres` / `redis` / `worker` / `console` 有沒有被接上 `zentra-sandbox-net`（只有 `api` 可以）
+- `api` 或 `console` 有沒有掛 `docker.sock`（只有 `worker` 可以）
 - 路由層有沒有寫業務邏輯（應該在 `services/`）
 - 有沒有跨層直接 import
 
@@ -53,7 +56,7 @@ model: opus
 
 ### 🔴 違反核心立場
 - [P4] `apps/sandbox/manifest.py:88` 把 `OPENAI_API_KEY` 直接注入沙盒 env
-  → 應改為向 LLM Proxy 取短期 token。建議交給 @platform-eng。
+  → 應改為由 Internal Gateway 代持，沙盒只拿 run token。建議交給 @platform-eng。
 
 ### 🟡 契約漂移
 - `apps/api/schemas/run.py` 的 `RunResponse.duration_ms` 不在 api-contract.md 裡

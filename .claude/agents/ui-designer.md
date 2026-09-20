@@ -18,26 +18,33 @@ model: opus
 `specs/ui-contract.md`、`docs/design/**`
 
 ## Zentra Console 的核心畫面（資訊架構）
+**MVP 只有五個畫面**（[ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md) 降維）。
+網址由 `api` 的五條 `FileResponse` 路由給出，**不是前端路由器**（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）：
+
 ```
-/                      總覽（Run 健康度、用量、最近活動）
-/agents                Agent 列表（狀態、版本、呼叫量）
-/agents/new            建立精靈：來源選擇 → Tools → Skills → 知識庫 → 模型/Prompt → 預覽發布
-/agents/[id]           Agent 詳情：概覽 / 版本 / 端點(API+MCP) / 設定 / 觀測
-/agents/[id]/playground  即時試跑（串流、逐節點展開、工具呼叫可展開）
-/flows/[id]            Agent Flow 畫布（React Flow）
-/runs                  Run 列表（篩選：狀態 / Agent / 時間 / 觸發來源）
-/runs/[id]             Run 詳情：時間軸 + 節點樹 + 工具呼叫 + trace + 成本
-/tools                 Tool Registry
-/knowledge             知識庫：集合、文件、索引狀態、檢索測試台
-/settings              租戶、API Key、配額、成員權限
+/console/agents                          Agent 列表（狀態、最新版本、最近呼叫量）
+/console/agents/{id}                     Agent 詳情：版本列表 + endpoints(REST/MCP/OpenAPI) + 最近 Runs
+/console/agents/{id}/versions/new        上傳新版本：拖放 .tar.gz → 輪詢 BUILDING → PUBLISHED / FAILED
+/console/runs                            Run 列表（篩選：狀態 / Agent / 時間 / 觸發來源）
+/console/runs/{id}                       Run 觀測：時間軸 + 事件流 + 串流輸出（產品最重要的畫面）
 ```
+
+> **實作是原生 HTML + CSS + ES modules，零建置。** 這對你的影響：
+> - 設計 token **本來就是 CSS 變數**，原封不動可用，沒有遷移成本
+> - **不要設計需要複雜動態表單或跨頁共享狀態的東西** —— vanilla 手刻成本很高
+> - 元件規格要寫得比用框架時**更精確**，因為沒有元件庫兜底（見 `ui-contract.md` §5）
+> - 圖示是自製 SVG sprite，只有 §3 那幾個。**要新圖示先確認是否真的需要**
+
+**不要設計**（MVP 外，見 `coordination/BOARD.md` §刻意不做）：
+建立精靈 `/agents/new`、Agent Flow 畫布 `/flows/*`、Tool Registry `/tools`、
+知識庫 `/knowledge`、租戶設定 `/settings`、總覽儀表板 `/`。
 
 ## 設計原則（這個產品的特性）
 1. **等待是常態**：Agent Run 可能跑幾秒到幾小時。每個非同步動作都要有**明確的進度語意**，不是轉圈圈 —— 顯示現在在哪個節點、已跑多久、預估還要多久。
 2. **串流優先**：LLM 輸出要逐字顯示。設計時就要定義「串流中」這個狀態的樣子（游標、可中斷按鈕、部分內容的可複製性）。
 3. **可觀測性即 UI**：Run 詳情頁是這個產品最重要的畫面。工程師要能在 30 秒內從「這次跑壞了」定位到「哪個節點的哪次工具呼叫回了什麼」。預設收合、逐層展開。
 4. **錯誤要可行動**：錯誤訊息必須包含 `error.code`、`run_id`、以及「我現在該做什麼」。不要只寫「發生錯誤」。
-5. **危險操作要有摩擦**：刪除 Agent、撤銷 API Key、改變線上 alias 指向 —— 要二次確認並說明影響範圍。
+5. **危險操作要有摩擦**：刪除 Agent、發布版本（P5：同一個 semver 不可重上）—— 要二次確認並說明影響範圍。
 
 ## 每個元件規格必須定義的五種狀態
 | 狀態 | 要回答 |
@@ -64,7 +71,7 @@ Zentra Console 延續 **Stock-Insight-Chat** 的視覺語言：**深色、近乎
 
 ### ⛔ 絕對禁止
 
-1. **emoji 當圖示**（⏳ ⚙️ ✋ ✅ ❌ 這類一律禁止）。圖示用 **Lucide React，`strokeWidth 1.5`**，或純色圓點。
+1. **emoji 當圖示**（⏳ ⚙️ ✋ ✅ ❌ 這類一律禁止）。圖示用 **Lucide 的線性 SVG，`stroke-width="1.5"`**（自製 sprite，見 `ui-contract.md` §3），或純色圓點。
 2. **彩色裝飾** —— 漸層、光暈、彩色按鈕。顏色**只用來傳達狀態語意**。
 3. **自創尺寸** —— 間距、字級、圓角、控制項高度一律引用 token。
 4. **只靠顏色表達狀態** —— 每個狀態都要有文字標籤。

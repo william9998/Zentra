@@ -1,225 +1,164 @@
 # Zentra Agent Platform — 詳細架構圖
 
-> 本文件是 `Simplified_architecture_diagram.png` 的展開版。
 > 規格定義以 [`specs/SPEC.md`](../../specs/SPEC.md) 為準，本文件只負責「畫清楚」。
+>
+> **本文件對應 SPEC `v0.2.1`（降維後）。** 依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
+> 與 [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：
+> 單機 docker compose、**4 個**長駐服務、四層分層、一條主線，Console 是 `api` 服務的原生 HTML/CSS/JS 靜態檔。
+> v0.1 的 K8s 拓撲、三個 Proxy、知識層、Agent Flow、Next.js console 服務已移除，對照表見 §10。
 
-## 0. 總覽（基礎設施視角）
-
-下圖把本文件的細節收斂成單張實作層級架構圖：接入層、控制平面、Celery 佇列拓撲與 worker 池、
-沙盒五層隔離與 Agent Runtime 內部、受控出口，以及知識層、資料層與觀測層。
-本文件其餘章節是各區塊的逐項展開。
+## 0. 總覽
 
 ![Zentra 系統架構](zentra-architecture.svg)
 
+一台主機、一個 `docker compose`、**四個**長駐服務，加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
+沙盒掛在一個沒有對外路由的網段上，唯一的對端是 `api` 服務的 Internal Gateway。
+Console 沒有自己的容器 —— 它是 `api` 服務出去的一包靜態檔。
 
 ---
 
-## 1. 系統全景圖（Layered Architecture）
-
-對應簡義圖的三大塊：**對外接口** → **Agent Platform** → **文件知識層**。
-為了看得清楚，全景拆成「主幹」（本節）與「橫切面」（§1.1 資料與觀測）兩張。
+## 1. 系統全景（單機拓撲）
 
 ```mermaid
 graph TB
-    subgraph EXT["🌐 L0 對外接口 / External Consumers"]
+    subgraph EXT["對外呼叫端"]
         direction LR
-        E1["業務系統 A"]
-        E2["AI 平台系統"]
-        E3["第三方 App / Script"]
-        E4["MCP Client<br/>Claude · IDE · 其他 Agent"]
+        E1["業務系統 / Script"]
+        E2["MCP Client<br/>Claude · IDE"]
+        E3["zentra CLI"]
+        E4["瀏覽器"]
     end
 
-    subgraph GW["🚪 Access Layer 接入層"]
-        direction LR
-        GW1["REST API Gateway<br/>OpenAPI 3.1"]
-        GW2["MCP Gateway<br/>Streamable HTTP"]
-        GW3["SSE / WebSocket<br/>事件串流"]
-        GW4["Console BFF<br/>Next.js Route Handler"]
-    end
-
-    GUARD["🔐 AuthN/AuthZ · Rate Limit · Quota · Tenant Routing"]
-
-    subgraph CTRL["🎛️ L1 控制平面 Control Plane"]
-        direction LR
-        C1["Agent Service<br/>定義 CRUD · 發布 · Alias"]
-        C2["Build Service<br/>uv lock · CVE/License 掃描"]
-        C3["Version Manager<br/>Immutable agent@semver"]
-        C4["Policy Engine<br/>RBAC/ABAC · Egress 白名單"]
-        C5["Secret Manager<br/>Vault · 短期憑證"]
-        REG[("Registry 群<br/>Agent · Tool · Skill · Knowledge")]
-    end
-
-    subgraph DISP["📮 L2 派工層 Dispatch — Celery"]
-        direction LR
-        D1{{"RabbitMQ Broker<br/>q.agent · q.build · q.ingest"}}
-        D2["Celery Beat<br/>排程"]
-        W1["runner-worker<br/>⚠️ 不執行使用者程式碼"]
-        W2["build-worker"]
-        W3["ingest-worker"]
-        D4["Dead Letter Queue"]
-    end
-
-    subgraph EXEC["📦 L3 執行平面 Execution — 沙盒"]
-        direction TB
-        X1["Sandbox Manager<br/>生命週期 · Warm Pool · 配額"]
-        subgraph SBX["Sandbox — gVisor，一 Run 一盒"]
+    subgraph HOST["單一主機 — docker compose"]
+        subgraph L0["L0 接入 + 控制 · api (FastAPI)"]
             direction LR
-            S1["Agent Runtime<br/>LangGraph CompiledStateGraph"]
-            S3["使用者 Python Code<br/>唯讀掛載"]
-            S4["Agent Server<br/>/invoke · /stream · /mcp"]
+            A1["REST /v1/*"]
+            A2["MCP /mcp/agents/{id}"]
+            A3["SSE /v1/runs/{id}/events"]
+            A4["Console 靜態檔<br/>/console/* · StaticFiles"]
+            A5["Agent Registry<br/>Interface Generator"]
+            A6["🔐 Internal Gateway<br/>/internal/*"]
         end
-        SIDE["🛡️ Sidecar 安全邊界<br/>Tool Proxy · LLM Proxy · Egress Proxy"]
+
+        subgraph L1["L1 派工 · worker (Celery)"]
+            direction LR
+            Q1{{"q.run"}}
+            Q2{{"q.build"}}
+            W1["runner-worker<br/>⚠️ 不執行使用者程式碼"]
+            W2["build-worker"]
+        end
+
+        subgraph L2["L2 執行"]
+            direction TB
+            SM["Sandbox Manager<br/>生命週期 · 併發 semaphore"]
+            SBX["Sandbox — 一 Run 一盒<br/>LangGraph CompiledStateGraph"]
+        end
+
+        subgraph L3["L3 資料"]
+            direction LR
+            DB[("postgres<br/>agents · versions<br/>runs · run_events · llm_calls")]
+            RD[("redis<br/>Celery broker/result<br/>Streams 事件匯流")]
+            FS[("本機 volume<br/>data/bundles · data/venvs")]
+        end
     end
 
-    subgraph KNOW["📚 L4 文件知識層 Knowledge Plane"]
-        direction LR
-        K1["文件來源<br/>上傳 · 連接器 · 爬取"]
-        K2["Ingestion Pipeline<br/>解析 → 切分 → Embedding → 索引"]
-        K3[("pgvector<br/>向量")]
-        K4[("OpenSearch<br/>BM25")]
-        K5["Hybrid Search<br/>RRF 融合 + Rerank"]
-    end
+    LLM["🌍 LLM 供應商"]
 
-    E1 & E2 & E3 --> GW1
-    E4 --> GW2
-    E1 & E2 --> GW3
-    GW1 & GW2 & GW3 & GW4 --> GUARD
-    GUARD -->|"管理操作"| C1
-    GUARD -->|"建立 Run"| D1
+    E1 --> A1
+    E2 --> A2
+    E3 --> A1
+    E4 -->|"HTML/CSS/JS"| A4
+    E4 -->|"同源 fetch /v1"| A1
+    E1 --> A3
 
-    C1 --- REG
-    C1 --> C3
-    C2 --> C3
-    C4 --> C5
-    C2 -->|"送 q.build"| D1
+    A1 & A2 --> A5
+    A1 & A2 -->|"建立 Run"| Q1
+    A1 -->|"上傳版本"| Q2
+    Q1 --> W1
+    Q2 --> W2
+    W1 --> SM
+    W2 -->|"裝 venv · 起驗證沙盒"| SM
+    SM -->|"create / destroy"| SBX
 
-    D2 --> D1
-    D1 --> W1 & W2 & W3
-    W1 -.重試耗盡.-> D4
+    SBX ===|"唯一出口"| A6
+    A6 -->|"代持金鑰"| LLM
+    A6 -->|"寫事件"| DB
+    A6 -->|"XADD"| RD
+    RD -->|"XREAD"| A3
 
-    W1 -->|"申請沙盒 · 串流監看"| X1
-    X1 -->|"create / destroy"| SBX
-    S3 -.載入.-> S1
-    S4 --> S1
-    S1 --> SIDE
-    SIDE -->|"代持憑證呼叫"| REG
-
-    W3 --> K2
-    K1 --> K2 --> K3 & K4
-    K3 & K4 --> K5
-    S1 -->|"ctx.knowledge.search()"| K5
+    A5 --> DB
+    W1 --> DB
+    W2 --> FS
+    SM -->|"唯讀掛載"| FS
 
     classDef ext fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef gw fill:#e8eaf6,stroke:#283593,stroke-width:2px
-    classDef ctrl fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    classDef acc fill:#e8eaf6,stroke:#283593,stroke-width:2px
     classDef disp fill:#fff8e1,stroke:#ef6c00,stroke-width:2px
     classDef exec fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    classDef know fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    class E1,E2,E3,E4 ext
-    class GW1,GW2,GW3,GW4,GUARD gw
-    class C1,C2,C3,C4,C5,REG ctrl
-    class D1,D2,W1,W2,W3,D4 disp
-    class X1,S1,S3,S4,SIDE exec
-    class K1,K2,K3,K4,K5 know
-```
-
-### 1.1 橫切面：資料層與觀測層
-
-L5 / L6 被**所有層**使用，畫在主幹圖裡會讓線爆炸，因此獨立一張。
-
-```mermaid
-graph LR
-    subgraph USERS["使用者"]
-        direction TB
-        U1["L1 控制平面"]
-        U2["L2 派工層"]
-        U3["L3 執行平面"]
-        U4["L4 知識層"]
-    end
-
-    subgraph DATA["🗄️ L5 資料層"]
-        direction TB
-        DB1[("PostgreSQL + pgvector<br/>metadata · runs · checkpoint<br/>全表 Row Level Security")]
-        DB2[("Redis<br/>cache · Streams 事件匯流<br/>Celery result backend")]
-        DB3[("S3 / MinIO<br/>code bundle · 文件原檔 · artifact")]
-        DB4[("ClickHouse<br/>用量 · 稽核分析")]
-    end
-
-    subgraph OBS["🔭 L6 觀測層"]
-        direction TB
-        O1["OpenTelemetry<br/>Trace / Metric / Log"]
-        O2["Langfuse<br/>LLM Trace · Token · 成本"]
-        O3["Prometheus + Grafana<br/>佇列深度 · 沙盒用量 · SLO"]
-        O4["Audit Log<br/>工具呼叫 · 外網請求 · 不可竄改"]
-    end
-
-    U1 --> DB1 & DB3
-    U2 --> DB2
-    U3 -->|"事件 XADD"| DB2
-    U3 -->|"checkpoint"| DB1
-    U4 --> DB1 & DB3
-    USERS -.OTel SDK.-> O1
-    U3 -.LLM 呼叫.-> O2
-    U2 -.佇列指標.-> O3
-    U3 -.Proxy 稽核.-> O4
-    O1 & O2 & O3 & O4 --> DB4
-
-    RULE["📏 硬規則：L3 沙盒不得直連 L5<br/>一律經 L1 的 Proxy / SDK"]
-
     classDef data fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    classDef obs fill:#eceff1,stroke:#455a64,stroke-width:2px
-    class DB1,DB2,DB3,DB4 data
-    class O1,O2,O3,O4 obs
-    style RULE fill:#ffebee,stroke:#c62828,stroke-width:2px
+    class E1,E2,E3,E4 ext
+    class A1,A2,A3,A4,A5 acc
+    class Q1,Q2,W1,W2 disp
+    class SM,SBX exec
+    class DB,RD,FS data
+    style A6 fill:#fff3e0,stroke:#e65100,stroke-width:3px
+    style SBX fill:#fce4ec,stroke:#c2185b,stroke-width:3px
 ```
+
+**三條硬規則**（SPEC §5）：
+1. 沙盒**不得**直連 Postgres 或 Redis。
+2. 沙盒的網路對端**有且只有一個**：`api`。
+3. `worker` 全程不 `import` 使用者模組（P1）。
+
+**Console 沒有 BFF**：瀏覽器先跟 `api` 拿 HTML/CSS/JS，再用同源 `fetch` 打 `/v1` ——
+就是外部系統用的那份 API（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）。
 
 ---
 
-## 2. 兩種建立 Agent 的路徑
-
-簡義圖上半部「平台建立 Agent」與「上傳 Agent Code」的展開。
+## 2. 發布一個版本（P1 + P5）
 
 ```mermaid
-flowchart LR
-    subgraph PATH_A["路徑 A — 平台組裝（低程式碼）"]
-        direction TB
-        A1["Console 精靈"]
-        A2["勾選 Tools<br/>← Tool Registry"]
-        A3["選擇 Skills<br/>← Skill Registry"]
-        A4["設定知識庫<br/>← Knowledge Registry"]
-        A5["設定 Prompt / Model / 策略"]
-        A6["Graph Generator<br/>產出標準 LangGraph"]
-        A1 --> A2 --> A3 --> A4 --> A5 --> A6
+sequenceDiagram
+    autonumber
+    participant CLI as zentra CLI
+    participant API as api
+    participant MQ as q.build
+    participant BW as build-worker
+    participant SB as 驗證沙盒<br/>(--mode=validate)
+    participant FS as data/ volume
+    participant PG as postgres
+
+    CLI->>API: POST /v1/agents/{id}/versions<br/>(multipart: bundle.tar.gz + semver)
+    API->>FS: 落檔
+    API->>PG: INSERT agent_versions (BUILDING)
+    API-->>CLI: 202 { version_id, status: BUILDING }
+    API->>MQ: send_task
+
+    MQ->>BW: 取件
+    BW->>FS: 解壓 → sha256 → version_id
+    Note over BW,SB: setup.py 等同任意程式碼<br/>所以依賴安裝也在容器內
+    BW->>SB: uv pip install --target data/venvs/{version_id}
+    BW->>SB: 起驗證沙盒（唯讀掛 code + venv）
+    SB->>SB: import 使用者模組<br/>檢查 export build() → StateGraph
+    SB->>SB: 抽出 entrypoints 的 input/output schema
+    SB->>API: POST /internal/versions/{id}/validation
+    API->>PG: 寫 manifest + entrypoints
+
+    alt 驗證通過
+        BW->>FS: chmod -R a-w（bundle + venv 凍結，P5）
+        BW->>PG: UPDATE PUBLISHED
+        Note over API: 配發 REST 路由 + MCP 端點（P3）
+    else 驗證失敗
+        BW->>PG: UPDATE FAILED + error
+        BW->>FS: 清掉 venv
     end
-
-    subgraph PATH_B["路徑 B — 上傳程式碼（完全彈性）"]
-        direction TB
-        B1["本機專案<br/>agent.py + zentra.yaml"]
-        B2["zentra deploy<br/>打包上傳 bundle"]
-        B3["Build Worker<br/>uv lock · 依賴解析"]
-        B4["安全掃描<br/>CVE · License · 禁用 API"]
-        B5["契約驗證<br/>必須 export build() → StateGraph"]
-        B1 --> B2 --> B3 --> B4 --> B5
-    end
-
-    MANIFEST["📋 統一 Agent Manifest<br/>agent_id@semver<br/>+ image digest + lockfile"]
-    A6 --> MANIFEST
-    B5 --> MANIFEST
-
-    MANIFEST --> PUB{"發布檢核<br/>Policy Engine"}
-    PUB -->|通過| REG[("Agent Registry<br/>狀態 PUBLISHED")]
-    PUB -->|駁回| FAIL["退回 + 原因"]
-
-    REG --> IF1["🔌 自動生成 REST 路由<br/>/v1/agents/{id}/runs"]
-    REG --> IF2["🔌 自動生成 MCP 端點<br/>/mcp/agents/{id}"]
-    REG --> IF3["🔌 自動生成 OpenAPI Schema"]
-
-    style MANIFEST fill:#fff3e0,stroke:#e65100,stroke-width:3px
-    style REG fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style PUB fill:#fce4ec,stroke:#c2185b,stroke-width:2px
 ```
 
-**關鍵**：兩條路徑最終收斂到**同一個 Manifest 格式**，下游（派工、沙盒、觀測）完全不需要知道 Agent 是怎麼來的。
+**P1 的細節**：連「檢查 `build()` 是否存在」都在沙盒裡做。
+因為 `import` 使用者模組就是執行使用者程式碼——build-worker 的行程裡不能有這一步。
+
+**P5 的實作**：`version_id` 是 bundle 的 SHA-256，發布後目錄設唯讀。
+同一個 `semver` 重複上傳回 `409`。
 
 ---
 
@@ -229,572 +168,450 @@ flowchart LR
 sequenceDiagram
     autonumber
     participant C as 外部系統
-    participant GW as API Gateway
-    participant API as Agent Service
-    participant MQ as RabbitMQ
-    participant W as runner-worker<br/>(Celery)
+    participant API as api
+    participant RD as redis
+    participant W as runner-worker
     participant SM as Sandbox Manager
     participant SB as Sandbox<br/>(LangGraph Runtime)
-    participant PX as Tool/LLM/Egress Proxy
-    participant R as Redis Streams
-    participant PG as Postgres
+    participant GW as Internal Gateway<br/>(api 的 /internal/*)
+    participant PG as postgres
 
-    C->>GW: POST /v1/agents/{id}/runs
-    GW->>GW: 驗 token · scope · 配額
-    GW->>API: 建立 Run
+    C->>API: POST /v1/agents/{id}/runs
+    API->>API: 驗 api_key · 驗 input schema
     API->>PG: INSERT runs (QUEUED)
-    API->>MQ: send_task(q.agent.short, run_id)
+    API->>RD: send_task(q.run, run_id)
     API-->>C: 202 { run_id }
 
-    C->>GW: GET /v1/runs/{id}/events (SSE)
-    GW->>R: XREAD run:{id}
+    C->>API: GET /v1/runs/{id}/events (SSE)
+    API->>RD: XREAD run:{id}
 
-    MQ->>W: 取件 (acks_late, prefetch=1)
+    RD->>W: 取件 (acks_late, prefetch=1)
     W->>PG: UPDATE SCHEDULING
-    W->>SM: acquire(agent@ver, limits)
-    Note over SM: Warm Pool 命中 → ≤800ms<br/>未命中 → 冷啟 ≤3s
-    SM->>SB: 啟動（gVisor · 唯讀 code · tmpfs）
-    SM->>SB: 注入短期 token（TTL 60s）
-    SB->>SB: import build() → compile graph
+    W->>SM: acquire(agent@version, limits)
+    Note over SM: semaphore 上限 10<br/>滿了 → QUOTA_EXCEEDED
+    SM->>SB: 建容器（唯讀 code + venv · tmpfs · internal 網段）
+    SM->>SB: 注入 ZENTRA_RUN_TOKEN（TTL = timeout）
     W->>PG: UPDATE RUNNING
+
+    SB->>GW: GET /internal/runs/{id}/bootstrap
+    GW-->>SB: manifest + entrypoint + input
+    SB->>SB: import build() → 平台 compile（注入事件 hook）
 
     loop 每個 LangGraph node
         SB->>SB: 執行 node
-        SB->>PX: LLM / Tool / Knowledge 呼叫
-        PX->>PX: 換憑證 · 白名單檢查 · 稽核
-        PX-->>SB: 結果
-        SB->>R: XADD 事件 (token / node / tool)
-        R-->>GW: 串流
-        GW-->>C: SSE event
-        SB->>PG: checkpoint (LangGraph state)
+        SB->>GW: POST /internal/llm/v1/chat/completions
+        GW->>GW: 換真金鑰 · 計量 token · 寫 llm_calls
+        GW-->>SB: 結果
+        SB->>GW: POST /internal/runs/{id}/events
+        GW->>PG: INSERT run_events
+        GW->>RD: XADD run:{id}
+        RD-->>API: 串流
+        API-->>C: SSE event
     end
 
-    alt 需要人工介入 (HITL)
-        SB->>PG: UPDATE WAITING_INPUT
-        SB->>SM: 掛起（保留 checkpoint，釋放算力）
-        C->>GW: POST /v1/runs/{id}/resume
-        GW->>MQ: 重新派工（從 checkpoint 續跑）
-    end
-
-    SB-->>W: 最終結果 + 用量
+    SB->>GW: POST /internal/runs/{id}/result
     W->>PG: UPDATE SUCCEEDED + usage
-    W->>SM: release → 銷毀沙盒
+    W->>SM: release
     SM->>SB: destroy（不重用）
-    R-->>C: SSE done
+    Note over GW: 撤銷 run token
+    API-->>C: SSE run.status SUCCEEDED
 ```
 
-**安全重點（§P1）**：`runner-worker` 全程只做「申請沙盒、轉送事件、回寫狀態」，
+**安全重點（P1）**：`runner-worker` 全程只做「申請沙盒、回寫狀態」，
 **從來沒有在自己的行程裡 import 或 exec 使用者的程式碼**。
+
+**P4 的重點**：沙盒拿到的只有一個綁死 `run_id`、TTL = timeout 的 token，
+而且它的網段根本沒有對外路由——即使 token 外洩，拿著它也只能對 Internal Gateway 說話。
 
 ---
 
-## 4. 沙盒隔離模型（核心技術 1）
+## 4. 沙盒隔離模型（核心技術）
 
 ```mermaid
 graph TB
-    subgraph HOST["宿主節點 (Kubernetes Node · 專用 node pool)"]
-        subgraph POD["Sandbox Pod — RuntimeClass: gvisor"]
-            subgraph L5["L5 應用層限制"]
+    subgraph HOST["單一主機（沙盒與平台服務同機 ⚠️）"]
+        subgraph SBX["Sandbox 容器 — 一 Run 一盒"]
+            subgraph L5["L5 應用層"]
                 A1["Zentra SDK 攔截層<br/>禁自建 LLM client<br/>禁裸 socket"]
-                A2["Import Hook<br/>黑名單模組阻擋"]
             end
             subgraph L4["L4 檔案系統"]
-                F1["/app 唯讀<br/>使用者 code + venv"]
-                F2["/workspace tmpfs rw<br/>上限 512MB · 隨盒銷毀"]
-                F3["無 hostPath · 無 docker.sock"]
+                F1["read_only rootfs"]
+                F2["/app/code · /app/venv 唯讀 bind"]
+                F3["/workspace tmpfs 512m<br/>隨盒銷毀"]
+                F4["無 hostPath · 無 docker.sock"]
             end
-            subgraph L3["L3 資源限制 (cgroups v2)"]
-                RC["CPU 2 core · Mem 4GB<br/>pids 256 · 無 swap<br/>wall-clock timeout<br/>stdout 上限 10MB"]
+            subgraph L3["L3 資源 (cgroups v2)"]
+                RC["mem 2g · pids 256<br/>cpu 2 core · 無 swap<br/>wall-clock ≤ 15min<br/>stdout ≤ 10MB"]
             end
-            subgraph L2["L2 核心隔離"]
-                K1["gVisor runsc<br/>使用者態核心"]
-                K2["seccomp-bpf 白名單<br/>drop ALL capabilities<br/>no-new-privileges<br/>non-root UID 65534"]
+            subgraph L2["L2 核心"]
+                K1["cap_drop ALL<br/>no-new-privileges<br/>non-root 65534"]
+                K2["Docker 預設 seccomp"]
+                KX["❌ 無 gVisor"]
             end
-            subgraph L1["L1 網路隔離"]
-                N1["NetworkPolicy: default deny"]
-                N2["封鎖 169.254.169.254<br/>(雲端 metadata)"]
-                N3["封鎖內網 CIDR"]
-                N4["僅允許 → Egress Proxy"]
+            subgraph L1["L1 網路"]
+                N1["zentra-sandbox-net<br/>internal: true<br/>（無對外路由）"]
             end
         end
-        EP["🛡️ Egress Proxy<br/>網域白名單 · TLS 檢查 · 全稽核"]
-        TP["🛡️ Tool Proxy<br/>代持憑證 · 代呼叫 · 限流"]
-        LP["🛡️ LLM Proxy<br/>模型路由 · Token 計量"]
+
+        GW["🔐 Internal Gateway<br/>api 的 /internal/*<br/>代持金鑰 · 計量 · 稽核"]
+        PLAT["postgres · redis · worker"]
     end
 
-    POD -->|"唯一出口"| EP
-    POD -->|"ctx.tools.*"| TP
-    POD -->|"ctx.llm()"| LP
-    EP --> NET["🌍 外部網路<br/>（僅白名單網域）"]
-    TP --> NET
-    LP --> NET
+    NET["🌍 LLM 供應商"]
 
-    SEC[("🔐 Vault")] -.->|"長期憑證<br/>只到 Proxy"| TP & LP
-    SEC -.->|"短期 token TTL 60s"| POD
+    SBX ===|"唯一對端"| GW
+    SBX -.->|"❌ 不通"| PLAT
+    SBX -.->|"❌ 不通"| NET
+    GW --> NET
+    GW --> PLAT
 
-    AUD[("📝 Audit Log")]
-    EP & TP & LP --> AUD
-
-    style POD fill:#fce4ec,stroke:#c2185b,stroke-width:3px
-    style EP fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style TP fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style LP fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style SEC fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style SBX fill:#fce4ec,stroke:#c2185b,stroke-width:3px
+    style GW fill:#fff3e0,stroke:#e65100,stroke-width:3px
+    style KX fill:#ffebee,stroke:#c62828,stroke-width:2px
 ```
+
+### 誠實標示：這個等級擋得住什麼、擋不住什麼
+
+| 擋得住 | 擋不住 |
+|---|---|
+| 讀寫主機檔案系統 | **核心層的容器逃逸**（無 gVisor） |
+| 直連資料庫、Redis、內網 | 沙盒與平台服務**同機**，逃逸後鄰居就是憑證 |
+| 直接打外網、打雲端 metadata 端點 | |
+| 偷長期憑證（沙盒裡根本沒有） | |
+| 吃光 CPU / 記憶體 / process 影響鄰居 | |
+
+**因此：這個架構適用於信任的程式碼，不適用於公開多租戶。**
+`SandboxDriver.capabilities()` 必須回報 `l2_kernel_isolation: false`，
+對應的安全測試標 `skipped` 而非 `passed`。要跑不可信程式碼 → 回頭讀 [ADR-0001](../../specs/adr/ADR-0001-sandbox-isolation.md)。
 
 ### 沙盒生命週期
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Warm: Warm Pool 預熱<br/>(常用 image 預先啟動)
-    Warm --> Claimed: runner-worker 申請
-    [*] --> ColdStart: Pool 未命中
-    ColdStart --> Claimed: 拉 image + 啟動 (≤3s)
-    Claimed --> Initializing: 注入短期 token<br/>掛載 code (ro)
-    Initializing --> Running: build() → compile graph
-    Running --> Suspended: HITL 中斷<br/>(存 checkpoint · 釋放算力)
-    Suspended --> Running: resume（可換新沙盒）
-    Running --> Draining: 完成 / 失敗 / 逾時
-    Draining --> Destroyed: 回收 tmpfs · 撤銷 token
+    [*] --> Creating: runner-worker 申請<br/>(semaphore 有名額)
+    [*] --> Rejected: semaphore 滿<br/>→ QUOTA_EXCEEDED
+    Creating --> Initializing: 容器起來<br/>注入 run token
+    Initializing --> Running: bootstrap → build() → compile
+    Running --> Draining: 完成 / 失敗 / 逾時 / 取消
+    Draining --> Destroyed: 撤銷 token · 回收 tmpfs
     Destroyed --> [*]
+    Rejected --> [*]
 
     note right of Destroyed
-        沙盒永不重用於不同 Run
-        避免跨租戶狀態殘留
+        沙盒永不重用
+        destroy() 必須冪等
     end note
 ```
 
 ---
 
-## 5. Celery 派工拓撲（核心技術 2）
+## 5. Celery 派工
 
 ```mermaid
 graph LR
     subgraph PROD["任務生產者"]
-        S1["API Gateway<br/>使用者觸發"]
-        S2["Celery Beat<br/>排程 Agent"]
-        S3["Webhook / Event 觸發"]
-        S4["Agent Flow<br/>節點展開"]
+        S1["api — 建立 Run"]
+        S2["api — 上傳版本"]
     end
 
-    subgraph BROKER["RabbitMQ — 佇列拓撲"]
+    subgraph BROKER["Redis — 佇列"]
         direction TB
-        Q1["q.agent.short<br/>≤ 60s · 高併發"]
-        Q2["q.agent.long<br/>≤ 6h · prefetch=1"]
-        Q3["q.agent.priority<br/>付費租戶優先"]
-        Q4["q.build<br/>打包 · 依賴解析"]
-        Q5["q.ingest<br/>文件處理"]
-        Q6["q.eval<br/>QA 回歸評測"]
-        DLQ["☠️ q.dead_letter<br/>重試耗盡"]
+        Q1["q.run<br/>一次 Run 一個 task"]
+        Q2["q.build<br/>解壓 · venv · 驗證"]
+        DLQ["☠️ dead letter<br/>重試耗盡"]
     end
 
-    subgraph WORKERS["Worker Pools（獨立擴縮）"]
+    subgraph WORKERS["worker 容器"]
         direction TB
-        WA["runner-worker × N<br/>--concurrency=8<br/>acks_late=True"]
-        WB["runner-worker-long × M<br/>--concurrency=1"]
-        WC["build-worker × K<br/>需較大磁碟"]
-        WD["ingest-worker × J<br/>CPU/GPU 密集"]
-        WE["eval-worker"]
+        WA["runner-worker<br/>--concurrency=10<br/>acks_late=True · prefetch=1"]
+        WC["build-worker<br/>--concurrency=2"]
     end
 
-    S1 --> Q1 & Q2 & Q3
-    S2 --> Q1
-    S3 --> Q1
-    S4 --> Q1
-    S1 --> Q4 & Q5
-
-    Q1 & Q3 --> WA
-    Q2 --> WB
-    Q4 --> WC
-    Q5 --> WD
-    Q6 --> WE
-
-    WA & WB --> SM["Sandbox Manager"]
-    WA & WB -.重試耗盡.-> DLQ
-    DLQ --> ALERT["🔔 告警 + 人工重放"]
-
-    RES[("Redis<br/>Result Backend")]
-    WA & WB & WC & WD & WE --> RES
-
-    KEDA["KEDA Autoscaler<br/>依佇列長度擴縮"] -.監看.-> BROKER
-    KEDA -.擴縮.-> WORKERS
+    S1 --> Q1 --> WA
+    S2 --> Q2 --> WC
+    WA -.重試耗盡.-> DLQ
+    WA --> SM["Sandbox Manager"]
+    WC --> SM
+    RES[("Redis<br/>result backend")]
+    WA & WC --> RES
 
     style DLQ fill:#ffebee,stroke:#c62828,stroke-width:2px
     style SM fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    style KEDA fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
 ```
+
+**從 v0.1 降維的部分**：broker 從 RabbitMQ 換成 Redis；六條佇列降成兩條
+（砍 `q.agent.long` / `q.agent.priority` / `q.ingest` / `q.eval`）；
+無 Beat、無 KEDA 自動擴縮——單機的 worker 併發用 `--concurrency` 寫死。
 
 ### Celery 與 LangGraph 的職責邊界（常見混淆點）
 
 ```mermaid
 graph TB
-    subgraph CEL["Celery 負責 — 跨行程 / 跨機器"]
-        C1["佇列與優先權"]
-        C2["Worker 擴縮 · 資源隔離"]
-        C3["重試 · 逾時 · 死信"]
-        C4["排程 (Beat)"]
-        C5["多 Agent 之間的 fan-out/fan-in"]
+    subgraph CEL["Celery 負責 — 跨行程"]
+        C1["佇列"]
+        C2["重試 · 逾時 · 死信"]
+        C3["worker 併發控制"]
     end
     subgraph LG["LangGraph 負責 — 單一 Agent 行程內"]
         L1["節點狀態機與條件分支"]
-        L2["Checkpoint 與續跑"]
-        L3["HITL interrupt"]
-        L4["串流 token / 事件"]
-        L5["子圖與工具迴圈"]
+        L2["串流 token / 事件"]
+        L3["子圖與工具迴圈"]
     end
-    RULE["📏 判準：<br/>需要跨機器 / 需要排隊 / 需要獨立擴縮 → Celery<br/>只是同一 Agent 內部的下一步 → LangGraph node"]
+    RULE["📏 判準：<br/>需要跨行程 / 需要排隊 / 需要重試 → Celery<br/>只是同一 Agent 內部的下一步 → LangGraph node"]
     CEL --> RULE
     LG --> RULE
     style RULE fill:#fff9c4,stroke:#f9a825,stroke-width:3px
 ```
 
+判準不變，見 [ADR-0002](../../specs/adr/ADR-0002-celery-langgraph-boundary.md)。
+**一次 Run 就是一個 Celery task，不管圖裡有幾個節點。**
+
 ---
 
-## 6. Agent Runtime 內部（LangChain + LangGraph）
+## 6. Agent Runtime 內部（沙盒中）
 
 ```mermaid
 graph TB
     subgraph RT["Agent Runtime（沙盒內唯一入口）"]
-        BOOT["Bootstrap<br/>載入 manifest → import build() → compile"]
+        BOOT["Bootstrap<br/>GET /internal/runs/{id}/bootstrap<br/>→ import build() → 平台 compile"]
         subgraph GRAPH["CompiledStateGraph"]
             direction TB
             N0(["START"])
-            N1["plan / route"]
-            N2{"需要工具?"}
-            N3["tool_node<br/>(ToolNode)"]
-            N4["knowledge_node<br/>Hybrid Search"]
-            N5["llm_node<br/>ctx.llm()"]
-            N6{"需要人工確認?"}
-            N7["interrupt()<br/>HITL"]
-            N8["finalize"]
+            N1["使用者自己定義的節點"]
+            N2["llm_node → ctx.llm()"]
+            N3["finalize"]
             N9(["END"])
-            N0 --> N1 --> N2
-            N2 -->|是| N3 --> N5
-            N2 -->|需知識| N4 --> N5
-            N2 -->|否| N5
-            N5 --> N6
-            N6 -->|是| N7 -.resume.-> N5
-            N6 -->|否| N8 --> N9
+            N0 --> N1 --> N2 --> N3 --> N9
         end
-        CKPT["Checkpointer<br/>PostgresSaver"]
-        STORE["Store<br/>長期記憶 (跨 Run)"]
-        SRV["Agent Server (FastAPI)<br/>/invoke · /stream · /mcp · /healthz"]
+        HOOK["平台注入的事件 hook<br/>node.start / node.end / token"]
+        MEM["MemorySaver<br/>（行程內，隨盒銷毀）"]
     end
 
     SDK["Zentra SDK — ctx"]
-    SDK --> T1["ctx.llm() → LLM Proxy"]
-    SDK --> T2["ctx.tools → Tool Proxy"]
-    SDK --> T3["ctx.knowledge → Hybrid Search"]
-    SDK --> T4["ctx.secrets → 短期憑證"]
-    SDK --> T5["ctx.emit() → Redis Streams"]
+    SDK --> T1["ctx.llm()<br/>base_url=/internal/llm/v1<br/>api_key=run_token"]
+    SDK --> T2["ctx.logger → log 事件"]
+    SDK --> T3["ctx.emit() → custom 事件"]
+    SDK --> T4["ctx.config → manifest 設定"]
 
     BOOT --> GRAPH
-    GRAPH <--> CKPT
-    GRAPH <--> STORE
+    GRAPH --> HOOK
+    GRAPH <--> MEM
     GRAPH --> SDK
-    SRV --> GRAPH
-
-    N3 -.-> T2
-    N4 -.-> T3
-    N5 -.-> T1
+    HOOK --> OUT["POST /internal/runs/{id}/events"]
+    T1 --> OUT2["POST /internal/llm/v1/chat/completions"]
 
     style GRAPH fill:#e8eaf6,stroke:#283593,stroke-width:2px
     style SDK fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style SRV fill:#e0f7fa,stroke:#00838f,stroke-width:2px
 ```
+
+**`ctx.llm()` 的關鍵設計**：Internal Gateway 的 LLM 端點做成 **OpenAI 相容**，
+所以 `ctx.llm()` 只是一個設了 `base_url` 與 `api_key=run_token` 的標準 LangChain chat model。
+SDK 不需要自訂 client，使用者拿到的就是熟悉的 LangChain 介面——**而真金鑰從來沒進過沙盒**（P4）。
+
+**MVP 的 `ctx` 沒有** `tools` / `knowledge` / `secrets`。使用者要工具就在自己的 graph 裡寫
+（它們一樣跑在沙盒內、一樣沒有外網），平台級的 Tool Registry 在 MVP 外。
 
 ---
 
 ## 7. 每個 Agent 的雙門面（API + MCP）
-
-簡義圖中每個 Agent 卡片的「外接API / 外接MCP」——**雙向**都要通。
 
 ```mermaid
 graph TB
     subgraph IN["⬅️ 對外提供（Inbound）— 別人呼叫我"]
         direction TB
         I1["REST<br/>POST /v1/agents/{id}/runs<br/>GET /v1/runs/{id}/events"]
-        I2["MCP Server<br/>/mcp/agents/{id}<br/>tools/list · tools/call · resources"]
-        I3["OpenAPI 3.1 Schema<br/>自動生成 · 可直接餵給別的 Agent"]
+        I2["MCP Server<br/>/mcp/agents/{id}<br/>tools/list · tools/call"]
+        I3["OpenAPI 3.1<br/>/v1/agents/{id}/openapi.json"]
     end
 
+    MANIFEST["📋 manifest.entrypoints<br/>（發布時由驗證沙盒抽出）"]
+    GEN["Interface Generator<br/>一份定義 → 三種 schema"]
     AGENT["🤖 Agent @ Sandbox<br/>LangGraph Runtime"]
 
-    subgraph OUT["➡️ 對外消費（Outbound）— 我呼叫別人"]
-        direction TB
-        O1["外接 API<br/>Tool Registry 的 HTTP Tool"]
-        O2["外接 MCP Client<br/>掛載第三方 MCP Server"]
-        O3["平台內建 Tools"]
-        O4["知識庫 Hybrid Search"]
-        O5["其他 Zentra Agent<br/>(Agent-as-Tool)"]
-    end
-
-    GEN["Interface Generator<br/>讀 manifest 的 entrypoints<br/>同時產出 REST + MCP schema"]
-    GEN --> I1 & I2 & I3
+    MANIFEST --> GEN --> I1 & I2 & I3
     I1 & I2 --> AGENT
-    AGENT --> O1 & O2 & O3 & O4 & O5
-    O1 & O2 --> PROXY["Tool Proxy<br/>憑證 · 限流 · 稽核"] --> WORLD["🌍 外部服務"]
-    O5 -.遞迴.-> AGENT
 
     style AGENT fill:#fce4ec,stroke:#c2185b,stroke-width:3px
     style GEN fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style PROXY fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style MANIFEST fill:#fff3e0,stroke:#e65100,stroke-width:3px
 ```
 
-**設計重點**：`entrypoints` 在 manifest 宣告一次，REST schema 與 MCP tool schema 由同一份定義生成，
-**永遠不會有 API 跟 MCP 行為不一致的問題**。
+**P3 的實作要求**：`tools/list` 的 input schema 與 REST 的 `input` schema
+**必須由同一份 entrypoint 定義生成**，契約測試要驗證兩者等價。
+
+> v0.1 的「Outbound 門面」（Tool Registry / 外接 MCP Client / Agent-as-Tool）在 MVP 外。
+> 使用者仍然可以在自己的 Agent 程式碼裡呼叫東西——但**要經過 Internal Gateway，否則網路不通**。
 
 ---
 
-## 8. 文件知識層（Ingestion → Hybrid Search）
-
-```mermaid
-flowchart TB
-    subgraph SRC["文件來源"]
-        direction LR
-        U1["Console 上傳<br/>PDF/Word/PPT/MD"]
-        U2["連接器<br/>SharePoint · S3 · Confluence"]
-        U3["API 推送"]
-        U4["網頁爬取"]
-    end
-
-    RAW[("S3 / MinIO<br/>原始檔保存")]
-    SRC --> RAW --> Q["q.ingest<br/>(Celery)"]
-
-    subgraph PIPE["Ingestion Pipeline（ingest-worker）"]
-        direction TB
-        P1["1. 解析 Parse<br/>版面辨識 · 表格 · OCR"]
-        P2["2. 正規化<br/>→ Markdown + 結構中繼資料"]
-        P3["3. 切分 Chunk<br/>語意切分 + 父子分塊"]
-        P4["4. 擴充<br/>摘要 · 關鍵詞 · 假設問題"]
-        P5["5. Embedding<br/>批次向量化"]
-        P6["6. 索引 Index"]
-        P1 --> P2 --> P3 --> P4 --> P5 --> P6
-    end
-    Q --> PIPE
-
-    P6 --> VDB[("pgvector<br/>向量索引 HNSW")]
-    P6 --> KDB[("OpenSearch<br/>BM25 全文")]
-    P6 --> META[("Postgres<br/>chunk 中繼 · ACL")]
-
-    subgraph SEARCH["Hybrid Search（查詢時）"]
-        direction TB
-        H0["Query 改寫<br/>多查詢展開 · HyDE"]
-        H1["向量召回 top-k"]
-        H2["關鍵詞召回 top-k"]
-        H3["RRF 融合"]
-        H4["Rerank<br/>Cross-Encoder"]
-        H5["ACL 過濾<br/>tenant + 文件權限"]
-        H6["父分塊還原<br/>回傳完整上下文"]
-        H0 --> H1 & H2
-        H1 & H2 --> H3 --> H4 --> H5 --> H6
-    end
-
-    VDB --> H1
-    KDB --> H2
-    META --> H5
-
-    AG["🤖 Agent<br/>ctx.knowledge.search()"]
-    AG --> H0
-    H6 --> AG
-
-    KREG[("Knowledge Registry<br/>Agent ↔ Collection 綁定")]
-    KREG -.限定可查範圍.-> H5
-
-    style PIPE fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style SEARCH fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style AG fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-```
-
----
-
-## 9. Agent Flow — 多 Agent 編排（選配）
-
-```mermaid
-graph TB
-    subgraph FLOW["Agent Flow 定義（React Flow 畫布 → Flow DAG）"]
-        direction LR
-        FN1["Agent A<br/>資料擷取"]
-        FN2["Agent B<br/>分析"]
-        FN3["Agent C<br/>產出報告"]
-        FC{"條件分支"}
-        FP["平行 fan-out"]
-        FN1 --> FC
-        FC -->|路徑1| FN2
-        FC -->|路徑2| FP
-        FP --> FN2 & FN3
-        FN2 --> FN3
-    end
-
-    COMP["Flow Compiler<br/>DAG → LangGraph Supervisor Graph"]
-    FLOW --> COMP
-
-    subgraph EXECM["兩種執行模式"]
-        direction TB
-        M1["模式 1：同盒執行<br/>輕量 Agent 編成單一 supervisor graph<br/>✅ 低延遲 ❌ 共用資源"]
-        M2["模式 2：跨盒執行<br/>每個 Agent 一個沙盒<br/>Celery chord 做 fan-out/fan-in<br/>✅ 強隔離 · 獨立擴縮 ❌ 較高延遲"]
-    end
-    COMP --> M1 & M2
-
-    SHARED[("Flow State<br/>Postgres Checkpoint<br/>跨節點共享狀態")]
-    M1 & M2 <--> SHARED
-
-    style COMP fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style M2 fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-```
-
-**選擇準則**：Agent 來自不同租戶 / 含上傳程式碼 / 需獨立擴縮 → **模式 2**（預設）。純平台組裝且信任邊界相同 → 模式 1。
-
----
-
-## 10. 資料模型（ER 核心）
+## 8. 資料模型（五張表）
 
 ```mermaid
 erDiagram
-    TENANT ||--o{ USER : has
-    TENANT ||--o{ AGENT : owns
-    TENANT ||--o{ KNOWLEDGE_COLLECTION : owns
-    TENANT ||--o{ API_KEY : issues
-
     AGENT ||--o{ AGENT_VERSION : versions
-    AGENT ||--o{ AGENT_ALIAS : routes
-    AGENT_VERSION ||--|| CODE_BUNDLE : packages
-    AGENT_VERSION ||--o{ AGENT_TOOL_BINDING : binds
-    AGENT_VERSION ||--o{ AGENT_KNOWLEDGE_BINDING : binds
-    AGENT_VERSION ||--o{ ENTRYPOINT : exposes
-
-    TOOL ||--o{ AGENT_TOOL_BINDING : used_by
-    TOOL ||--o| TOOL_CREDENTIAL : uses
-    SKILL ||--o{ AGENT_VERSION : composed_into
-
     AGENT_VERSION ||--o{ RUN : executes
     RUN ||--o{ RUN_EVENT : emits
-    RUN ||--o{ RUN_CHECKPOINT : saves
-    RUN ||--o{ TOOL_CALL : invokes
-    RUN ||--|| USAGE_RECORD : meters
-    RUN ||--o| SANDBOX_INSTANCE : runs_in
-
-    KNOWLEDGE_COLLECTION ||--o{ DOCUMENT : contains
-    DOCUMENT ||--o{ CHUNK : split_into
-    CHUNK ||--|| EMBEDDING : vectorized
-
-    FLOW ||--o{ FLOW_NODE : contains
-    FLOW_NODE }o--|| AGENT_VERSION : references
-    FLOW ||--o{ RUN : orchestrates
+    RUN ||--o{ LLM_CALL : meters
 
     AGENT {
         uuid id PK
-        uuid tenant_id FK
-        string slug
-        string source_type "BUILT | UPLOADED"
-        string status
+        string slug UK
+        string name
+        string owner_id "單租戶，欄位留著不做 RLS"
+        string status "ACTIVE|DELETED"
+        timestamp created_at
     }
     AGENT_VERSION {
         uuid id PK
-        string semver
-        string image_digest
+        uuid agent_id FK
+        string semver "與 agent_id 唯一"
+        string version_id "bundle SHA-256 前 12 碼"
+        string status "BUILDING|PUBLISHED|FAILED"
         jsonb manifest
-        string status "BUILDING|PUBLISHED|DEPRECATED"
+        jsonb entrypoints "驗證沙盒抽出"
+        jsonb error
+        timestamp published_at
     }
     RUN {
         uuid id PK
-        uuid tenant_id FK
-        string status "QUEUED|SCHEDULING|RUNNING|WAITING_INPUT|SUCCEEDED|FAILED|CANCELLED"
-        string trigger "API|MCP|SCHEDULE|FLOW"
+        uuid agent_id FK
+        uuid agent_version_id FK
+        string status "QUEUED|SCHEDULING|RUNNING|SUCCEEDED|FAILED|CANCELLED"
+        string trigger "API|MCP|CONSOLE"
+        string entrypoint
         string celery_task_id
+        string sandbox_id
         jsonb input
         jsonb output
         jsonb error
+        jsonb usage
+        timestamp created_at
+        timestamp started_at
+        timestamp finished_at
     }
-    SANDBOX_INSTANCE {
+    RUN_EVENT {
+        bigint seq PK "SSE 的 Last-Event-ID"
+        uuid run_id FK
+        string type "run.status|node.start|node.end|token|log|custom|error"
+        jsonb payload
+        timestamp ts
+    }
+    LLM_CALL {
         uuid id PK
-        string runtime_class "gvisor"
-        jsonb resource_limits
-        timestamp destroyed_at
+        uuid run_id FK
+        string model
+        int input_tokens
+        int output_tokens
+        numeric cost_usd
+        int latency_ms
+        timestamp ts
     }
 ```
 
-> 所有含 `tenant_id` 的表一律啟用 PostgreSQL Row Level Security，應用層過濾只是第一道防線。
+**為什麼 `run_events` 要落 Postgres 而不只是 Redis Streams**：
+SSE 要支援 `Last-Event-ID` 續傳，而且 Run 結束後還要能回頭看事件流——這是 Console 最重要的功能。
+Redis Stream 只是即時匯流管道，**持久化的真相在 Postgres**。
+
+**沒有的表**（對照 v0.1）：`TENANT`、`USER`、`API_KEY`、`TOOL`、`SKILL`、`FLOW`、
+`KNOWLEDGE_COLLECTION`、`DOCUMENT`、`CHUNK`、`EMBEDDING`、`RUN_CHECKPOINT`、`AGENT_ALIAS`、`SANDBOX_INSTANCE`。
+它們都在 MVP 外——**不預先建空表**。
 
 ---
 
-## 11. 部署拓撲（Kubernetes）
+## 9. 部署拓撲（docker compose）
+
+**四個長駐服務。** Console 沒有自己的容器 —— `api` 用 `StaticFiles` 掛載 `apps/console/`，
+再以五條 `FileResponse` 路由給出乾淨網址：
+
+| 網址 | 檔案 |
+|---|---|
+| `/console/agents` | `agents.html` |
+| `/console/agents/{agent_id}` | `agent.html` |
+| `/console/agents/{agent_id}/versions/new` | `version-new.html` |
+| `/console/runs` | `runs.html` |
+| `/console/runs/{run_id}` | `run.html` |
+
+`/` 轉址到 `/console/agents`，靜態資產掛在 `/console/static/*`。
+**沒有前端路由器** —— 深層連結、上一頁、404 全部由伺服器處理（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）。
 
 ```mermaid
 graph TB
-    subgraph EDGE["邊緣"]
-        CDN["CDN"] --> ING["Ingress / WAF"]
+    subgraph HOST["一台主機"]
+        subgraph NET_DEF["預設網段 zentra-net"]
+            direction LR
+            C2["api :8000<br/>REST · MCP · SSE<br/>+ Console 靜態檔"]
+            C3["worker"]
+            C4[("postgres<br/>:5432")]
+            C5[("redis<br/>:6379")]
+        end
+
+        subgraph NET_SBX["zentra-sandbox-net — internal: true ⚠️"]
+            direction LR
+            S1["sandbox-run-abc<br/>（動態，不在 compose）"]
+            S2["sandbox-run-def"]
+        end
+
+        VOL[("volume: ./data<br/>bundles/ · venvs/ · pgdata/")]
     end
 
-    subgraph NS_SYS["namespace: zentra-system（一般 runtime）"]
-        direction LR
-        D1["deploy: api-gateway"]
-        D2["deploy: mcp-gateway"]
-        D3["deploy: agent-service"]
-        D4["deploy: console (Next.js)"]
-        D5["deploy: sandbox-manager"]
-        D6["deploy: tool-proxy"]
-        D7["deploy: llm-proxy"]
-        D8["deploy: egress-proxy"]
-    end
+    OUT["🌍 網際網路"]
 
-    subgraph NS_WK["namespace: zentra-workers"]
-        direction LR
-        WK1["deploy: runner-worker (HPA/KEDA)"]
-        WK2["deploy: build-worker"]
-        WK3["deploy: ingest-worker"]
-        WK4["cronjob: celery-beat"]
-    end
+    C2 --> C4 & C5
+    C3 --> C4 & C5
+    C3 -->|"docker.sock"| S1 & S2
+    S1 & S2 ===|"唯一出口"| C2
+    C2 --> OUT
+    C2 & C3 --> VOL
+    S1 & S2 -.唯讀掛載.-> VOL
 
-    subgraph NS_SBX["namespace: zentra-sandbox ⚠️ 隔離 node pool"]
-        direction LR
-        SB1["pod: sandbox-*<br/>RuntimeClass=gvisor<br/>NetworkPolicy=deny-all"]
-        SB2["Warm Pool<br/>預熱常用 image"]
-    end
+    NOTE["⚠️ 三條硬規則<br/>1. api 同時接兩個網段，是沙盒唯一的橋<br/>2. 沙盒網段 internal: true，沒有對外路由<br/>3. 只有 worker 掛 docker.sock，api 不掛"]
 
-    subgraph STATE["有狀態服務（託管或 Operator）"]
-        direction LR
-        ST1[("PostgreSQL + pgvector")]
-        ST2[("Redis")]
-        ST3[("RabbitMQ")]
-        ST4[("OpenSearch")]
-        ST5[("MinIO / S3")]
-        ST6[("Vault")]
-    end
-
-    ING --> D1 & D2 & D4
-    D1 & D2 --> D3
-    D3 --> ST3
-    ST3 --> WK1 & WK2 & WK3
-    WK1 --> D5 --> SB1
-    SB1 --> D6 & D7 & D8
-    D3 & D5 & D6 & D7 --> ST1 & ST2
-    WK3 --> ST1 & ST4 & ST5
-    D6 & D7 --> ST6
-
-    NOTE["⚠️ sandbox namespace 三條硬規則：<br/>1. 專用 node pool（taint/toleration），不與平台元件同機<br/>2. RuntimeClass=gvisor，不可降級為 runc<br/>3. NetworkPolicy 預設 deny，只開 egress-proxy 一條路"]
-
-    style NS_SBX fill:#fce4ec,stroke:#c2185b,stroke-width:3px
+    style NET_SBX fill:#fce4ec,stroke:#c2185b,stroke-width:3px
     style NOTE fill:#ffebee,stroke:#c62828,stroke-width:2px
 ```
 
+### `docker.sock` 的風險，明確記錄
+
+`worker` 需要 `/var/run/docker.sock` 才能動態建沙盒，而**能操作 docker.sock 等同主機 root**。
+
+v0.1 的 ADR-0004 把這條列為「僅限本機開發，正式環境絕對禁止」。
+**v0.2.0 的正式環境就是這一套，所以這個風險現在是常駐的。** 誠實記錄，不要假裝它不存在：
+
+| | |
+|---|---|
+| 現在為什麼可接受 | 內部工具、單租戶、只跑信任的程式碼。能碰到 `worker` 的人本來就有主機權限 |
+| 什麼時候不可接受 | 一旦要跑不是自己寫的程式碼，或出現第二個租戶 |
+| 到時候怎麼辦 | `docker-socket-proxy` 限縮成只能建刪容器、rootless dockerd，或直接上 k3s（ADR-0005 的首選替代方案） |
+
 ---
 
-## 12. 與簡義圖的對照表
+## 10. 降維對照表（v0.1 → v0.2）
 
-| 簡義圖元素 | 詳細架構對應 | 章節 |
+| v0.1 元素 | v0.2 怎麼了 | 理由 |
 |---|---|---|
-| 對外接口 / MCP 接口 / REST API 接口 | Access Layer：MCP Gateway + REST Gateway + Auth + Rate Limit | §1, §7 |
-| 平台建立 Agent（勾選 Tools / Skills / 知識庫） | 路徑 A：Console 精靈 → Graph Generator | §2 |
-| 上傳 Agent Code（Python Package / 第三方套件） | 路徑 B：CLI → Build Worker → 掃描 → 契約驗證 | §2 |
-| Agent A/B/C 的 Runtime | Sandbox 內的 LangGraph CompiledStateGraph | §6 |
-| Agent 卡片的 外接API / 外接MCP | 雙門面模型（Inbound + Outbound） | §7 |
-| Agent Flow（選配） | Flow Compiler → supervisor graph / Celery chord | §9 |
-| Tool Registry / Skill Registry | 控制平面 Registry 群 + Tool Proxy | §1 |
-| 平台基礎能力 · 隔離執行 | 沙盒五層隔離模型 | §4 |
-| 平台基礎能力 · 權限與 Secret | Policy Engine + Vault + 短期憑證 | §1, §4 |
-| 平台基礎能力 · Log·Trace | 觀測層 OTel + Langfuse + Audit Log | §1 |
-| 平台基礎能力 · 版本管理 | Version Manager（immutable agent@semver + alias） | §1, §2 |
-| 文件知識層（解析·切分·Embedding·索引） | Ingestion Pipeline 六階段 | §8 |
-| Hybrid Search（Vector + Keyword） | RRF 融合 + Rerank + ACL 過濾 | §8 |
-| （簡義圖未畫，但必須有） | Celery 派工層、Sandbox Manager、三個 Proxy、資料層、觀測層 | §1, §5 |
+| Kubernetes + Helm + 專用 node pool | → **單機 docker compose** | ADR-0005：內部工具、單租戶、信任程式碼 |
+| gVisor (runsc) RuntimeClass | → **移除**，L2 只剩 Docker 原生機制 | 同上。`capabilities()` 誠實回報 |
+| RabbitMQ | → **Redis** 同時當 broker + result + Streams | 少一個服務 |
+| OpenSearch + pgvector Hybrid Search | → **移除**（知識層整層移出 MVP） | 範圍收斂 |
+| MinIO / S3 | → **本機 volume** + `ObjectStore` 介面 | 少一個服務，介面留著 |
+| ClickHouse | → Postgres 的 `llm_calls` 表 | 少一個服務 |
+| Vault | → compose env / Docker secret | 沙盒本來就拿不到，不需要 Vault |
+| Tool Proxy + LLM Proxy + Egress Proxy | → **Internal Gateway**（api 上的 `/internal/*`） | 三個容器併成一組路由，P4 不變 |
+| Warm Pool | → **移除** | 共用 runtime image 冷啟已 < 2s |
+| per-agent image build + CVE/License 掃描 | → 共用 runtime image + per-version venv 目錄 | 信任程式碼不需要供應鏈掃描 |
+| OpenTelemetry + Langfuse + Prometheus | → 結構化 JSON log + `run_events` + `llm_calls` | 單機不需要分散式追蹤 |
+| 六條佇列 + Beat + KEDA | → `q.run` + `q.build` | 單機 |
+| 平台組裝式 Agent（路徑 A） | → **移出 MVP** | 第二條建立路徑，八週做不完 |
+| Agent Flow（React Flow 畫布） | → 原本就是 MVP 外 | |
+| HITL / `WAITING_INPUT` / Checkpointer | → **移出 MVP**，狀態機已移除該值 | |
+| 多租戶 + RLS | → 單租戶，留 `owner_id` 欄位不做 RLS | |
+| L0–L6 七層 | → **四層** L0 接入+控制 / L1 派工 / L2 執行 / L3 資料 | |
+| 14 張架構圖 | → **11 張** | 砍掉的東西不需要圖 |
+| Next.js + React + TypeScript + Tailwind + shadcn/ui | → **原生 HTML + CSS + ES modules，零建置** | [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：五個畫面撐不起這套工具鏈 |
+| `console` 容器（第 5 個服務） | → **移除**，由 `api` 的 `StaticFiles` 服務 | 長駐服務 5 → 4 |
+| Console BFF（L0 的一個元件） | → **移除**，Console 同源直接打 `/v1` | 不需要 CORS，且 Console 成為 API 契約的第一個消費者 |
+| TanStack Query + Zustand | → 一個 ~40 行的 `store.js` | 只有 Run 觀測頁需要共享狀態 |
+| Vitest + pnpm + node_modules | → **移除**；Playwright 保留 | 沒有建置步驟就沒有前端建置工具 |
+
+**沒有變的**：五條核心立場 P1–P5、`SandboxDriver` 抽象與 `capabilities()` 誠實原則、
+Celery ↔ LangGraph 的判準（ADR-0002）、entrypoints 單一定義生成雙門面（ADR-0003）。

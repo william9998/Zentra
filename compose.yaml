@@ -1,0 +1,69 @@
+# Zentra — 本機與正式是同一套（ADR-0005）。四個長駐服務。
+# 沙盒不在這裡：它由 Sandbox Manager 經 Docker API 為每個 Run 動態建立，結束即銷毀。
+
+name: zentra
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16          # 擴充先備著，MVP 不用（SPEC §6）
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zentra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zentra}
+      POSTGRES_DB: ${POSTGRES_DB:-zentra}
+    volumes:
+      - ./data/pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zentra}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
+
+  api:
+    build: { context: ., dockerfile: docker/api.Dockerfile }
+    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: [.env]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # api 是唯一同時接兩個網段的服務 —— 它是沙盒對外的唯一的橋（SPEC §5）
+    networks: [zentra-net, zentra-sandbox-net]
+
+  worker:
+    build: { context: ., dockerfile: docker/worker.Dockerfile }
+    command: ["celery", "-A", "apps.worker.celery_app", "worker", "-Q", "q.run,q.build", "-l", "info", "--concurrency", "10"]
+    env_file: [.env]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      api: { condition: service_healthy }
+    volumes:
+      # 只有 worker 掛 docker.sock —— 它要動態建沙盒。api 不准掛。
+      # ⚠️ 能操作 docker.sock 等同主機 root，這個風險在 v0.2 是常駐的（架構文件 §9）
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [zentra-net]
+
+networks:
+  zentra-net:
+    name: zentra-net
+  zentra-sandbox-net:
+    name: zentra-sandbox-net
+    internal: true                         # L1：沒有對外路由。唯一對端是 api

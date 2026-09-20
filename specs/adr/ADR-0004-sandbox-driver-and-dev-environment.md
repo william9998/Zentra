@@ -7,6 +7,17 @@
 | 決策者 | @architect |
 | 相關 | [ADR-0001](ADR-0001-sandbox-isolation.md)（隔離策略）、立場 P1、P4 |
 
+> ⚠️ **環境分層部分被 [ADR-0005](ADR-0005-mvp-single-host-scope.md) 取代（2026-09-20）。**
+> `SandboxDriver` 介面抽象與 `capabilities()` 誠實回報原則**完整保留**，是本 ADR 最有價值的部分。
+> 但「本機 Docker / 正式 Kubernetes」的分層在 MVP **不成立**——正式環境就是 docker compose，
+> 本機與正式是同一套，`KubernetesSandboxDriver` 不在 MVP 範圍。
+> 「`DockerSandboxDriver` 在 production 拒絕初始化」這條硬性檢查因此**取消**，改由 ADR-0005 的
+> 四層隔離清單與 `capabilities()` 把關。
+>
+> **介面也少一個方法。** 下方 §一 的 `stream_events()` 是 v0.1 的設計（worker 從沙盒串事件）。
+> ADR-0005 之後事件改走 **Internal Gateway**（沙盒 POST 回 `api`），driver 不再碰事件。
+> 現行介面是：`create` · `wait` · `logs` · `destroy`（冪等）· `capabilities`。
+
 ## 背景
 
 ADR-0001 決定用 **gVisor + 五層縱深防禦**。但落地時撞到兩個現實問題：

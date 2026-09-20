@@ -2,13 +2,33 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.2.0` |
+| 契約版本 | `v0.4.0` |
 | 擁有者 | `@ui-designer` |
-| 對齊 Spec | `specs/SPEC.md v0.1.1` |
+| 對齊 Spec | `specs/SPEC.md v0.2.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
 
 > **`@frontend-dev` 只能引用這份文件的 token，不得寫死色碼、間距、字級。**
 > 要新增 token 或元件 → 開 `SPEC-QUESTION`。
+
+> **v0.4.0 依 [ADR-0006](./adr/ADR-0006-vanilla-frontend.md)：改用原生 HTML + CSS + ES modules，零建置。**
+> 沒有 React、沒有 Tailwind、沒有建置步驟、沒有前端路由器。
+> **§0–§4 的設計語言、token、狀態語言、五態規範一個字都沒改** ——
+> 這些 token 本來就是純 CSS custom properties，直接貼進 `tokens.css` 就能用。
+> 改的是 §5（元件規格改寫成 ES module）與新增的 §6（前端結構與實作約束）。
+
+> **Console 五個畫面**（[ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md) 降維後）。
+> 網址由 `api` 的五條 `FileResponse` 路由給出，**不是前端路由器**：
+>
+> | # | 網址 | 檔案 | 畫面 |
+> |---|---|---|---|
+> | 1 | `/console/agents` | `agents.html` | Agent 列表 |
+> | 2 | `/console/agents/{agent_id}` | `agent.html` | Agent 詳情：版本列表、`endpoints`（REST / MCP / OpenAPI）、最近 Runs |
+> | 3 | `/console/agents/{agent_id}/versions/new` | `version-new.html` | 上傳新版本（拖放 `.tar.gz`，輪詢 `BUILDING → PUBLISHED`） |
+> | 4 | `/console/runs` | `runs.html` | Run 列表（篩選 + cursor 分頁） |
+> | 5 | `/console/runs/{run_id}` | `run.html` | **Run 觀測** —— 產品最重要的畫面 |
+>
+> `/` 轉址到 `/console/agents`。每個頁面從 `location.pathname` 讀出自己的 id。
+> 建立精靈與 Flow 畫布**已移除**，對應功能在 MVP 外。
 
 ---
 
@@ -27,7 +47,7 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 ### ⛔ 絕對禁止
 
 1. **不准用 emoji 當圖示**（⏳ ⚙️ ✋ ✅ ❌ 🔴 這類一律禁止）。
-   圖示一律用 **Lucide React 線性圖示，`stroke-width: 1.5`**，或**純色圓點**。
+   圖示一律用 **Lucide 的線性 SVG，`stroke-width="1.5"`**（內嵌 sprite，見 §3），或**純色圓點**。
 2. **不准用彩色漸層、陰影光暈、彩色按鈕**做裝飾。
 3. **不准自創尺寸**。所有間距、字級、圓角、高度都必須引用下方 token。
 4. **不准只靠顏色表達狀態** —— 每個狀態都必須同時有文字標籤。
@@ -35,6 +55,10 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 ---
 
 ## 1. 設計 Token
+
+> **這一整節原封不動放進 `apps/console/static/css/tokens.css`。**
+> 它從第一天就是純 CSS custom properties，所以換掉 Tailwind 沒有任何遷移成本。
+> **所有其他 CSS 只准引用變數，不准出現字面值色碼、間距、字級。**
 
 ### 1.1 色彩（深色，MVP 不做淺色模式）
 
@@ -167,7 +191,6 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 | `QUEUED` | `--status-queued` | 排隊中 | 無 | — |
 | `SCHEDULING` | `--status-scheduling` | 配置中 | 緩慢脈動 2s | — |
 | `RUNNING` | `--status-running` | 執行中 | 脈動 1.5s | **必須同時顯示當前節點名稱與已耗時** |
-| `WAITING_INPUT` | `--status-waiting` | 等待確認 | 無 | **必須提供操作按鈕** |
 | `SUCCEEDED` | `--status-succeeded` | 已完成 | 無 | — |
 | `FAILED` | `--status-failed` | 失敗 | 無 | **必須顯示 `error.code`；`retryable` 時提供重試** |
 | `CANCELLED` | `--status-cancelled` | 已取消 | 無 | 標籤用 `--text-disabled`，與 FAILED 明確區分 |
@@ -180,30 +203,55 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 
 `prefers-reduced-motion` 時脈動改為靜態，用明度差異表示活躍。
 
+> `WAITING_INPUT`（HITL）已於 SPEC v0.2.0 移出 MVP，狀態枚舉不再有這個值——
+> **不要渲染它，也不要保留對應的 `--status-waiting` 使用處**（token 本身留著，之後加回來時可直接用）。
+
 ---
 
 ## 3. 圖示規範
 
-- **來源**：Lucide React，`strokeWidth={1.5}`，尺寸取 `--icon-*`
-- **顏色**：繼承 `currentColor`，預設 `--text-secondary`，hover 轉 `--text-primary`
-- **禁止**：emoji、彩色圖示、填充式圖示、多種圖示庫混用
+**沒有 npm，所以不裝 `lucide-react`。** 從 [lucide.dev](https://lucide.dev) 複製需要的那幾個 SVG，
+手工併成**一份 sprite**：`apps/console/static/icons.svg`。
 
-常用對應（統一用法，不要各頁各自挑）：
+```html
+<!-- icons.svg（節錄）—— 每個圖示一個 <symbol>，viewBox 統一 0 0 24 24 -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="..."/>
+  </symbol>
+</svg>
+```
 
-| 用途 | Lucide |
-|---|---|
-| Agent | `Bot` |
-| Run / 執行紀錄 | `Activity` |
-| 工具 | `Wrench` |
-| 知識庫 | `Library` |
-| Flow 畫布 | `Workflow` |
-| 設定 | `Settings` |
-| 沙盒 | `Box` |
-| 複製 | `Copy` |
-| 展開 / 收合 | `ChevronRight` / `ChevronDown` |
-| 重試 | `RotateCw` |
-| 停止 | `Square` |
-| 搜尋 | `Search` |
+```html
+<!-- 用法 —— 尺寸靠 CSS，顏色靠 currentColor -->
+<svg class="icon icon-md"><use href="/console/static/icons.svg#i-bot"/></svg>
+```
+
+```css
+.icon    { width: var(--icon-md); height: var(--icon-md); color: var(--text-secondary);
+           transition: color var(--transition); flex: none; }
+.icon-sm { width: var(--icon-sm); height: var(--icon-sm); }
+.icon-lg { width: var(--icon-lg); height: var(--icon-lg); }
+a:hover .icon, button:hover .icon { color: var(--text-primary); }
+```
+
+- **顏色**：一律 `currentColor`，預設 `--text-secondary`，hover 轉 `--text-primary`
+- **禁止**：emoji、彩色圖示、填充式圖示、混用多種圖示庫、把 SVG 直接貼進每個 HTML（要用 sprite）
+
+MVP 只需要這幾個（**不要多抓**，sprite 要小）：
+
+| 用途 | Lucide 名稱 | symbol id |
+|---|---|---|
+| Agent | `Bot` | `i-bot` |
+| Run / 執行紀錄 | `Activity` | `i-activity` |
+| 沙盒 / 版本 | `Box` | `i-box` |
+| 上傳 | `Upload` | `i-upload` |
+| 複製 | `Copy` | `i-copy` |
+| 展開 / 收合 | `ChevronRight` / `ChevronDown` | `i-chevron-right` / `i-chevron-down` |
+| 重試 | `RotateCw` | `i-rotate-cw` |
+| 停止 | `Square` | `i-square` |
+| 搜尋 | `Search` | `i-search` |
 
 ---
 
@@ -223,67 +271,168 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 
 ## 5. 核心元件規格
 
-### 5.1 `<AppShell>`
-- 左側欄 `--sidebar-width` `--bg-sidebar`，右側內容 `--bg-base`，中間 1px `--border-default`
-- 側欄項目：高度 `--control-lg`，內距 `--space-3`，圓角 `--radius-md`，hover `--surface-hover`，選中 `--surface-active` + 文字轉 `--text-primary`
-- 頂部列 `--header-height`，只放麵包屑與當前頁動作，**不放品牌** logo（品牌在側欄頂）
-- 側欄可收合；收合後內容區左右留白補到 `--space-8`
+**沒有元件框架，所以「元件」＝ 一個 ES module，匯出一個 `mount(el, props)` 函式。**
+沒有 diff、沒有響應式；狀態變了就整塊重繪，**唯一的例外是事件流（只追加）**。
 
-### 5.2 `<StreamingOutput runId>`
+```js
+// 所有元件的統一形狀 —— apps/console/static/js/components/*.js
+export function mount(el, props) {
+  el.innerHTML = render(props);      // 樣板字串，一次寫入
+  bind(el, props);                   // 事件委派綁在 el 上，不是每個子節點
+  return { update(next) {…}, destroy() {…} };   // destroy 要關掉 EventSource / clearInterval
+}
+```
+
+> **離開頁面沒有解除綁定就是 bug。** vanilla 沒有 `useEffect` 幫你清，
+> 每個 `mount` 回傳的 `destroy()` 必須在 `beforeunload` 與切換時被呼叫。
+
+### 5.1 `shell.js` — 共用外框
+
+五個 HTML 檔各自只寫 `<main id="app">`，外框由這個 module 注入，**不要複製貼上五份側欄**。
+
+- 左側欄 `--sidebar-width` `--bg-sidebar`，右側內容 `--bg-base`，中間 1px `--border-default`
+- 側欄項目：高度 `--control-lg`，內距 `--space-3`，圓角 `--radius-md`，hover `--surface-hover`，
+  選中 `--surface-active` + 文字轉 `--text-primary`
+- 選中狀態由 `location.pathname` 判斷（`startsWith`），**不用手動傳 active prop**
+- 頂部列 `--header-height`，只放麵包屑與當前頁動作，**不放品牌** logo（品牌在側欄頂）
+- 側欄可收合；狀態存 `localStorage`，收合後內容區左右留白補到 `--space-8`
+
+### 5.2 `streaming-output.js` — 串流輸出
+
 - 內容寬度上限 `--reading-max`，行高 `--leading-relaxed`
-- 逐字渲染：**用 ref 累積 + 節流 flush（60ms）**，不要每個 token 觸發 re-render
+- 逐字渲染：**用陣列累積 + `requestAnimationFrame` 節流 flush（約 60ms）**，
+  每個 token 都碰 DOM 會把頁面打死
+- 只用 `textContent` / `append`，**絕對不要用 `innerHTML` 接 LLM 輸出**（XSS）
 - 游標：2px 寬 `--accent`，1s 閃爍；串流結束立即移除
-- 右上角常駐「停止」（`Square` 圖示 + 文字），送 `POST /v1/runs/{id}/cancel`，**不是只關本地連線**
-- 斷線顯示 `--text-secondary` 的「重新連線中」一行，帶 `Last-Event-ID` 自動重連
+- 右上角常駐「停止」（`i-square` + 文字），送 `POST /v1/runs/{id}/cancel`，**不是只 `close()` 本地連線**
+- `EventSource` 原生就會自動重連並帶 `Last-Event-ID`；斷線時顯示 `--text-secondary` 的「重新連線中」一行
 - `aria-live="polite"`
 
-### 5.3 `<RunTimeline runId>` — 產品最重要的元件
-- 事件依時間排列，列高 `--row-height-compact`，**預設收合**，`ChevronRight` 展開
+### 5.3 `run-timeline.js` — 產品最重要的元件
+
+- 事件依時間排列，列高 `--row-height-compact`，**預設收合**，`i-chevron-right` 展開
 - 每列：`時間(mono, --text-2xs) · 事件類型 · 摘要`
-- 工具呼叫展開後顯示 request / response，`--bg-code` 底、mono 字體、右上角 `Copy`
-- 超過 200 筆啟用虛擬捲動
-- 大 payload（> 2KB）折疊並顯示大小，點擊才載入
-- **目標：工程師從「這次跑壞了」到「哪個節點的哪次工具呼叫回了什麼」不超過 30 秒**
+- 展開後顯示完整 payload，`--bg-code` 底、mono 字體、右上角 `Copy`
+- **只追加渲染**：新事件 `append` 一列，**不要重畫整個列表**
+- 大 payload（> 2KB）折疊並顯示大小，點擊才展開
+- **無虛擬捲動**（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md) 的已知降級）：
+  預設只渲染**最近 200 筆**，頂端放「載入更早的事件」按鈕，每次再取 200 筆。
+  超過 2000 筆時提示使用者改用 API 拉完整事件流
+- **目標：工程師從「這次跑壞了」到「哪個節點回了什麼」不超過 30 秒**
 
-### 5.4 `<AgentWizard>`
-- 步驟列橫向置頂，當前步驟 `--text-primary`，其餘 `--text-disabled`，**不用數字圓圈徽章**
-- 內容寬度 `--reading-max`，每步下方固定「上一步 / 下一步」
-- 可回上一步且**保留已填內容**；未存草稿離開攔截（`beforeunload`）
-- 發布是不可逆操作 → modal 二次確認，說明影響範圍
+### 5.4 `version-upload.js` — 上傳新版本
 
-### 5.5 `<FlowCanvas>`
-- 畫布底 `--bg-base`，格線 `rgba(255,255,255,0.03)`
-- 節點：`--surface-2` + `--border-default` + `--radius-lg`，寬度固定 `220px`
-- 選中：邊框轉 `--border-focus`，**不加外光暈**
-- 畫布狀態與節點資料分離；存檔只存 flow DAG
-- 大圖啟用 `onlyRenderVisibleElements`；編輯中未存檔攔截離開
+- 拖放區佔內容寬度 `--reading-max`，虛線 `--border-default`，拖曳中轉 `--border-focus`
+- 只收 `.tar.gz`；型別或大小不符當場顯示，**不要等送出才報錯**
+- `FormData` + `fetch` 送 `POST /v1/agents/{id}/versions`（multipart）
+- 送出後以 `setInterval`（2s）輪詢版本狀態：`BUILDING`（進行中樣式）→ `PUBLISHED` / `FAILED`。
+  **`destroy()` 一定要 `clearInterval`**
+- `FAILED` 必須顯示 `error.message` 全文，可 `Copy` —— build 失敗的原因是使用者唯一的除錯線索
+- **發布不可逆**（P5：同一個 semver 不能重上）→ 原生 `<dialog>` 二次確認，明講版號與檔案 SHA
 
-### 5.6 按鈕
-| 變體 | 樣式 |
+### 5.5 `endpoints-card.js` — 三個門面
+
+- 顯示該 Agent 的三個門面：`rest` / `mcp` / `openapi`，每個一行 mono + `Copy`
+- 這是 P3 的使用者可見面，**三個都要在，不能只顯示 REST**
+- `Copy` 用 `navigator.clipboard.writeText`，成功後按鈕文字暫時轉「已複製」1.5s
+
+### 5.6 按鈕（CSS class，不是元件）
+
+| class | 樣式 |
 |---|---|
-| primary | `--accent` 底、`--bg-base` 文字。**全頁最多一個** |
-| secondary | `--surface-3` 底、`--border-default` 邊、`--text-primary` 文字 |
-| ghost | 透明底，hover `--surface-hover` |
-| danger | 透明底、`--danger` 文字與邊框；hover 才填 `--danger` |
+| `.btn-primary` | `--accent` 底、`--bg-base` 文字。**全頁最多一個** |
+| `.btn-secondary` | `--surface-3` 底、`--border-default` 邊、`--text-primary` 文字 |
+| `.btn-ghost` | 透明底，hover `--surface-hover` |
+| `.btn-danger` | 透明底、`--danger` 文字與邊框；hover 才填 `--danger` |
 
 高度 `--control-md`（CTA 用 `--control-lg`），左右內距 `--space-4`，圓角 `--radius-md`。
 
 ---
 
-## 6. 無障礙底線（不可妥協）
+## 6. 前端結構與實作約束
+
+### 6.1 檔案配置
+
+```
+apps/console/
+  agents.html  agent.html  version-new.html  runs.html  run.html
+  static/
+    icons.svg                    ← §3 的 sprite
+    css/
+      tokens.css                 ← §1 原封不動
+      base.css                   ← reset、排版、.btn-*、.icon
+      layout.css                 ← shell、列表、卡片
+    js/
+      api.js                     ← fetch 包裝：base URL、錯誤格式、欄位名只在這裡出現
+      store.js                   ← 約 40 行發布／訂閱，只有 run.html 需要
+      shell.js                   ← §5.1
+      components/
+        streaming-output.js  run-timeline.js  version-upload.js  endpoints-card.js
+      pages/
+        agents.js  agent.js  version-new.js  runs.js  run.js
+```
+
+每個 `.html` 只做三件事：載入 CSS、`<main id="app">`、`<script type="module" src="…/pages/x.js">`。
+
+### 6.2 `api.js` 是契約的唯一出口
+
+**`api-contract.md` 的欄位名只准出現在 `api.js` 裡一次。** 頁面拿的是它回傳的物件。
+
+```js
+const BASE = '/v1';
+export class ApiError extends Error {
+  constructor(e) { super(e.message); Object.assign(this, e); }   // code / run_id / retryable
+}
+async function req(path, opts = {}) {
+  const r = await fetch(BASE + path, opts);
+  if (!r.ok) throw new ApiError((await r.json()).error);         // 統一錯誤格式，SPEC §8.4
+  return r.status === 204 ? null : r.json();
+}
+export const listRuns   = (q)  => req('/runs?' + new URLSearchParams(q));
+export const getRun     = (id) => req(`/runs/${id}`);
+export const cancelRun  = (id) => req(`/runs/${id}/cancel`, { method: 'POST' });
+```
+
+沒有型別檢查（ADR-0006 的已知代價），**所以這層的紀律是唯一的防線**。
+頁面裡出現 `data.run_id` 以外的手打欄位名 → 退回。
+
+### 6.3 硬性規則
+
+1. **不准引入任何執行期函式庫**（React / Vue / Alpine / htmx / jQuery / lodash 全部不准）。
+   覺得需要 → 開 `SPEC-QUESTION`，不要自己裝。
+2. **不准有建置步驟。** 瀏覽器直接吃 `.html` / `.css` / `.js`。沒有 `package.json`。
+3. **不准用 `innerHTML` 寫入任何來自 API 或使用者的字串。** 樣板字串只用於固定結構，
+   動態內容一律 `textContent`。這是 vanilla 最容易出的 XSS。
+4. **不准寫前端路由器。** 網址由 `api` 的五條路由給出。
+5. **不准寫死色碼、間距、字級。** 只引用 §1 的 CSS 變數。
+6. **每個 `mount()` 都要能 `destroy()`**，並且真的關掉 `EventSource` 與 `setInterval`。
+
+### 6.4 認證（MVP 無）
+
+MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session cookie**
+（`HttpOnly` + `SameSite=Lax`）。
+**不要把 `api_key` 放 `localStorage`** —— 它是長期憑證，一個 XSS 就整把拿走。
+
+---
+
+## 7. 無障礙底線（不可妥協）
 
 - 所有互動元素可鍵盤操作，focus 用 2px `--border-focus` outline + 2px offset，**清楚可見**
 - 文字對比 ≥ 4.5:1。`--text-secondary` (#888) 在 `--bg-base` (#0d0d0d) 上約 5.4:1 ✓；
   **`--text-disabled` 只能用於非必要資訊**
 - 狀態不能只靠顏色 —— §2 每個狀態都配了文字標籤
 - 串流區塊 `aria-live="polite"`
+- **原生元素優先**：`<button>` / `<dialog>` / `<details>` / `<a>`。
+  用 `<div onclick>` 假裝按鈕 → 鍵盤與螢幕報讀器全部失效，一律退回
 - 尊重 `prefers-reduced-motion`
 
 ---
 
-## 7. 變更紀錄
+## 8. 變更紀錄
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
 | v0.1.0 | 2026-09-20 | 初版 | @ui-designer |
 | v0.2.0 | 2026-09-20 | 改採 Stock-Insight-Chat 深色單色設計語言；**移除全部 emoji 圖示**，狀態改用圓點 + 文字；補齊尺寸/比例 token（控制項高度、圖示尺寸、版面寬度） | @ui-designer |
+| v0.3.0 | 2026-09-20 | 依 ADR-0005 降維：Console 收斂成五個畫面；移除 `<AgentWizard>` 與 `<FlowCanvas>`；新增 `<VersionUpload>` 與 `<EndpointsCard>`。設計 token 與無障礙底線不變 | @ui-designer |
+| v0.4.0 | 2026-09-20 | 依 [ADR-0006](./adr/ADR-0006-vanilla-frontend.md) 改用原生 HTML + CSS + ES modules（零建置）：§5 元件規格改寫成 `mount(el, props)` module；新增 §6 前端結構與實作約束（檔案配置、`api.js` 契約出口、六條硬性規則、認證）；§3 圖示改為自製 SVG sprite；RunTimeline 的虛擬捲動降級為分頁載入。**§0–§4 的設計語言、token、狀態語言、五態規範完全不變** | @ui-designer |

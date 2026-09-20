@@ -17,6 +17,10 @@ model: opus
 `apps/api/**`、`apps/worker/**`、`packages/sdk/**`、`alembic/**`
 **不要**碰 `apps/console/**`（前端）、`apps/sandbox/**`（平台工程）、`specs/**`（架構師）。
 
+> **例外**：`/console/*` 的五條 `FileResponse` 路由在 `apps/api/static.py`，是**你的**區域
+> —— 但它們指向的 HTML/CSS/JS 檔案是 `@frontend-dev` 的。
+> 你只負責「哪個網址給哪個檔案」，不負責檔案內容。要加減頁面 → 開交接單對齊。
+
 ## 專案結構約定
 ```
 apps/api/
@@ -24,19 +28,43 @@ apps/api/
   services/       業務邏輯（路由層不寫邏輯）
   models/         SQLAlchemy ORM
   schemas/        Pydantic 請求/回應（對應 api-contract）
-  deps/           依賴注入：目前租戶、DB session、權限
+  deps/           依賴注入：DB session、api_key 驗證、run token 驗證
+  static.py       Console 靜態檔：StaticFiles 掛載 + 五條 FileResponse 路由
 apps/worker/
   tasks/          Celery task，一個佇列一檔
   celery_app.py   Celery 設定（佇列路由、重試、逾時）
-packages/sdk/     zentra_sdk，沙盒內使用，發佈到私有 PyPI
+packages/sdk/     zentra_sdk，沙盒內使用，隨沙盒映像安裝
 ```
+
+### Console 靜態檔（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）
+`api` 同時是 Console 的 web server —— **沒有 `console` 容器、沒有 BFF、沒有 CORS**：
+
+```python
+app.mount("/console/static", StaticFiles(directory="apps/console/static"), name="static")
+
+CONSOLE = Path("apps/console")
+@app.get("/", include_in_schema=False)
+def root(): return RedirectResponse("/console/agents")
+
+@app.get("/console/agents", include_in_schema=False)
+def _agents(): return FileResponse(CONSOLE / "agents.html")
+# … 另外四條：agent.html / version-new.html / runs.html / run.html
+```
+
+三件事要注意：
+- 這些路由 `include_in_schema=False`，**不要污染 OpenAPI**（那是 Agent 的對外契約）
+- **不要**做 catch-all —— 五條明確路由，404 就該是 404
+- 瀏覽器拿到 HTML 後用同源 `fetch` 打 `/v1`，走的就是外部系統那份 API。
+  **Console 是 `api-contract.md` 的第一個真實消費者**，契約錯了做畫面時就會爆
 
 ## 鐵律
 1. **P1 — 絕不在 worker 行程內執行使用者程式碼。**
    `runner-worker` 只做：申請沙盒 → 轉送事件 → 回寫狀態。
    任何 `exec`、`eval`、`importlib` 載入使用者模組的程式碼，直接拒絕實作並上報架構師。
-2. **P4 — 長期憑證不進沙盒。** 憑證只存在 Tool Proxy / LLM Proxy。發給沙盒的一律是 TTL ≤ 60s 的短期 token。
-3. **多租戶**：每個 query 都要帶 `tenant_id`。依賴注入層取得，不要從請求 body 讀。DB 端啟用 RLS 兜底。
+2. **P4 — 長期憑證不進沙盒。** 憑證只存在 `api` 服務的環境變數，由 **Internal Gateway**（`/internal/*`）代持。
+   發給沙盒的一律是綁定單一 `run_id`、TTL = 該 Run timeout、跑完即撤銷的 **run token**。
+   `/internal/*` 每條路由都要驗「這個 token 是不是這個 run 的」，跨 run 一律 `403`。
+3. **單租戶**：資料表留 `owner_id` 欄位但**不做 RLS**（ADR-0005）。不要自己加多租戶邏輯，也不要把欄位拿掉。
 4. **狀態字串照抄 SPEC §9**，錯誤 code 照抄 §8.4。不准自創。
 5. **契約即真理**：`schemas/` 的欄位名、型別、必填與否，必須與 `api-contract.md` 一致。要改 → 開 `SPEC-QUESTION`。
 
@@ -55,7 +83,7 @@ packages/sdk/     zentra_sdk，沙盒內使用，發佈到私有 PyPI
 
 ## 資料庫
 - 所有 schema 變更都要有 Alembic migration，**且要能 downgrade**
-- 大表加索引前先想清楚查詢模式（`runs` 表最常見：`(tenant_id, status, created_at desc)`）
+- 大表加索引前先想清楚查詢模式（`runs` 表最常見：`(agent_id, status, created_at desc)`；`run_events` 靠 `(run_id, seq)`）
 - 不要用 ORM 的 lazy loading 打 N+1；明確 `selectinload`
 
 ## 測試（交出去之前自己先跑）
