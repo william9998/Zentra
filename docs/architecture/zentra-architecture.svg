@@ -1,58 +1,55 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 1075" role="img" aria-label="Zentra 平台基礎設施架構圖：外部系統經接入層進入 Kubernetes 叢集，叢集內分為平台服務節點池與沙盒專用節點池，沙盒池使用 gVisor 隔離，對外經由受控 Proxy，底部為受管資料服務。">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 1900" role="img" aria-label="Zentra 平台實作層級架構圖：接入層、控制平面、Celery 派工層、沙盒專用節點池與五層隔離、受控出口 Proxy，以及文件知識層、資料層與觀測層。">
 <style>
-  svg{--panel:#fff;--s1:rgba(18,18,16,.028);--line-hard:#b9b9b2;--line-vm:#8a8a82;
-    --ink:#1a1a1c;--ink-2:#5c5c57;--ink-3:#8a8a83;
+  svg{--panel:#fff;--s1:rgba(18,18,16,.028);--s2:rgba(18,18,16,.05);--line:#e3e3de;
+    --line-hard:#b9b9b2;--line-vm:#8a8a82;--ink:#1a1a1c;--ink-2:#5c5c57;--ink-3:#8a8a83;
     --c-sec:#D13212;--c-net:#8C4FFF;--c-comp:#ED7100;--c-db:#3F51D4;--c-ana:#5E8C0C;
-    --c-sbx:#C7291F;--sbx-fill:rgba(199,41,31,.045);--pool-fill:rgba(18,18,16,.022);
-    background:#fff}
+    --c-sbx:#C7291F;--sbx-fill:rgba(199,41,31,.045);--pool-fill:rgba(18,18,16,.022);background:#fff}
   @media (prefers-color-scheme:dark){
-    svg{--panel:#151515;--s1:rgba(255,255,255,.03);--line-hard:#454545;--line-vm:#6d6d6d;
-      --ink:#e8e8e8;--ink-2:#a0a0a0;--ink-3:#757575;
+    svg{--panel:#151515;--s1:rgba(255,255,255,.03);--s2:rgba(255,255,255,.06);--line:#2b2b2b;
+      --line-hard:#454545;--line-vm:#6d6d6d;--ink:#e8e8e8;--ink-2:#a0a0a0;--ink-3:#757575;
       --c-sec:#F2603C;--c-net:#A57BFF;--c-comp:#FF9227;--c-db:#6A78E8;--c-ana:#8CB93A;
-      --c-sbx:#F05A4D;--sbx-fill:rgba(240,90,77,.07);--pool-fill:rgba(255,255,255,.022);
-      background:#141414}
+      --c-sbx:#F05A4D;--sbx-fill:rgba(240,90,77,.07);--pool-fill:rgba(255,255,255,.022);background:#141414}
   }
   .f-c-sec{fill:var(--c-sec)} .f-c-net{fill:var(--c-net)} .f-c-comp{fill:var(--c-comp)}
   .f-c-db{fill:var(--c-db)} .f-c-ana{fill:var(--c-ana)} .f-c-sbx{fill:var(--c-sbx)}
-  .cloud{fill:none;stroke:var(--line-hard);stroke-width:1.4;stroke-dasharray:7 5}
+  .cloud{fill:none;stroke:var(--line-hard);stroke-width:1.5;stroke-dasharray:8 5}
   .pool{fill:var(--pool-fill);stroke:var(--line-hard);stroke-width:1.2;stroke-dasharray:6 4}
-  .pool-sbx{fill:var(--sbx-fill);stroke:var(--c-sbx);stroke-width:1.6;stroke-dasharray:6 4}
+  .pool-sbx{fill:var(--sbx-fill);stroke:var(--c-sbx);stroke-width:1.7;stroke-dasharray:6 4}
   .grp{fill:var(--s1);stroke:var(--line-hard);stroke-width:1}
-  .vm{fill:var(--panel);stroke:var(--line-vm);stroke-width:1.3}
-  .vm-sbx{fill:var(--panel);stroke:var(--c-sbx);stroke-width:1.3}
-  .gt{fill:var(--ink);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:12.5px;font-weight:600}
-  .gt-sbx{fill:var(--c-sbx);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:12.5px;font-weight:600}
-  .gs{fill:var(--ink-3);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:9.5px}
-  .vt{fill:var(--ink);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:11.5px;font-weight:600}
-  .it{fill:var(--ink);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:10.5px;font-weight:500}
-  .is{fill:var(--ink-2);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:9px}
-  .nt{fill:var(--ink-3);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:9px}
-  .mn{fill:var(--c-sbx);font-family:ui-monospace,'SF Mono',Menlo,Consolas,'Noto Sans TC',monospace;font-size:9px;font-weight:500}
-  .at{fill:var(--ink-2);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:9.5px}
-  .at-k{fill:var(--c-sbx);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:10px;font-weight:600}
-  .ln{stroke:var(--line-vm);stroke-width:1.4;fill:none}
-  .ln-d{stroke:var(--line-vm);stroke-width:1.2;fill:none;stroke-dasharray:4 4}
-  .ln-k{stroke:var(--c-sbx);stroke-width:1.9;fill:none}
+  .crd{fill:var(--panel);stroke:var(--line-vm);stroke-width:1.1}
+  .crd-sbx{fill:var(--panel);stroke:var(--c-sbx);stroke-width:1.2}
+  .chip{fill:var(--s2);stroke:var(--line);stroke-width:1}
+  .chip-r{fill:var(--sbx-fill);stroke:var(--c-sbx);stroke-width:1.1}
+  .lyr{fill:var(--s1);stroke:var(--line-vm);stroke-width:1}
+  .gt{fill:var(--ink);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:15px;font-weight:600}
+  .gt-s{fill:var(--c-sbx);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:15px;font-weight:600}
+  .gs{fill:var(--ink-3);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:11px}
+  .vt{fill:var(--ink);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:13.5px;font-weight:600}
+  .it{fill:var(--ink);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:12.5px;font-weight:500}
+  .is{fill:var(--ink-2);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:10.5px}
+  .nt{fill:var(--ink-3);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:10.5px}
+  .mn{fill:var(--c-sbx);font-family:ui-monospace,'SF Mono',Menlo,Consolas,'Noto Sans TC',monospace;font-size:10.5px;font-weight:500}
+  .mn2{fill:var(--ink-2);font-family:ui-monospace,'SF Mono',Menlo,Consolas,'Noto Sans TC',monospace;font-size:10.5px}
+  .at{fill:var(--ink-2);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:11.5px}
+  .at-k{fill:var(--c-sbx);font-family:system-ui,-apple-system,'Segoe UI','PingFang TC','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:12px;font-weight:600}
+  .ln{stroke:var(--line-vm);stroke-width:1.5;fill:none}
+  .ln-d{stroke:var(--line-vm);stroke-width:1.3;fill:none;stroke-dasharray:4 4}
+  .ln-k{stroke:var(--c-sbx);stroke-width:2.1;fill:none}
   .ah{fill:var(--line-vm)} .ah-k{fill:var(--c-sbx)} .gl{fill:#fff}
 </style>
       <defs>
-        <marker id="ar" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7.5" markerHeight="6.5" orient="auto-start-reverse">
-          <polygon class="ah" points="0,0 10,4 0,8"/>
-        </marker>
-        <marker id="ark" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7" markerHeight="6" orient="auto-start-reverse">
-          <polygon class="ah-k" points="0,0 10,4 0,8"/>
-        </marker>
-
-        <!-- 白色圖徽，置於 22x22 方格內 -->
+        <marker id="ar" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto-start-reverse"><polygon class="ah" points="0,0 10,4 0,8"/></marker>
+        <marker id="ark" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="7.5" markerHeight="6.5" orient="auto-start-reverse"><polygon class="ah-k" points="0,0 10,4 0,8"/></marker>
         <g id="g-user"><circle class="gl" cx="11" cy="6.5" r="4.5"/><path class="gl" d="M1.5 21c0-5.2 4.3-8.5 9.5-8.5s9.5 3.3 9.5 8.5z"/></g>
         <g id="g-cloud"><path class="gl" d="M5.5 18.5A4.8 4.8 0 0 1 5 9a6.6 6.6 0 0 1 12.6-1.2 4.4 4.4 0 0 1-.6 10.7z"/></g>
         <g id="g-app"><rect class="gl" x="1" y="2" width="20" height="15" rx="2"/><rect class="gl" x="6" y="19" width="10" height="2" rx="1"/></g>
         <g id="g-plug"><rect class="gl" x="6" y="1" width="3" height="6" rx="1"/><rect class="gl" x="13" y="1" width="3" height="6" rx="1"/><path class="gl" d="M3 8h16v4a8 8 0 0 1-6 7.7V22h-4v-2.3A8 8 0 0 1 3 12z"/></g>
         <g id="g-shield"><path class="gl" d="M11 .8 20.5 4.5v6.8C20.5 16.8 11 21.4 11 21.4S1.5 16.8 1.5 11.3V4.5z"/></g>
+        <g id="g-lock"><path class="gl" d="M5.6 9V6.4a5.4 5.4 0 0 1 10.8 0V9h1.2a1.6 1.6 0 0 1 1.6 1.6v9a1.6 1.6 0 0 1-1.6 1.6H4.4a1.6 1.6 0 0 1-1.6-1.6v-9A1.6 1.6 0 0 1 4.4 9zm2.8 0h5.2V6.4a2.6 2.6 0 0 0-5.2 0z"/></g>
         <g id="g-gate"><path class="gl" d="M1 8h11V4l8 7-8 7v-4H1z"/></g>
-        <g id="g-mcp"><rect class="gl" x="1" y="4" width="20" height="5" rx="1.6"/><rect class="gl" x="1" y="13" width="20" height="5" rx="1.6"/><circle cx="4.6" cy="6.5" r="1.1" fill="#ED7100"/><circle cx="4.6" cy="15.5" r="1.1" fill="#ED7100"/></g>
+        <g id="g-mcp"><rect class="gl" x="1" y="4" width="20" height="5" rx="1.6"/><rect class="gl" x="1" y="13" width="20" height="5" rx="1.6"/></g>
         <g id="g-stream"><rect class="gl" x="1" y="3" width="20" height="2.6" rx="1.3"/><rect class="gl" x="1" y="9.7" width="14" height="2.6" rx="1.3"/><rect class="gl" x="1" y="16.4" width="17" height="2.6" rx="1.3"/><circle class="gl" cx="19" cy="11" r="2"/></g>
-        <g id="g-srv"><rect class="gl" x="1" y="2" width="20" height="5.6" rx="1.4"/><rect class="gl" x="1" y="10" width="20" height="5.6" rx="1.4"/><rect class="gl" x="1" y="18" width="20" height="3" rx="1.4"/><circle cx="4.4" cy="4.8" r="1.1" fill="#ED7100"/><circle cx="4.4" cy="12.8" r="1.1" fill="#ED7100"/></g>
+        <g id="g-srv"><rect class="gl" x="1" y="2" width="20" height="5.6" rx="1.4"/><rect class="gl" x="1" y="10" width="20" height="5.6" rx="1.4"/><rect class="gl" x="1" y="18" width="20" height="3" rx="1.4"/></g>
         <g id="g-pod"><path class="gl" d="M11 .9 20.6 6v10.4L11 21.5 1.4 16.4V6z"/></g>
         <g id="g-work"><path class="gl" d="M14.8 1a6 6 0 0 0-5 9.3L1 19.1 3.9 22l8.8-8.8A6 6 0 1 0 14.8 1m0 3.1a2.9 2.9 0 1 1 0 5.8 2.9 2.9 0 0 1 0-5.8"/></g>
         <g id="g-db"><ellipse class="gl" cx="11" cy="4.2" rx="9.4" ry="3.3"/><path class="gl" d="M1.6 7.2v10.6c0 1.8 4.2 3.3 9.4 3.3s9.4-1.5 9.4-3.3V7.2c0 1.8-4.2 3.3-9.4 3.3S1.6 9 1.6 7.2"/></g>
@@ -60,169 +57,389 @@
         <g id="g-queue"><rect class="gl" x="1" y="4" width="4.6" height="14" rx="1.4"/><rect class="gl" x="8.7" y="4" width="4.6" height="14" rx="1.4"/><rect class="gl" x="16.4" y="4" width="4.6" height="14" rx="1.4"/></g>
         <g id="g-bucket"><path class="gl" d="M1.6 3h18.8l-2.1 17.2c-.1.9-.9 1.6-1.8 1.6H5.5c-.9 0-1.7-.7-1.8-1.6z"/><rect class="gl" x="0" y="0" width="22" height="2.4" rx="1.2"/></g>
         <g id="g-proxy"><path class="gl" d="M.8 2.2h20.4L13.4 11v9.8L8.6 18v-7z"/></g>
-        <g id="g-lock"><path class="gl" d="M5.6 9V6.4a5.4 5.4 0 0 1 10.8 0V9h1.2a1.6 1.6 0 0 1 1.6 1.6v9a1.6 1.6 0 0 1-1.6 1.6H4.4a1.6 1.6 0 0 1-1.6-1.6v-9A1.6 1.6 0 0 1 4.4 9zm2.8 0h5.2V6.4a2.6 2.6 0 0 0-5.2 0z"/></g>
+        <g id="g-box"><rect class="gl" x="1" y="5" width="20" height="14" rx="2"/><rect class="gl" x="4" y="1" width="14" height="2.6" rx="1.3"/></g>
+        <g id="g-tag"><path class="gl" d="M1 1h10.6L21 10.4 11.6 19.8 1 9.2zm4.4 3.2a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4"/></g>
+        <g id="g-gauge"><path class="gl" d="M11 2a10 10 0 0 1 10 10v2H1v-2A10 10 0 0 1 11 2m0 3.5a1.6 1.6 0 0 0 0 3.2 1.6 1.6 0 0 0 0-3.2M5 8.6a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2m12 0a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2"/><rect class="gl" x="10" y="9" width="8" height="2.2" rx="1.1" transform="rotate(-35 10 9)"/></g>
+        <g id="g-chart"><rect class="gl" x="1" y="12" width="5" height="9" rx="1.2"/><rect class="gl" x="8.5" y="6" width="5" height="15" rx="1.2"/><rect class="gl" x="16" y="1" width="5" height="20" rx="1.2"/></g>
       </defs>
 
-      <!-- ══════════ 外部系統 ══════════ -->
-      <rect class="grp" x="40" y="40" width="480" height="128" rx="8"/>
-      <text class="gt" x="56" y="62">外部系統 / 使用者</text>
-      <rect x="90" y="74" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-app" x="101" y="85"/>
-      <text class="it" x="112" y="134" text-anchor="middle">業務系統 A</text>
-      <rect x="202" y="74" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-cloud" x="213" y="85"/>
-      <text class="it" x="224" y="134" text-anchor="middle">AI 平台系統</text>
-      <rect x="314" y="74" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-user" x="325" y="85"/>
-      <text class="it" x="336" y="134" text-anchor="middle">第三方應用</text>
-      <rect x="426" y="74" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-plug" x="437" y="85"/>
-      <text class="it" x="448" y="134" text-anchor="middle">MCP 用戶端</text>
+      <!-- ═══ 外部系統 ═══ -->
+      <rect class="grp" x="40" y="40" width="660" height="130" rx="9"/>
+      <text class="gt" x="60" y="66">外部系統 / 使用者</text>
+      <rect class="f-c-net" x="72" y="80" width="38" height="38" rx="8"/><g transform="translate(80,88) scale(1)"><use href="#g-app"/></g>
+      <text class="it" x="91" y="136" text-anchor="middle">業務系統 A</text>
+      <rect class="f-c-net" x="232" y="80" width="38" height="38" rx="8"/><g transform="translate(240,88)"><use href="#g-cloud"/></g>
+      <text class="it" x="251" y="136" text-anchor="middle">AI 平台系統</text>
+      <rect class="f-c-net" x="392" y="80" width="38" height="38" rx="8"/><g transform="translate(400,88)"><use href="#g-user"/></g>
+      <text class="it" x="411" y="136" text-anchor="middle">第三方應用</text>
+      <rect class="f-c-net" x="552" y="80" width="38" height="38" rx="8"/><g transform="translate(560,88)"><use href="#g-plug"/></g>
+      <text class="it" x="571" y="136" text-anchor="middle">MCP 用戶端</text>
+      <text class="nt" x="60" y="158">REST 或 MCP 兩種接口皆可呼叫；同一份 entrypoints 定義生成，行為一致</text>
 
-      <!-- ══════════ 外部服務 ══════════ -->
-      <rect class="grp" x="800" y="40" width="420" height="128" rx="8"/>
-      <text class="gt" x="816" y="62">外部服務</text>
-      <rect x="891" y="74" width="44" height="44" rx="8" class="f-c-ana"/><use href="#g-cloud" x="902" y="85"/>
-      <text class="it" x="913" y="134" text-anchor="middle">LLM 供應商 API</text>
-      <rect x="1085" y="74" width="44" height="44" rx="8" class="f-c-ana"/><use href="#g-plug" x="1096" y="85"/>
-      <text class="it" x="1107" y="134" text-anchor="middle">第三方工具 / 外接 MCP</text>
+      <!-- ═══ 外部服務 ═══ -->
+      <rect class="grp" x="980" y="40" width="660" height="130" rx="9"/>
+      <text class="gt" x="1000" y="66">外部服務</text>
+      <rect class="f-c-ana" x="1080" y="80" width="38" height="38" rx="8"/><g transform="translate(1088,88)"><use href="#g-cloud"/></g>
+      <text class="it" x="1099" y="136" text-anchor="middle">LLM 供應商 API</text>
+      <rect class="f-c-ana" x="1400" y="80" width="38" height="38" rx="8"/><g transform="translate(1408,88)"><use href="#g-plug"/></g>
+      <text class="it" x="1419" y="136" text-anchor="middle">第三方工具 / 外接 MCP</text>
+      <text class="nt" x="1000" y="158">沙盒不得直連；所有對外請求由 Proxy 代發並留稽核</text>
 
-      <!-- ══════════ Kubernetes 叢集 ══════════ -->
-      <rect class="cloud" x="40" y="204" width="1180" height="660" rx="10"/>
-      <rect x="56" y="216" width="22" height="22" rx="5" class="f-c-db"/><g transform="translate(59,219) scale(0.727)"><use href="#g-pod"/></g>
-      <text class="gt" x="86" y="226">Zentra Cloud</text>
-      <text class="gs" x="86" y="238">Kubernetes 叢集</text>
+      <!-- ═══ Platform ═══ -->
+      <rect class="cloud" x="40" y="210" width="1600" height="1230" rx="12"/>
+      <rect class="f-c-db" x="60" y="224" width="24" height="24" rx="6"/><g transform="translate(63,227) scale(0.818)"><use href="#g-pod"/></g>
+      <text class="gt" x="94" y="236">Platform</text>
+      <text class="gs" x="94" y="251">Kubernetes 叢集 · 多租戶 · 全表 Row Level Security</text>
 
       <!-- ── A 接入層 ── -->
-      <rect class="grp" x="68" y="254" width="1124" height="114" rx="8"/>
-      <text class="gt" x="84" y="276">接入層 / Ingress</text>
-      <rect x="198" y="288" width="44" height="44" rx="8" class="f-c-sec"/><use href="#g-lock" x="209" y="299"/>
-      <text class="it" x="220" y="348" text-anchor="middle">認證層</text>
-      <text class="is" x="220" y="361" text-anchor="middle">API Key · OIDC · 限流 · 租戶路由</text>
-      <rect x="471" y="288" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-gate" x="482" y="299"/>
-      <text class="it" x="493" y="348" text-anchor="middle">REST API Gateway</text>
-      <text class="is" x="493" y="361" text-anchor="middle">OpenAPI 3.1</text>
-      <rect x="744" y="288" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-mcp" x="755" y="299"/>
-      <text class="it" x="766" y="348" text-anchor="middle">MCP Gateway</text>
-      <text class="is" x="766" y="361" text-anchor="middle">Streamable HTTP</text>
-      <rect x="1017" y="288" width="44" height="44" rx="8" class="f-c-net"/><use href="#g-stream" x="1028" y="299"/>
-      <text class="it" x="1039" y="348" text-anchor="middle">SSE 事件串流</text>
-      <text class="is" x="1039" y="361" text-anchor="middle">即時回傳執行過程</text>
+      <rect class="grp" x="64" y="272" width="1552" height="150" rx="8"/>
+      <text class="gt" x="88" y="297">① 接入層 / Ingress</text>
+      <text class="gs" x="268" y="297">TLS 終止 · WAF · 租戶識別注入，所有下游查詢強制帶 tenant_id</text>
 
-      <!-- ── B1 平台服務節點池 ── -->
-      <rect class="pool" x="68" y="398" width="510" height="286" rx="8"/>
-      <text class="gt" x="84" y="420">節點池：平台服務</text>
-      <text class="gs" x="84" y="434">一般容器 runtime（runc）</text>
+      <rect class="crd" x="88" y="310" width="237" height="96" rx="7"/>
+      <rect class="f-c-net" x="102" y="324" width="26" height="26" rx="6"/><g transform="translate(104,326) scale(0.818)"><use href="#g-shield"/></g>
+      <text class="it" x="136" y="342">Ingress + WAF</text>
+      <text class="is" x="102" y="368">Ingress Controller · TLS 終止</text>
+      <text class="is" x="102" y="383">租戶 host / path 分流</text>
+      <text class="is" x="102" y="398">請求大小與速率上限</text>
 
-      <rect class="vm" x="86" y="448" width="232" height="216" rx="6"/>
-      <rect x="96" y="458" width="18" height="18" rx="4" class="f-c-comp"/><g transform="translate(98.5,460.5) scale(0.59)"><use href="#g-srv"/></g>
-      <text class="vt" x="120" y="471">應用服務 VM</text>
-      <rect x="116" y="492" width="40" height="40" rx="7" class="f-c-comp" opacity=".35"/>
-      <rect x="122" y="498" width="40" height="40" rx="7" class="f-c-comp" opacity=".6"/>
-      <rect x="128" y="504" width="40" height="40" rx="7" class="f-c-comp"/><use href="#g-srv" x="137" y="513"/>
-      <text class="it" x="148" y="560" text-anchor="middle">API Server</text>
-      <text class="is" x="148" y="573" text-anchor="middle">FastAPI × N</text>
-      <rect x="221" y="492" width="40" height="40" rx="7" class="f-c-ana" opacity=".35"/>
-      <rect x="227" y="498" width="40" height="40" rx="7" class="f-c-ana" opacity=".6"/>
-      <rect x="233" y="504" width="40" height="40" rx="7" class="f-c-ana"/><use href="#g-search" x="242" y="513"/>
-      <text class="it" x="253" y="560" text-anchor="middle">知識服務</text>
-      <text class="is" x="253" y="573" text-anchor="middle">索引 · 混合檢索</text>
-      <text class="nt" x="96" y="600">⑤ 混合搜尋文件模組在此執行，</text>
-      <text class="nt" x="96" y="613">向量與關鍵詞雙路召回後融合重排。</text>
-      <text class="nt" x="96" y="640">⑥ 觀測 Sidecar 隨每個 Pod 部署，</text>
-      <text class="nt" x="96" y="653">追蹤、指標與稽核統一上報。</text>
+      <rect class="crd" x="341" y="310" width="237" height="96" rx="7"/>
+      <rect class="f-c-sec" x="355" y="324" width="26" height="26" rx="6"/><g transform="translate(357,326) scale(0.818)"><use href="#g-lock"/></g>
+      <text class="it" x="389" y="342">認證 AuthN / AuthZ</text>
+      <text class="is" x="355" y="368">API Key · OIDC / JWT 驗簽</text>
+      <text class="is" x="355" y="383">scope 檢查 · 租戶綁定</text>
+      <text class="is" x="355" y="398">404 而非 403，不洩漏存在性</text>
 
-      <rect class="vm" x="332" y="448" width="228" height="216" rx="6"/>
-      <rect x="342" y="458" width="18" height="18" rx="4" class="f-c-comp"/><g transform="translate(344.5,460.5) scale(0.59)"><use href="#g-work"/></g>
-      <text class="vt" x="366" y="471">Worker VM</text>
-      <rect x="413" y="492" width="40" height="40" rx="7" class="f-c-comp" opacity=".35"/>
-      <rect x="419" y="498" width="40" height="40" rx="7" class="f-c-comp" opacity=".6"/>
-      <rect x="425" y="504" width="40" height="40" rx="7" class="f-c-comp"/><use href="#g-work" x="434" y="513"/>
-      <text class="it" x="445" y="560" text-anchor="middle">Celery Worker × N</text>
-      <text class="is" x="445" y="573" text-anchor="middle">依佇列深度自動擴縮</text>
-      <text class="nt" x="342" y="600">③ 派工層。Worker 只負責向</text>
-      <text class="nt" x="342" y="613">沙盒管理器申請環境並轉送事件，</text>
-      <text class="nt" x="342" y="626">全程不載入使用者程式碼。</text>
-      <text class="nt" x="342" y="653">技術：Celery + RabbitMQ</text>
+      <rect class="crd" x="594" y="310" width="237" height="96" rx="7"/>
+      <rect class="f-c-sec" x="608" y="324" width="26" height="26" rx="6"/><g transform="translate(610,326) scale(0.818)"><use href="#g-gauge"/></g>
+      <text class="it" x="642" y="342">限流與配額</text>
+      <text class="is" x="608" y="368">租戶 token bucket（Redis）</text>
+      <text class="is" x="608" y="383">併發 Run 上限 · 用量計數</text>
+      <text class="is" x="608" y="398">429 + Retry-After</text>
 
-      <!-- ── B2 沙盒專用節點池 ── -->
-      <rect class="pool-sbx" x="652" y="398" width="540" height="286" rx="8"/>
-      <text class="gt-sbx" x="668" y="420">節點池：沙盒專用</text>
-      <text class="gs" x="668" y="434">專用節點（taint/toleration）· 不與平台服務同機</text>
+      <rect class="crd" x="847" y="310" width="237" height="96" rx="7"/>
+      <rect class="f-c-net" x="861" y="324" width="26" height="26" rx="6"/><g transform="translate(863,326) scale(0.818)"><use href="#g-gate"/></g>
+      <text class="it" x="895" y="342">REST API Gateway</text>
+      <text class="is" x="861" y="368">FastAPI · OpenAPI 3.1</text>
+      <text class="is" x="861" y="383">Idempotency-Key（24h）</text>
+      <text class="is" x="861" y="398">202 + run_id，非同步不阻塞</text>
 
-      <rect class="vm-sbx" x="672" y="448" width="250" height="216" rx="6"/>
-      <rect x="684" y="458" width="18" height="18" rx="4" class="f-c-sbx"/><g transform="translate(686.5,460.5) scale(0.59)"><use href="#g-pod"/></g>
-      <text class="vt" x="708" y="471">沙盒節點 VM</text>
-      <rect x="765" y="492" width="40" height="40" rx="7" class="f-c-sbx" opacity=".3"/>
-      <rect x="771" y="498" width="40" height="40" rx="7" class="f-c-sbx" opacity=".55"/>
-      <rect x="777" y="504" width="40" height="40" rx="7" class="f-c-sbx"/><use href="#g-pod" x="786" y="513"/>
-      <text class="it" x="797" y="560" text-anchor="middle">Sandbox Pod × N</text>
-      <text class="is" x="797" y="573" text-anchor="middle">一次執行一個，用完銷毀</text>
-      <text class="mn" x="684" y="598">RuntimeClass = gvisor</text>
-      <text class="nt" x="684" y="613">seccomp · cap_drop ALL · non-root</text>
-      <text class="nt" x="684" y="626">唯讀根目錄 · tmpfs 工作區</text>
-      <text class="nt" x="684" y="653">Pod 內：LangGraph Runtime + 使用者程式碼</text>
+      <rect class="crd" x="1100" y="310" width="237" height="96" rx="7"/>
+      <rect class="f-c-net" x="1114" y="324" width="26" height="26" rx="6"/><g transform="translate(1116,326) scale(0.818)"><use href="#g-mcp"/></g>
+      <text class="it" x="1148" y="342">MCP Gateway</text>
+      <text class="is" x="1114" y="368">Streamable HTTP</text>
+      <text class="is" x="1114" y="383">OAuth 2.1 bearer · scope</text>
+      <text class="is" x="1114" y="398">tools/list · tools/call</text>
 
-      <rect class="vm-sbx" x="936" y="448" width="246" height="216" rx="6"/>
-      <rect x="948" y="458" width="18" height="18" rx="4" class="f-c-sbx"/><g transform="translate(950.5,460.5) scale(0.59)"><use href="#g-pod"/></g>
-      <text class="vt" x="972" y="471">沙盒節點 VM</text>
-      <rect x="1027" y="492" width="40" height="40" rx="7" class="f-c-sbx" opacity=".3"/>
-      <rect x="1033" y="498" width="40" height="40" rx="7" class="f-c-sbx" opacity=".55"/>
-      <rect x="1039" y="504" width="40" height="40" rx="7" class="f-c-sbx"/><use href="#g-pod" x="1048" y="513"/>
-      <text class="it" x="1059" y="560" text-anchor="middle">Sandbox Pod × N</text>
-      <text class="is" x="1059" y="573" text-anchor="middle">水平擴充，不共用狀態</text>
-      <text class="mn" x="948" y="598">NetworkPolicy = deny-all</text>
-      <text class="nt" x="948" y="613">封鎖內網與雲端 metadata 端點</text>
-      <text class="nt" x="948" y="626">唯一出口是下方 Proxy</text>
-      <text class="nt" x="948" y="653">④ 沙盒環境 — 技術：Kubernetes + gVisor</text>
+      <rect class="crd" x="1353" y="310" width="237" height="96" rx="7"/>
+      <rect class="f-c-net" x="1367" y="324" width="26" height="26" rx="6"/><g transform="translate(1369,326) scale(0.818)"><use href="#g-stream"/></g>
+      <text class="it" x="1401" y="342">SSE 事件串流</text>
+      <text class="is" x="1367" y="368">Redis Streams XREAD</text>
+      <text class="is" x="1367" y="383">Last-Event-ID 斷線續傳</text>
+      <text class="is" x="1367" y="398">逐節點 / token 即時回送</text>
 
-      <!-- ── C 受控出口 ── -->
-      <rect class="grp" x="68" y="716" width="1124" height="100" rx="8"/>
-      <text class="gt" x="84" y="738">受控出口</text>
-      <text class="gs" x="152" y="738">憑證由 Proxy 代持，不下放沙盒；所有請求留稽核</text>
-      <rect x="244" y="748" width="40" height="40" rx="7" class="f-c-sec"/><use href="#g-proxy" x="253" y="757"/>
-      <text class="it" x="296" y="768">Tool Proxy</text><text class="is" x="296" y="783">工具呼叫代持憑證</text>
-      <rect x="608" y="748" width="40" height="40" rx="7" class="f-c-sec"/><use href="#g-proxy" x="617" y="757"/>
-      <text class="it" x="660" y="768">LLM Proxy</text><text class="is" x="660" y="783">模型路由與 Token 計量</text>
-      <rect x="972" y="748" width="40" height="40" rx="7" class="f-c-sec"/><use href="#g-proxy" x="981" y="757"/>
-      <text class="it" x="1024" y="768">Egress Proxy</text><text class="is" x="1024" y="783">網域白名單，預設拒絕</text>
+      <!-- ── B 控制平面 ── -->
+      <rect class="grp" x="64" y="452" width="1552" height="170" rx="8"/>
+      <text class="gt" x="88" y="477">② 控制平面 Control Plane</text>
+      <text class="gs" x="320" y="477">Agent 的定義、打包、版本與策略。使用者程式碼在此只被「掃描與打包」，不被執行</text>
 
-      <!-- ══════════ 資料層 ══════════ -->
-      <rect class="grp" x="40" y="904" width="1180" height="142" rx="8"/>
-      <text class="gt" x="56" y="926">資料層 · 受管服務</text>
-      <rect x="149" y="938" width="44" height="44" rx="8" class="f-c-db"/><use href="#g-db" x="160" y="949"/>
-      <text class="it" x="171" y="1000" text-anchor="middle">PostgreSQL + pgvector</text>
-      <text class="is" x="171" y="1014" text-anchor="middle">中繼資料 · 執行紀錄 · 向量索引</text>
-      <rect x="378" y="938" width="44" height="44" rx="8" class="f-c-ana"/><use href="#g-search" x="389" y="949"/>
-      <text class="it" x="400" y="1000" text-anchor="middle">OpenSearch</text>
-      <text class="is" x="400" y="1014" text-anchor="middle">關鍵詞 BM25 索引</text>
-      <rect x="608" y="938" width="44" height="44" rx="8" class="f-c-db"/><use href="#g-db" x="619" y="949"/>
-      <text class="it" x="630" y="1000" text-anchor="middle">Redis</text>
-      <text class="is" x="630" y="1014" text-anchor="middle">快取 · 事件串流</text>
-      <rect x="837" y="938" width="44" height="44" rx="8" class="f-c-comp"/><use href="#g-queue" x="848" y="949"/>
-      <text class="it" x="859" y="1000" text-anchor="middle">RabbitMQ</text>
-      <text class="is" x="859" y="1014" text-anchor="middle">任務佇列 · 死信</text>
-      <rect x="1067" y="938" width="44" height="44" rx="8" class="f-c-ana"/><use href="#g-bucket" x="1078" y="949"/>
-      <text class="it" x="1089" y="1000" text-anchor="middle">MinIO / S3</text>
-      <text class="is" x="1089" y="1014" text-anchor="middle">程式碼包 · 文件原檔</text>
+      <rect class="crd" x="88" y="490" width="237" height="116" rx="7"/>
+      <rect class="f-c-comp" x="102" y="504" width="26" height="26" rx="6"/><g transform="translate(104,506) scale(0.818)"><use href="#g-srv"/></g>
+      <text class="it" x="136" y="522">Agent Service</text>
+      <text class="is" x="102" y="548">定義 CRUD · 發布</text>
+      <text class="is" x="102" y="563">Alias 切線上流量</text>
+      <text class="is" x="102" y="578">寫 runs 表（QUEUED）</text>
+      <text class="is" x="102" y="593">入列後立刻回 run_id</text>
 
-      <!-- ══════════ 連線 ══════════ -->
-      <line class="ln" x1="280" y1="168" x2="280" y2="250" marker-end="url(#ar)"/>
-      <text class="at" x="291" y="192">API / MCP 呼叫</text>
+      <rect class="crd" x="341" y="490" width="237" height="116" rx="7"/>
+      <rect class="f-c-comp" x="355" y="504" width="26" height="26" rx="6"/><g transform="translate(357,506) scale(0.818)"><use href="#g-box"/></g>
+      <text class="it" x="389" y="522">Build Service</text>
+      <text class="is" x="355" y="548">uv lock · hash 釘選</text>
+      <text class="is" x="355" y="563">CVE + License 掃描</text>
+      <text class="is" x="355" y="578">契約驗證 build()→StateGraph</text>
+      <text class="is" x="355" y="593">產出 image digest</text>
 
-      <line class="ln" x1="340" y1="368" x2="340" y2="394" marker-end="url(#ar)"/>
-      <text class="at" x="351" y="386">驗證後入列</text>
+      <rect class="crd" x="594" y="490" width="237" height="116" rx="7"/>
+      <rect class="f-c-comp" x="608" y="504" width="26" height="26" rx="6"/><g transform="translate(610,506) scale(0.818)"><use href="#g-tag"/></g>
+      <text class="it" x="642" y="522">Version Manager</text>
+      <text class="is" x="608" y="548">immutable agent@semver</text>
+      <text class="is" x="608" y="563">manifest + lockfile 凍結</text>
+      <text class="is" x="608" y="578">已發布版本不可改（P5）</text>
+      <text class="is" x="608" y="593">回溯靠 alias，不改舊版</text>
 
-      <line class="ln-k" x1="578" y1="540" x2="648" y2="540" marker-end="url(#ark)"/>
-      <text class="at-k" x="613" y="530" text-anchor="middle">申請沙盒</text>
-      <text class="nt" x="613" y="562" text-anchor="middle">不是「執行」</text>
+      <rect class="crd" x="847" y="490" width="237" height="116" rx="7"/>
+      <rect class="f-c-net" x="861" y="504" width="26" height="26" rx="6"/><g transform="translate(863,506) scale(0.818)"><use href="#g-gate"/></g>
+      <text class="it" x="895" y="522">Interface Generator</text>
+      <text class="is" x="861" y="548">entrypoints 單一來源</text>
+      <text class="is" x="861" y="563">→ OpenAPI 3.1 operation</text>
+      <text class="is" x="861" y="578">→ MCP tool schema</text>
+      <text class="is" x="861" y="593">契約測試驗證兩者等價</text>
 
-      <line class="ln" x1="922" y1="684" x2="922" y2="712" marker-end="url(#ar)"/>
+      <rect class="crd" x="1100" y="490" width="237" height="116" rx="7"/>
+      <rect class="f-c-sec" x="1114" y="504" width="26" height="26" rx="6"/><g transform="translate(1116,506) scale(0.818)"><use href="#g-shield"/></g>
+      <text class="it" x="1148" y="522">Policy Engine</text>
+      <text class="is" x="1114" y="548">RBAC / ABAC</text>
+      <text class="is" x="1114" y="563">Egress 網域白名單下發</text>
+      <text class="is" x="1114" y="578">發布前合規檢核</text>
+      <text class="is" x="1114" y="593">資源上限核定</text>
 
-      <polyline class="ln" points="1192,766 1246,766 1246,104 1226,104" marker-end="url(#ar)"/>
-      <text class="at" x="1262" y="430" text-anchor="middle" transform="rotate(-90 1262 430)">沙盒對外的唯一出口</text>
+      <rect class="crd" x="1353" y="490" width="237" height="116" rx="7"/>
+      <rect class="f-c-db" x="1367" y="504" width="26" height="26" rx="6"/><g transform="translate(1369,506) scale(0.818)"><use href="#g-db"/></g>
+      <text class="it" x="1401" y="522">Registry 群</text>
+      <text class="is" x="1367" y="548">Agent Registry</text>
+      <text class="is" x="1367" y="563">Tool · Skill Registry</text>
+      <text class="is" x="1367" y="578">Knowledge Registry</text>
+      <text class="is" x="1367" y="593">版本與綁定關係</text>
 
-      <polyline class="ln-d" points="150,716 150,690" marker-end="url(#ar)"/>
-      <text class="at" x="161" y="706">工具 · 檢索回呼</text>
+      <!-- ── C 派工層 ── -->
+      <rect class="grp" x="64" y="652" width="1552" height="252" rx="8"/>
+      <text class="gt" x="88" y="677">③ 派工層 Dispatch — Celery + RabbitMQ</text>
+      <text class="gs" x="470" y="677">acks_late=True · run_id 冪等 · 指數退避 + jitter · 已終結狀態直接返回不重跑</text>
 
-      <line class="ln" x1="340" y1="864" x2="340" y2="900" marker-end="url(#ar)"/>
-      <text class="at" x="351" y="886">讀寫 · 檢索</text>
+      <!-- C1 生產者 -->
+      <rect class="pool" x="88" y="692" width="270" height="196" rx="7"/>
+      <text class="vt" x="104" y="714">任務生產者</text>
+      <rect class="chip" x="104" y="726" width="238" height="34" rx="5"/>
+      <text class="is" x="116" y="741">API Gateway</text><text class="nt" x="116" y="754">使用者即時觸發</text>
+      <rect class="chip" x="104" y="766" width="238" height="34" rx="5"/>
+      <text class="is" x="116" y="781">Celery Beat</text><text class="nt" x="116" y="794">排程 Agent · cron</text>
+      <rect class="chip" x="104" y="806" width="238" height="34" rx="5"/>
+      <text class="is" x="116" y="821">Webhook / Event</text><text class="nt" x="116" y="834">外部事件觸發</text>
+      <rect class="chip" x="104" y="846" width="238" height="34" rx="5"/>
+      <text class="is" x="116" y="861">Agent Flow 展開</text><text class="nt" x="116" y="874">chord fan-out / fan-in</text>
 
-      <text class="mn" x="700" y="886">沙盒節點不直連資料層，一律經 Proxy 與平台服務</text>
+      <!-- C2 佇列 -->
+      <rect class="pool" x="374" y="692" width="596" height="196" rx="7"/>
+      <text class="vt" x="390" y="714">RabbitMQ 佇列拓撲</text>
+      <rect class="f-c-comp" x="898" y="700" width="22" height="22" rx="5"/><g transform="translate(900,702) scale(0.727)"><use href="#g-queue"/></g>
+      <rect class="chip" x="390" y="726" width="280" height="38" rx="5"/>
+      <text class="it" x="402" y="742">q.agent.short</text><text class="nt" x="402" y="757">≤ 60s · 高併發 · concurrency=8</text>
+      <rect class="chip" x="390" y="770" width="280" height="38" rx="5"/>
+      <text class="it" x="402" y="786">q.agent.long</text><text class="nt" x="402" y="801">≤ 6h · prefetch=1 · 獨立 pool</text>
+      <rect class="chip" x="390" y="814" width="280" height="38" rx="5"/>
+      <text class="it" x="402" y="830">q.agent.priority</text><text class="nt" x="402" y="845">付費租戶優先消費</text>
+      <rect class="chip" x="682" y="726" width="272" height="38" rx="5"/>
+      <text class="it" x="694" y="742">q.build</text><text class="nt" x="694" y="757">打包 · 依賴解析 · 掃描</text>
+      <rect class="chip" x="682" y="770" width="272" height="38" rx="5"/>
+      <text class="it" x="694" y="786">q.ingest</text><text class="nt" x="694" y="801">文件解析 · 切分 · 向量化</text>
+      <rect class="chip" x="682" y="814" width="272" height="38" rx="5"/>
+      <text class="it" x="694" y="830">q.eval</text><text class="nt" x="694" y="845">QA 回歸評測資料集</text>
+      <rect class="chip-r" x="390" y="858" width="564" height="22" rx="5"/>
+      <text class="mn" x="402" y="873">q.dead_letter — 重試耗盡進死信，觸發告警並保留原始訊息供人工重放</text>
+
+      <!-- C3 Worker Pools -->
+      <rect class="pool" x="986" y="692" width="604" height="196" rx="7"/>
+      <text class="vt" x="1002" y="714">Worker Pools（獨立擴縮，不執行使用者程式碼）</text>
+      <rect class="crd" x="1002" y="726" width="284" height="60" rx="6"/>
+      <rect class="f-c-comp" x="1014" y="738" width="24" height="24" rx="5"/><g transform="translate(1016,740) scale(0.727)"><use href="#g-work"/></g>
+      <text class="it" x="1046" y="748">runner-worker × N</text>
+      <text class="nt" x="1046" y="762">concurrency=8 · acks_late</text>
+      <text class="nt" x="1014" y="778">申請沙盒 → 轉送事件 → 回寫狀態</text>
+      <rect class="crd" x="1298" y="726" width="280" height="60" rx="6"/>
+      <rect class="f-c-comp" x="1310" y="738" width="24" height="24" rx="5"/><g transform="translate(1312,740) scale(0.727)"><use href="#g-work"/></g>
+      <text class="it" x="1342" y="748">runner-worker-long × M</text>
+      <text class="nt" x="1342" y="762">concurrency=1 · 長任務</text>
+      <text class="nt" x="1310" y="778">soft_time_limit 先於 time_limit</text>
+      <rect class="chip" x="1002" y="794" width="186" height="34" rx="5"/>
+      <text class="is" x="1014" y="809">build-worker × K</text><text class="nt" x="1014" y="822">需較大磁碟 · 隔離環境</text>
+      <rect class="chip" x="1200" y="794" width="186" height="34" rx="5"/>
+      <text class="is" x="1212" y="809">ingest-worker × J</text><text class="nt" x="1212" y="822">CPU / GPU 密集</text>
+      <rect class="chip" x="1398" y="794" width="180" height="34" rx="5"/>
+      <text class="is" x="1410" y="809">eval-worker</text><text class="nt" x="1410" y="822">回歸評測</text>
+      <rect class="chip" x="1002" y="838" width="576" height="42" rx="5"/>
+      <text class="is" x="1014" y="854">KEDA Autoscaler — 依佇列深度擴縮 worker 副本數；Redis 作 result backend</text>
+      <text class="nt" x="1014" y="871">重試前先查 Run 狀態，已終結（SUCCEEDED/FAILED/CANCELLED）直接返回，避免重複扣費與重複呼叫外部 API</text>
+
+      <!-- ── D 沙盒節點池 ── -->
+      <rect class="pool-sbx" x="64" y="934" width="1552" height="340" rx="8"/>
+      <text class="gt-s" x="88" y="959">④ 節點池：沙盒專用 — Kubernetes + gVisor</text>
+      <text class="gs" x="478" y="959">taint / toleration 專用節點，不與平台服務同機；逃逸後鄰居只有其他沙盒</text>
+
+      <!-- D1 Sandbox Manager -->
+      <rect class="crd-sbx" x="88" y="974" width="258" height="284" rx="7"/>
+      <rect class="f-c-sbx" x="102" y="988" width="26" height="26" rx="6"/><g transform="translate(104,990) scale(0.818)"><use href="#g-box"/></g>
+      <text class="vt" x="136" y="1007">Sandbox Manager</text>
+      <rect class="chip" x="102" y="1026" width="230" height="46" rx="5"/>
+      <text class="it" x="114" y="1043">Warm Pool</text>
+      <text class="nt" x="114" y="1058">熱門 image 預熱，P95 ≤ 800ms</text>
+      <rect class="chip" x="102" y="1078" width="230" height="46" rx="5"/>
+      <text class="it" x="114" y="1095">冷啟路徑</text>
+      <text class="nt" x="114" y="1110">拉 image + 啟動 ≤ 3s</text>
+      <rect class="chip" x="102" y="1130" width="230" height="46" rx="5"/>
+      <text class="it" x="114" y="1147">配額管控</text>
+      <text class="nt" x="114" y="1162">租戶併發上限 + 節點總量上限</text>
+      <rect class="chip-r" x="102" y="1182" width="230" height="62" rx="5"/>
+      <text class="mn" x="114" y="1199">一 Run 一盒，絕不重用</text>
+      <text class="nt" x="114" y="1215">結束即銷毀，tmpfs 不殘留</text>
+      <text class="nt" x="114" y="1231">HITL 中斷時存檔並釋放算力</text>
+
+      <!-- D2 Sandbox Pod 五層 -->
+      <rect class="crd-sbx" x="362" y="974" width="608" height="284" rx="7"/>
+      <rect class="f-c-sbx" x="376" y="988" width="26" height="26" rx="6"/><g transform="translate(378,990) scale(0.818)"><use href="#g-pod"/></g>
+      <text class="vt" x="410" y="1007">Sandbox Pod — 五層縱深防禦</text>
+      <text class="mn" x="376" y="1026">RuntimeClass = gvisor　｜　假設每一層都可能被突破</text>
+
+      <rect class="lyr" x="376" y="1034" width="580" height="40" rx="5"/>
+      <text class="it" x="388" y="1050">L1 網路</text>
+      <text class="nt" x="452" y="1050">NetworkPolicy 預設 deny · 封鎖內網 CIDR 與 169.254.169.254（雲端 metadata）</text>
+      <text class="nt" x="452" y="1066">唯一允許的出口是下方 Egress Proxy</text>
+
+      <rect class="lyr" x="376" y="1078" width="580" height="40" rx="5"/>
+      <text class="it" x="388" y="1094">L2 核心</text>
+      <text class="nt" x="452" y="1094">gVisor runsc 使用者態核心（systrap）· seccomp-bpf 白名單</text>
+      <text class="nt" x="452" y="1110">drop ALL capabilities · no-new-privileges · non-root UID 65534</text>
+
+      <rect class="lyr" x="376" y="1122" width="580" height="40" rx="5"/>
+      <text class="it" x="388" y="1138">L3 資源</text>
+      <text class="nt" x="452" y="1138">cgroups v2 — CPU 2 core · Mem 4GB · pids 256 · 無 swap</text>
+      <text class="nt" x="452" y="1154">wall-clock timeout · stdout 上限 10MB</text>
+
+      <rect class="lyr" x="376" y="1166" width="580" height="40" rx="5"/>
+      <text class="it" x="388" y="1182">L4 檔案</text>
+      <text class="nt" x="452" y="1182">/app 唯讀（使用者 code + venv）· /workspace tmpfs rw 512MB，隨盒銷毀</text>
+      <text class="nt" x="452" y="1198">無 hostPath · 無 docker.sock</text>
+
+      <rect class="lyr" x="376" y="1210" width="580" height="40" rx="5"/>
+      <text class="it" x="388" y="1226">L5 應用</text>
+      <text class="nt" x="452" y="1226">Zentra SDK 攔截層 — 禁自建 LLM client、禁裸 socket</text>
+      <text class="nt" x="452" y="1242">import hook 黑名單模組阻擋</text>
+
+      <!-- D3 Agent Runtime -->
+      <rect class="crd-sbx" x="986" y="974" width="604" height="284" rx="7"/>
+      <rect class="f-c-comp" x="1000" y="988" width="26" height="26" rx="6"/><g transform="translate(1002,990) scale(0.818)"><use href="#g-pod"/></g>
+      <text class="vt" x="1034" y="1007">Agent Runtime（Pod 內唯一入口）</text>
+      <text class="mn2" x="1000" y="1026">LangChain + LangGraph — 唯一允許的 Agent 框架（P2）</text>
+
+      <rect class="chip" x="1000" y="1034" width="576" height="42" rx="5"/>
+      <text class="it" x="1012" y="1050">Bootstrap</text>
+      <text class="nt" x="1012" y="1066">載入 manifest → import build() → 由平台 compile，注入 checkpointer 與 trace hook</text>
+
+      <rect class="chip" x="1000" y="1082" width="576" height="76" rx="5"/>
+      <text class="it" x="1012" y="1098">CompiledStateGraph</text>
+      <text class="nt" x="1012" y="1114">START → plan / route → 條件分支</text>
+      <text class="nt" x="1012" y="1130">├ tool_node（ToolNode）　├ knowledge_node（Hybrid Search）　├ llm_node（ctx.llm）</text>
+      <text class="nt" x="1012" y="1146">└ interrupt() 人工確認 → resume 續跑 → finalize → END</text>
+
+      <rect class="chip" x="1000" y="1164" width="282" height="42" rx="5"/>
+      <text class="it" x="1012" y="1180">持久化</text>
+      <text class="nt" x="1012" y="1196">PostgresSaver checkpoint + 跨 Run 長期記憶 Store</text>
+
+      <rect class="chip" x="1294" y="1164" width="282" height="42" rx="5"/>
+      <text class="it" x="1306" y="1180">Agent Server</text>
+      <text class="nt" x="1306" y="1196">/invoke · /stream · /mcp · /healthz</text>
+
+      <rect class="chip-r" x="1000" y="1212" width="576" height="38" rx="5"/>
+      <text class="mn" x="1012" y="1228">注入的憑證是 TTL ≤ 60s 的短期 token，且只能對 Proxy 使用（P4）</text>
+      <text class="nt" x="1012" y="1243">即使沙盒被完全攻陷，攻擊者拿到的也只是一個 60 秒後失效、僅限已授權工具的權杖</text>
+
+      <!-- ── E 受控出口 ── -->
+      <rect class="grp" x="64" y="1304" width="1552" height="120" rx="8"/>
+      <text class="gt" x="88" y="1328">⑤ 受控出口 Proxy 層</text>
+      <text class="gs" x="288" y="1328">沙盒對外的唯一路徑。長期憑證只存在於此，不下放沙盒；每筆請求寫稽核</text>
+
+      <rect class="crd" x="88" y="1340" width="364" height="70" rx="7"/>
+      <rect class="f-c-sec" x="102" y="1354" width="26" height="26" rx="6"/><g transform="translate(104,1356) scale(0.818)"><use href="#g-lock"/></g>
+      <text class="it" x="136" y="1372">Vault — Secret Manager</text>
+      <text class="is" x="102" y="1398">長期憑證只到 Proxy；對沙盒只簽發短期 token</text>
+
+      <rect class="crd" x="468" y="1340" width="364" height="70" rx="7"/>
+      <rect class="f-c-sec" x="482" y="1354" width="26" height="26" rx="6"/><g transform="translate(484,1356) scale(0.818)"><use href="#g-proxy"/></g>
+      <text class="it" x="516" y="1372">Tool Proxy</text>
+      <text class="is" x="482" y="1398">代持憑證 · 代呼叫 · 限流 · 逐筆稽核參數與結果碼</text>
+
+      <rect class="crd" x="848" y="1340" width="364" height="70" rx="7"/>
+      <rect class="f-c-sec" x="862" y="1354" width="26" height="26" rx="6"/><g transform="translate(864,1356) scale(0.818)"><use href="#g-proxy"/></g>
+      <text class="it" x="896" y="1372">LLM Proxy</text>
+      <text class="is" x="862" y="1398">模型路由 · Token 計量 · 成本歸因到 run_id</text>
+
+      <rect class="crd" x="1228" y="1340" width="364" height="70" rx="7"/>
+      <rect class="f-c-sec" x="1242" y="1354" width="26" height="26" rx="6"/><g transform="translate(1244,1356) scale(0.818)"><use href="#g-proxy"/></g>
+      <text class="it" x="1276" y="1372">Egress Proxy</text>
+      <text class="is" x="1242" y="1398">網域白名單（Policy 下發）· TLS 檢查 · 全量稽核</text>
+
+      <!-- ═══ 知識層 ═══ -->
+      <rect class="grp" x="40" y="1480" width="800" height="240" rx="9"/>
+      <text class="gt" x="60" y="1505">⑥ 文件知識層 — Ingestion 與 Hybrid Search</text>
+      <text class="gs" x="60" y="1522">由 ingest-worker 經 q.ingest 執行；Agent 透過 ctx.knowledge.search() 查詢</text>
+
+      <rect class="chip" x="60" y="1534" width="118" height="34" rx="5"/><text class="is" x="70" y="1549">1 解析 Parse</text><text class="nt" x="70" y="1562">版面 · 表格 · OCR</text>
+      <rect class="chip" x="186" y="1534" width="118" height="34" rx="5"/><text class="is" x="196" y="1549">2 正規化</text><text class="nt" x="196" y="1562">→ Markdown</text>
+      <rect class="chip" x="312" y="1534" width="118" height="34" rx="5"/><text class="is" x="322" y="1549">3 切分 Chunk</text><text class="nt" x="322" y="1562">語意 + 父子分塊</text>
+      <rect class="chip" x="438" y="1534" width="118" height="34" rx="5"/><text class="is" x="448" y="1549">4 擴充</text><text class="nt" x="448" y="1562">摘要 · 假設問題</text>
+      <rect class="chip" x="564" y="1534" width="118" height="34" rx="5"/><text class="is" x="574" y="1549">5 Embedding</text><text class="nt" x="574" y="1562">批次向量化</text>
+      <rect class="chip" x="690" y="1534" width="130" height="34" rx="5"/><text class="is" x="700" y="1549">6 索引 Index</text><text class="nt" x="700" y="1562">雙軌寫入</text>
+
+      <rect class="crd" x="60" y="1582" width="370" height="54" rx="6"/>
+      <rect class="f-c-db" x="72" y="1594" width="26" height="26" rx="6"/><g transform="translate(74,1596) scale(0.818)"><use href="#g-db"/></g>
+      <text class="it" x="106" y="1604">pgvector</text><text class="nt" x="106" y="1620">HNSW 向量索引 · 語意相似</text>
+      <rect class="crd" x="446" y="1582" width="374" height="54" rx="6"/>
+      <rect class="f-c-ana" x="458" y="1594" width="26" height="26" rx="6"/><g transform="translate(460,1596) scale(0.818)"><use href="#g-search"/></g>
+      <text class="it" x="492" y="1604">OpenSearch</text><text class="nt" x="492" y="1620">BM25 全文 · 精確關鍵詞</text>
+
+      <rect class="chip" x="60" y="1648" width="760" height="56" rx="6"/>
+      <text class="it" x="72" y="1665">Hybrid Search 查詢路徑</text>
+      <text class="nt" x="72" y="1681">Query 改寫 / HyDE → 向量與關鍵詞雙路召回 top-k → RRF 融合 → Cross-Encoder Rerank</text>
+      <text class="nt" x="72" y="1697">→ ACL 過濾（租戶 + 文件權限）→ 父分塊還原，回傳完整上下文</text>
+
+      <!-- ═══ 資料層 ═══ -->
+      <rect class="grp" x="870" y="1480" width="770" height="240" rx="9"/>
+      <text class="gt" x="890" y="1505">⑦ 資料層 — 受管服務</text>
+      <text class="gs" x="890" y="1522">所有含 tenant_id 的資料表啟用 Row Level Security；應用層過濾只是第一道防線</text>
+
+      <rect class="crd" x="890" y="1534" width="366" height="52" rx="6"/>
+      <rect class="f-c-db" x="902" y="1545" width="26" height="26" rx="6"/><g transform="translate(904,1547) scale(0.818)"><use href="#g-db"/></g>
+      <text class="it" x="936" y="1556">PostgreSQL + pgvector</text><text class="nt" x="936" y="1572">中繼資料 · runs · checkpoint · 向量索引</text>
+      <rect class="crd" x="1272" y="1534" width="352" height="52" rx="6"/>
+      <rect class="f-c-db" x="1284" y="1545" width="26" height="26" rx="6"/><g transform="translate(1286,1547) scale(0.818)"><use href="#g-db"/></g>
+      <text class="it" x="1318" y="1556">Redis</text><text class="nt" x="1318" y="1572">快取 · Streams 事件 · result backend</text>
+      <rect class="crd" x="890" y="1598" width="366" height="52" rx="6"/>
+      <rect class="f-c-comp" x="902" y="1609" width="26" height="26" rx="6"/><g transform="translate(904,1611) scale(0.818)"><use href="#g-queue"/></g>
+      <text class="it" x="936" y="1620">RabbitMQ</text><text class="nt" x="936" y="1636">任務 broker · 佇列拓撲 · 死信</text>
+      <rect class="crd" x="1272" y="1598" width="352" height="52" rx="6"/>
+      <rect class="f-c-ana" x="1284" y="1609" width="26" height="26" rx="6"/><g transform="translate(1286,1611) scale(0.818)"><use href="#g-bucket"/></g>
+      <text class="it" x="1318" y="1620">MinIO / S3</text><text class="nt" x="1318" y="1636">code bundle · 文件原檔 · artifact</text>
+      <rect class="crd" x="890" y="1662" width="734" height="46" rx="6"/>
+      <rect class="f-c-ana" x="902" y="1671" width="26" height="26" rx="6"/><g transform="translate(904,1673) scale(0.818)"><use href="#g-chart"/></g>
+      <text class="it" x="936" y="1682">ClickHouse</text><text class="nt" x="936" y="1698">用量與稽核分析 · 成本報表 · 長期留存</text>
+
+      <!-- ═══ 觀測層 ═══ -->
+      <rect class="grp" x="40" y="1760" width="1600" height="110" rx="9"/>
+      <text class="gt" x="60" y="1785">⑧ 觀測與紀錄層</text>
+      <text class="gs" x="224" y="1785">橫跨所有層，以 Sidecar 隨 Pod 部署；單一 run_id 即可還原完整現場與成本</text>
+      <rect class="crd" x="60" y="1796" width="380" height="56" rx="6"/>
+      <text class="it" x="74" y="1816">OpenTelemetry</text><text class="nt" x="74" y="1834">Trace / Metric / Log 統一上報</text>
+      <rect class="crd" x="456" y="1796" width="380" height="56" rx="6"/>
+      <text class="it" x="470" y="1816">Langfuse</text><text class="nt" x="470" y="1834">LLM trace · token 用量 · 成本歸因</text>
+      <rect class="crd" x="852" y="1796" width="380" height="56" rx="6"/>
+      <text class="it" x="866" y="1816">Prometheus + Grafana</text><text class="nt" x="866" y="1834">佇列深度 · 沙盒用量 · SLO 告警</text>
+      <rect class="crd" x="1248" y="1796" width="376" height="56" rx="6"/>
+      <text class="it" x="1262" y="1816">Audit Log</text><text class="nt" x="1262" y="1834">工具呼叫與外網請求 100% 留存，不可竄改</text>
+
+      <!-- ═══ 連線 ═══ -->
+      <line class="ln" x1="370" y1="170" x2="370" y2="268" marker-end="url(#ar)"/>
+      <text class="at" x="382" y="216">API / MCP 呼叫</text>
+
+      <line class="ln" x1="300" y1="422" x2="300" y2="448" marker-end="url(#ar)"/>
+      <text class="at" x="312" y="440">已驗證請求 · 已帶 tenant_id</text>
+
+      <line class="ln" x1="300" y1="622" x2="300" y2="648" marker-end="url(#ar)"/>
+      <text class="at" x="312" y="640">寫 runs 表（QUEUED）→ 送佇列</text>
+
+      <line class="ln-k" x1="300" y1="904" x2="300" y2="930" marker-end="url(#ark)"/>
+      <text class="at-k" x="312" y="922">runner-worker 申請沙盒 — 不是「執行」，worker 全程不載入使用者程式碼（P1）</text>
+
+      <line class="ln" x1="300" y1="1274" x2="300" y2="1300" marker-end="url(#ar)"/>
+      <text class="at" x="312" y="1292">沙盒對外的唯一路徑</text>
+
+      <polyline class="ln" points="1616,1364 1662,1364 1662,105 1646,105" marker-end="url(#ar)"/>
+      <text class="at" x="1678" y="740" text-anchor="middle" transform="rotate(-90 1678 740)">代發請求 · 憑證不離開 Proxy</text>
+
+      <line class="ln" x1="300" y1="1440" x2="300" y2="1476" marker-end="url(#ar)"/>
+      <text class="at" x="312" y="1466">索引 / 檢索</text>
+
+      <line class="ln" x1="1200" y1="1440" x2="1200" y2="1476" marker-end="url(#ar)"/>
+      <text class="at" x="1212" y="1466">讀寫</text>
+
+      <polyline class="ln-d" points="855,1440 855,1756" marker-end="url(#ar)"/>
+      <text class="at" x="847" y="1462" text-anchor="end">遙測 · 稽核</text>
     </svg>
