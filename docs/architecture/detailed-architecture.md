@@ -11,6 +11,14 @@
 
 ![Zentra 系統架構](zentra-architecture.svg)
 
+### 一次請求如何啟動沙盒
+
+[![Zentra 請求到沙盒的整體資料流](zentra-request-flow.svg)](zentra-request-flow.svg)
+
+這張圖由左到右呈現 REST／MCP 呼叫如何建立 Run、經 Redis 與 Celery 派工、透過 Docker API
+動態建立一 Run 一盒的 Sandbox，以及事件／結果如何經 Internal Gateway 回寫 PostgreSQL 並串流到前端。
+安全標示以目前實作為準：有 Docker hardening，**沒有 gVisor**，`l2_kernel_isolation=false`。
+
 一台主機、一個 `docker compose`、**四個**長駐服務，加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
 沙盒掛在一個沒有對外路由的網段上，唯一的對端是 `api` 服務的 Internal Gateway。
 Console 沒有自己的容器 —— 它是 `api` 服務出去的一包靜態檔。

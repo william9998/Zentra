@@ -32,7 +32,6 @@
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @backend-dev | ZEN-000 | — |
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-001 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 上傳新版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 | — |
-| **ZEN-006A** | **Console 早期切片**：Run 觀測頁 + 發起 Run（只用現有三個端點） | `REVIEW` | @frontend-dev + @backend-dev + @platform-eng；待 @qa-verifier 驗收 | ZEN-000 | — |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 | — |
 
 > **ZEN-000 現況（2026-09-21）**：四服務 compose、固定 Agent 的 API → Celery → 沙盒 → SSE 主線已跑通。
@@ -44,6 +43,24 @@
 > `coordination/DRIFT.md` 的首次 G1 裁定不通過；後端、平台及驗收腳本已修正列出的漂移，
 > 但需 spec-keeper 重驗；真實故障注入與逾時容器清理等驗收項仍待證據。
 > **維持 `REVIEW`，不得宣稱 `DONE`。** 詳見 [acceptance.md](../specs/features/ZEN-000/acceptance.md)。
+
+> **ZEN-006A 驗收裁定（2026-09-22，@qa-verifier）：`DONE`。**
+> 原為「有條件通過」，唯一阻擋是 `CHANGELOG.md` 缺條目（G5）；主 session 已補上三條，QA 明示補完即 `DONE`、不需複驗。
+> 證據：`tests/zen006a` **141 passed / 1 xfailed**（主 session 獨立複跑數字一致）；
+> `tests/zen000` 在 QA 以 socat 把容器的 postgres／redis 橋進主機後 **23 passed / 1 skipped**
+> —— 先前 10 條 DB 測試的 skip 是主機原生 Postgres 佔用 `127.0.0.1:5432` 造成，不是程式問題。
+> 三條契約偏離經 QA 逐條對照事前門檻，**判定不阻擋**，但**移交條件**：
+> ZEN-006 在 @ui-designer / @architect 裁決這三條之前**不得進 `SPEC_READY`**。
+>
+> **已知缺陷 `ZEN-006A-D1`（次要，不阻擋，未修）**：RUNNING 期間「已耗時」可能顯示 `—`，最長持續到下一個 1 秒 tick。
+> 成因是 `apps/console/static/js/pages/run.js` 的 `elapsedMs()` 用伺服器時間戳減瀏覽器 `Date.now()`，
+> 時鐘偏移（實測 `created_at` 快 +0.017s）使其為負，`dom.js` 的 `formatDuration()` 回 `—`。
+> 一行可修（`Math.max(0, …)`）。`tests/zen006a` 已用 `xfail` + `KNOWN_DEFECTS` 釘住，修好會變 `XPASS`。
+>
+> **未覆蓋，不得當成通過**：Safari／Firefox、窄螢幕、螢幕報讀器、`prefers-reduced-motion`、剪貼簿實際寫入、
+> 對比度量測、`token`／`log`／`custom` 的真實資料、**真實的 FAILED／CANCELLED Run**（該兩畫面是以 CDP 注入合成回應渲染）、
+> `Last-Event-ID` 續傳、負載測試、G1 的 spec-keeper 覆核。沙盒 L1–L4 本次未重跑（diff 半徑未觸及沙盒）。
+> 裁定全文：[qa-verifier 交接單](handoffs/ZEN-006A/qa-verifier-to-orchestrator.md)｜驗收條件：[acceptance.md](../specs/features/ZEN-006A/acceptance.md)
 
 > **ZEN-006A 整合驗證（2026-09-21，由主 session 執行）**：三個角色皆已交件，主 session 重建 `zentra-api` 映像後，
 > 對**跑著的 compose 環境 + headless Chrome** 實測完整流程（填 question → 送出 → 導頁 → 事件流跑完），**16/16 通過**。
@@ -88,7 +105,12 @@
 
 | # | 提問 | 由 | 狀態 | 裁決 |
 |---|---|---|---|---|
-| — | 暫無未決問題 | — | — | — |
+| Q-002 | ui-contract §2 要求狀態圓點 6px，但 §1 沒有對應尺寸 token。目前借用 `--radius-sm`（值剛好 6px）。是否新增 `--dot-size: 6px`？ | @frontend-dev | OPEN | — |
+| Q-003 | §4 規定 Empty 態要有「一行說明 + 一個 secondary 按鈕」。子區塊（進行中的事件時間軸）沒有合理動作，目前放「重新整理」。子區塊 Empty 可否省略按鈕？ | @frontend-dev | OPEN | — |
+| Q-004 | §6.1 檔案清單沒有共用工具模組，實作新增了 `static/js/dom.js`（安全建節點／圖示／計時器登記／複製／時間格式化）。保留，或指定併入哪個既有檔？ | @frontend-dev | OPEN | — |
+| Q-005 | §6.2 規定契約欄位名只准出現在 `api.js`。屬性存取已遵守，但畫面把 `run_id` / `llm_calls` / `cost_usd` 當**標籤文字**顯示。標籤文字算不算違規？ | @frontend-dev | OPEN | — |
+| Q-006 | 硬性規則 5「不准寫死間距」與 media query 衝突：CSS 變數不能用在 media query 條件裡，且零建置無法預處理。目前全 CSS 只有 `768px` 一個字面值斷點，可否接受？ | @frontend-dev | OPEN | — |
+| Q-007 | token 指定 `Inter` / `Outfit` / `Noto Sans TC`，但不引 CDN 也沒有字型檔。自帶字型檔（多幾百 KB 靜態資產）還是接受系統 fallback？目前是 fallback。 | @frontend-dev | OPEN | — |
 
 **提問格式**（新增時照抄）：
 ```
@@ -150,4 +172,4 @@ v0.1 的編號在降維後重排。**舊交接單或註解提到這些編號時�
 
 | ID | 任務 | 完成日 | 驗證者 |
 |---|---|---|---|
-| — | — | — | — |
+| ZEN-006A | Console 早期切片：Run 觀測頁 + 發起 Run（ZEN-006 的一小片，使用者授權提前） | 2026-09-22 | @qa-verifier |
