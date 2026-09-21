@@ -1,0 +1,104 @@
+/* specs/ui-contract.md v0.4.0 §1 —— 原封不動搬過來的設計 token。
+   這個檔案是 token 的唯一出處：其他 CSS 只准引用變數，不准出現字面值色碼、間距、字級。
+   要新增 token → 開 SPEC-QUESTION，不要在這裡自己加。 */
+
+:root {
+  /* ---- §1.1 色彩（深色，MVP 不做淺色模式）---- */
+
+  /* 底層 */
+  --bg-base:          #0d0d0d;   /* 頁面底色 */
+  --bg-sidebar:       #131313;
+  --bg-elevated:      #1a1a1a;   /* modal / dropdown / popover */
+  --bg-code:          #0a0a0a;
+
+  /* 表面（疊加式，不用實色） */
+  --surface-1:        rgba(255, 255, 255, 0.02);   /* 面板內容區 */
+  --surface-2:        rgba(255, 255, 255, 0.03);   /* 卡片 */
+  --surface-3:        rgba(255, 255, 255, 0.04);   /* 輸入框 */
+  --surface-hover:    rgba(255, 255, 255, 0.05);
+  --surface-active:   rgba(255, 255, 255, 0.08);
+
+  /* 邊框 */
+  --border-subtle:    rgba(255, 255, 255, 0.04);
+  --border-default:   #2a2a2a;
+  --border-strong:    #3a3a3a;
+  --border-focus:     #b0b0b0;
+
+  /* 文字 */
+  --text-primary:     #e0e0e0;
+  --text-secondary:   #888888;
+  --text-disabled:    #5a5a5a;
+
+  /* 主色 —— 高級灰，不是品牌彩色 */
+  --accent:           #b0b0b0;
+  --accent-hover:     #c8c8c8;
+  --accent-subtle:    rgba(176, 176, 176, 0.08);
+
+  /* 狀態色 —— 刻意降飽和度以貼合近黑底色 */
+  --status-queued:     #6b6b6b;
+  --status-scheduling: #8a8a8a;
+  --status-running:    #4a8fd4;
+  --status-waiting:    #c9a04a;   /* WAITING_INPUT 已移出 MVP：token 留著，不得使用 */
+  --status-succeeded:  #4a9070;
+  --status-failed:     #c25651;
+  --status-cancelled:  #4a4a4a;
+
+  --danger:  #c25651;
+  --warning: #c9a04a;
+  --success: #4a9070;
+
+  /* ---- §1.2 字體與字級 ---- */
+  --font-sans:    'Inter', -apple-system, 'Noto Sans TC', sans-serif;
+  --font-display: 'Outfit', 'Inter', sans-serif;     /* 只用於標題與品牌 */
+  --font-mono:    'SF Mono', 'Fira Code', Consolas, monospace;
+
+  --text-2xs: 11px;   /* 標籤、角標 */
+  --text-xs:  12px;   /* 次要說明、表頭 */
+  --text-sm:  13px;   /* ← 預設內文 */
+  --text-md:  14px;   /* 強調內文、輸入框 */
+  --text-lg:  16px;   /* 區塊標題 */
+  --text-xl:  20px;   /* 頁面標題 */
+  --text-2xl: 28px;   /* 大標（僅首頁 / 空狀態） */
+
+  --leading-tight:  1.3;   /* 標題 */
+  --leading-normal: 1.5;   /* 內文 */
+  --leading-relaxed:1.7;   /* 長篇閱讀、LLM 輸出 */
+
+  --weight-normal: 400;
+  --weight-medium: 500;   /* 強調用這個，不要用 600+ */
+
+  /* ---- §1.3 間距與幾何 ---- */
+
+  /* 間距：4px 基準，只用這幾階，不准插值 */
+  --space-1: 4px;   --space-2: 8px;   --space-3: 12px;  --space-4: 16px;
+  --space-5: 20px;  --space-6: 24px;  --space-8: 32px;  --space-12: 48px;  --space-16: 64px;
+
+  /* 圓角 */
+  --radius-xs:  4px;    /* 標籤、角標 */
+  --radius-sm:  6px;    /* 小按鈕、輸入框 */
+  --radius-md:  8px;    /* ← 預設 */
+  --radius-lg:  10px;   /* 卡片、面板 */
+  --radius-xl:  12px;   /* modal */
+  --radius-full:999px;  /* 膠囊、頭像 */
+
+  /* 控制項高度 —— 固定三階，不准自創 */
+  --control-sm: 28px;
+  --control-md: 32px;   /* ← 預設按鈕、輸入框 */
+  --control-lg: 40px;   /* 主要 CTA、搜尋列 */
+
+  /* 圖示尺寸 */
+  --icon-sm: 14px;   /* 內文行內 */
+  --icon-md: 16px;   /* ← 預設，按鈕內 */
+  --icon-lg: 18px;   /* 側欄導覽 */
+
+  /* 版面 */
+  --sidebar-width:   260px;
+  --sidebar-collapsed: 0;
+  --content-max:     1200px;   /* 列表、表格 */
+  --reading-max:     768px;    /* 表單、文件、LLM 輸出 */
+  --row-height:      44px;     /* 列表列 */
+  --row-height-compact: 36px;  /* 事件流、log */
+  --header-height:   52px;
+
+  --transition: 0.2s;
+}

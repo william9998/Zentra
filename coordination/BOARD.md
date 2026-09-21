@@ -32,6 +32,7 @@
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @backend-dev | ZEN-000 | — |
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-001 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 上傳新版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 | — |
+| **ZEN-006A** | **Console 早期切片**：Run 觀測頁 + 發起 Run（只用現有三個端點） | `REVIEW` | @frontend-dev + @backend-dev + @platform-eng；待 @qa-verifier 驗收 | ZEN-000 | — |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 | — |
 
 > **ZEN-000 現況（2026-09-21）**：四服務 compose、固定 Agent 的 API → Celery → 沙盒 → SSE 主線已跑通。
@@ -43,6 +44,33 @@
 > `coordination/DRIFT.md` 的首次 G1 裁定不通過；後端、平台及驗收腳本已修正列出的漂移，
 > 但需 spec-keeper 重驗；真實故障注入與逾時容器清理等驗收項仍待證據。
 > **維持 `REVIEW`，不得宣稱 `DONE`。** 詳見 [acceptance.md](../specs/features/ZEN-000/acceptance.md)。
+
+> **ZEN-006A 整合驗證（2026-09-21，由主 session 執行）**：三個角色皆已交件，主 session 重建 `zentra-api` 映像後，
+> 對**跑著的 compose 環境 + headless Chrome** 實測完整流程（填 question → 送出 → 導頁 → 事件流跑完），**16/16 通過**。
+> 重點證據：終態後 `/events` 請求數 = 1（`EventSource` 未重連重播）、注入 `<img src=x onerror>` 後 DOM 內 `img` 數 = 0、
+> 0 未捕捉例外 / 0 `console.error`、無水平捲動、`/openapi.json` 無 `/console` 洩漏。
+> `tests/zen000/` 對活的服務為 **14 passed / 10 skipped**（10 條公開 API 契約測試全過，無退化）。
+> 首輪發現 `run_id` 旁複製按鈕標籤直排（量得 13×36），已由 @frontend-dev 修正並對重建後容器複量為 24×18。
+>
+> **未驗證，不得當成已通過**：Safari / Firefox、窄螢幕、螢幕報讀器、`prefers-reduced-motion`、剪貼簿實際寫入、
+> `CANCELLED` 畫面（後端尚無此狀態路徑）、`token` / `log` / `custom` 事件的真實渲染（需 ZEN-002）。
+> `test_worker_recovery.py` 與 `test_gateway_db_integration.py` 的 DB 測試在本機仍 skipped：
+> 主機有原生 Postgres 佔用 `127.0.0.1:5432`，遮蔽容器的 postgres，從主機連不到測試資料庫。
+> 以上為主 session 的整合驗證，**不是 QA 裁定**；`DONE` 仍須 @qa-verifier 依驗收條件判定。
+
+> **ZEN-006A 提前的理由（2026-09-21）**：由**使用者直接授權**，把 ZEN-006 的 Run 觀測頁提前切一小片出來，
+> 目的是讓人能在瀏覽器上實際操作 ZEN-000 的骨架，而不是只能打 curl。**這不是把 ZEN-006 往前移**，
+> ZEN-006 本身維持 `BACKLOG`、維持依賴 ZEN-004。
+>
+> 範圍硬上限：**只准用已經存在的三個端點**（`POST /v1/agents/{id}/runs`、`GET /v1/runs/{id}`、
+> `GET /v1/runs/{id}/events`）。不做 Run 列表、不做 cancel、不做上傳、不做 MCP、不做另外三個畫面。
+>
+> **已知的契約偏離，待 @ui-designer 與 @architect 追認**（不得視為已核准）：
+> 1. `/` 暫時轉址到 `/console/runs`，非 `ui-contract.md` 表頭寫的 `/console/agents`（該頁此切片不存在）。
+> 2. `runs.html` 在 `GET /v1/runs` 上線前恆為 Empty 態，其「發起測試 Run」`<dialog>` 表單不在 `ui-contract.md` §5 的元件清單內。
+> 3. `runs.html` 用 `localStorage` 暫存最近 `run_id` 作為鷹架，ZEN-004 的列表端點上線後必須整段移除。
+>
+> ZEN-006 正式開工前，上述三點要嘛收斂回 `ui-contract.md`，要嘛刪掉。**不得預設它們已成為契約。**
 
 > **順序說明**：ZEN-000 刻意排第一，目的是**盡早證偽架構假設**而非交付功能。
 > 它一次碰到沙盒生命週期、Celery 冪等、平台注入 compile、事件串流四個高風險點。

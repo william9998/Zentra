@@ -1,0 +1,115 @@
+// shell.js —— ui-contract §5.1 的共用外框。
+// 每個 .html 只寫 <main id="app">，側欄與頂部列由這裡注入，不要複製貼上五份。
+//
+// 選中狀態由 location.pathname 判斷（startsWith），**沒有前端路由器**：
+// 網址由 api 的 FileResponse 路由給出（§6.3 規則 4）。
+
+import { el } from './dom.js';
+
+const SIDEBAR_KEY = 'zentra.console.sidebar';   // 只存 UI 偏好，永遠不存憑證（§6.4）
+
+// 固定結構，沒有任何動態字串 —— 唯一允許使用樣板字串的情況（§6.3 規則 3）。
+const FRAME = `
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-bot"/></svg>
+      <span>Zentra</span>
+    </div>
+    <nav class="nav" aria-label="主要導覽">
+      <span class="nav-item nav-item--disabled" aria-disabled="true" title="Agent 畫面在 ZEN-006 才會上線">
+        <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-box"/></svg>
+        <span>Agents</span>
+        <span class="nav-note">ZEN-006</span>
+      </span>
+      <a class="nav-item" href="/console/runs" data-nav="/console/runs">
+        <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-activity"/></svg>
+        <span>Runs</span>
+      </a>
+    </nav>
+  </aside>
+  <div class="shell-main">
+    <header class="topbar">
+      <button type="button" class="btn-ghost btn-sm shell-toggle" aria-expanded="true">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="/console/static/icons.svg#i-chevron-right"/></svg>
+        <span class="visually-hidden">切換側欄</span>
+      </button>
+      <nav class="breadcrumb" aria-label="麵包屑"></nav>
+    </header>
+  </div>
+`;
+
+/**
+ * mount(document.body, { breadcrumb: [{ text, href? }, …] })
+ * 最後一個 breadcrumb 項目視為目前頁面（mono、不可點）。
+ */
+export function mount(root, props = {}) {
+  const app = root.querySelector('#app');
+  const shell = el('div', 'shell');
+  shell.innerHTML = FRAME;
+  root.insertBefore(shell, app);
+  shell.querySelector('.shell-main').appendChild(app);
+
+  const breadcrumb = shell.querySelector('.breadcrumb');
+  const toggle = shell.querySelector('.shell-toggle');
+
+  const markActive = () => {
+    for (const link of shell.querySelectorAll('[data-nav]')) {
+      const target = link.getAttribute('data-nav');
+      link.classList.toggle('nav-item--active', location.pathname.startsWith(target));
+    }
+  };
+
+  const applyCollapsed = (collapsed) => {
+    shell.classList.toggle('shell--collapsed', collapsed);
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  };
+
+  let collapsed = false;
+  try {
+    collapsed = localStorage.getItem(SIDEBAR_KEY) === 'collapsed';
+  } catch (_) {
+    collapsed = false;   // 隱私模式可能整個丟例外，側欄預設展開即可
+  }
+  applyCollapsed(collapsed);
+
+  const onToggle = () => {
+    collapsed = !collapsed;
+    applyCollapsed(collapsed);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, collapsed ? 'collapsed' : 'expanded');
+    } catch (_) {
+      // 存不進去就算了，不影響操作。
+    }
+  };
+  toggle.addEventListener('click', onToggle);
+
+  const setBreadcrumb = (items) => {
+    breadcrumb.replaceChildren();
+    const list = Array.isArray(items) ? items : [];
+    list.forEach((item, index) => {
+      const isLast = index === list.length - 1;
+      if (index > 0) breadcrumb.appendChild(el('span', 'breadcrumb-sep', '/'));
+      if (item.href && !isLast) {
+        const link = el('a', 'breadcrumb-link', item.text);   // textContent，不是 innerHTML
+        link.href = item.href;
+        breadcrumb.appendChild(link);
+      } else {
+        breadcrumb.appendChild(el('span', isLast ? 'breadcrumb-current' : null, item.text));
+      }
+    });
+  };
+
+  markActive();
+  setBreadcrumb(props.breadcrumb);
+
+  return {
+    setBreadcrumb,
+    update(next = {}) {
+      setBreadcrumb(next.breadcrumb);
+    },
+    destroy() {
+      toggle.removeEventListener('click', onToggle);
+      // #app 留在原地：Console 是多頁架構，沒有客戶端切頁，不需要把外框拆回去。
+    },
+  };
+}

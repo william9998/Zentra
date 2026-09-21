@@ -7,6 +7,7 @@ from redis.asyncio import Redis
 from apps.api.config import get_settings
 from apps.api.errors import ZentraError, internal_error_handler, validation_error_handler, zentra_error_handler
 from apps.api.routers import internal, runs
+from apps.api.static import mount_console
 
 settings = get_settings()
 
@@ -31,6 +32,8 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(Exception, internal_error_handler)
 app.include_router(runs.router)
 app.include_router(internal.router)
+# Console（ADR-0006）：UI 路由，include_in_schema=False，不進 OpenAPI。
+mount_console(app)
 
 
 @app.get("/healthz", include_in_schema=False)

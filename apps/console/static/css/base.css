@@ -1,0 +1,264 @@
+/* base.css —— reset、排版、.btn-*、.icon、狀態指示器（ui-contract §2 / §3 / §5.6 / §7）。
+   只准引用 tokens.css 的變數，不准出現字面值色碼、間距、字級。 */
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-tight);
+}
+
+h1 { font-size: var(--text-xl); }
+h2 { font-size: var(--text-lg); }
+h3 { font-size: var(--text-md); }
+
+p { margin: 0; }
+
+a {
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+a:hover { color: var(--accent-hover); }
+
+ul, ol { margin: 0; padding: 0; list-style: none; }
+
+/* 有 display 的 class（例如 .btn-*）特異性比 UA 的 [hidden] 高，
+   不加這條的話 element.hidden = true 會沒有效果。 */
+[hidden] { display: none !important; }
+
+/* ---- 無障礙：focus ring 必須清楚可見（§7）---- */
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- §3 圖示 ---- */
+.icon {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  color: var(--text-secondary);
+  transition: color var(--transition);
+  flex: none;
+}
+
+.icon-sm { width: var(--icon-sm); height: var(--icon-sm); }
+.icon-lg { width: var(--icon-lg); height: var(--icon-lg); }
+
+a:hover .icon,
+button:hover .icon { color: var(--text-primary); }
+
+/* ---- §5.6 按鈕 ---- */
+.btn-primary,
+.btn-secondary,
+.btn-ghost,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-normal);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  /* 按鈕當 flex item 時不准被旁邊的長字串（例如 run_id）壓縮 —— 壓縮後標籤會一字一行。
+     兩條都是行為約束，不是尺寸，所以不牴觸「不准寫死尺寸」。 */
+  flex: none;
+  white-space: nowrap;
+}
+
+.btn-lg { height: var(--control-lg); }
+.btn-sm { height: var(--control-sm); padding: 0 var(--space-3); font-size: var(--text-xs); }
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg-base);
+}
+
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+.btn-secondary {
+  background: var(--surface-3);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.btn-secondary:hover:not(:disabled) { background: var(--surface-hover); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--bg-base);
+}
+
+button:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.btn-primary:disabled { background: var(--surface-3); border-color: var(--border-default); }
+
+/* ---- 表單 ---- */
+label {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+input[type="text"] {
+  width: 100%;
+  height: var(--control-lg);
+  padding: 0 var(--space-3);
+  background: var(--surface-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-md);
+}
+
+input[type="text"]::placeholder { color: var(--text-disabled); }
+
+input[type="text"]:focus-visible { border-color: var(--border-focus); }
+
+/* ---- 文字工具 ---- */
+.mono { font-family: var(--font-mono); }
+.text-secondary { color: var(--text-secondary); }
+.text-xs { font-size: var(--text-xs); }
+.text-2xs { font-size: var(--text-2xs); }
+
+.code {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--bg-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* ---- §2 Run 狀態的視覺語言：圓點 + 文字標籤，永遠不只靠顏色 ---- */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+}
+
+/* §2 指定圓點 6px，但 §1 沒有 6px 的尺寸 token；--radius-sm 是唯一的 6px 值。
+   建議新增 --dot-size（已列為 SPEC-QUESTION 候選），在那之前引用 --radius-sm 以免寫死字面值。 */
+.status-dot {
+  width: var(--radius-sm);
+  height: var(--radius-sm);
+  border-radius: var(--radius-full);
+  background: var(--status-queued);
+  flex: none;
+}
+
+.status-dot--QUEUED     { background: var(--status-queued); }
+.status-dot--SCHEDULING { background: var(--status-scheduling); animation: pulse 2s ease-in-out infinite; }
+.status-dot--RUNNING    { background: var(--status-running); animation: pulse 1.5s ease-in-out infinite; }
+.status-dot--SUCCEEDED  { background: var(--status-succeeded); }
+.status-dot--FAILED     { background: var(--status-failed); }
+.status-dot--CANCELLED  { background: var(--status-cancelled); }
+
+.status-label { color: var(--text-primary); font-weight: var(--weight-medium); }
+.status--CANCELLED .status-label { color: var(--text-disabled); }
+
+.status-detail {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* ---- Loading：骨架屏（§4）---- */
+.skeleton {
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.skeleton-line { height: var(--space-3); margin-bottom: var(--space-2); }
+.skeleton-line--wide { width: 100%; }
+.skeleton-line--half { width: 50%; }
+.skeleton-line--third { width: 33%; }
+
+@keyframes shimmer {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+/* ---- §7 尊重 prefers-reduced-motion：脈動改為明度差異 ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .status-dot--SCHEDULING { opacity: 0.7; }
+  .status-dot--RUNNING { opacity: 0.85; }
+  .skeleton { opacity: 0.6; }
+}

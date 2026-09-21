@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runs · Zentra Console</title>
+  <!-- ui-contract §6.1：每個 .html 只做三件事 —— 載入 CSS、<main id="app">、載入頁面 module。
+       沒有建置步驟、沒有 bundler、沒有執行期函式庫。 -->
+  <link rel="stylesheet" href="/console/static/css/tokens.css">
+  <link rel="stylesheet" href="/console/static/css/base.css">
+  <link rel="stylesheet" href="/console/static/css/layout.css">
+</head>
+<body>
+  <noscript>
+    <p>Zentra Console 需要 JavaScript。</p>
+  </noscript>
+  <main id="app"></main>
+  <script type="module" src="/console/static/js/pages/runs.js"></script>
+</body>
+</html>

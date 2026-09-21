@@ -1,0 +1,448 @@
+/* layout.css —— shell（§5.1）、卡片、事件時間軸（§5.3）、空狀態（§4）、dialog（§7）。
+   只准引用 tokens.css 的變數。 */
+
+/* ---- §5.1 shell：左側欄 + 右內容，中間 1px 髮絲邊框 ---- */
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-4);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-default);
+  transition: width var(--transition);
+  overflow: hidden;
+}
+
+.shell--collapsed .sidebar {
+  width: var(--sidebar-collapsed);
+  padding-left: 0;
+  padding-right: 0;
+  border-right-width: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-lg);
+  padding: 0 var(--space-3);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-lg);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition);
+}
+
+.nav-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+
+.nav-item--active {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+.nav-item--disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.nav-item--disabled:hover { background: transparent; color: var(--text-disabled); }
+.nav-item--disabled .icon { color: var(--text-disabled); }
+
+.nav-note {
+  margin-left: auto;
+  font-size: var(--text-2xs);
+  color: var(--text-disabled);
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--header-height);
+  flex: none;
+  padding: 0 var(--space-6);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.breadcrumb-sep { color: var(--text-disabled); }
+
+.breadcrumb-current {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 頁面內容容器 */
+#app {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-6);
+}
+
+.shell--collapsed #app,
+.shell--collapsed .topbar { padding-left: var(--space-8); padding-right: var(--space-8); }
+
+.page {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.page-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.page-subtitle {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+/* ---- 卡片 ---- */
+.card {
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.card-title {
+  color: var(--text-primary);
+  font-size: var(--text-lg);
+}
+
+/* 欄寬下限借用 --sidebar-width（260px）：§1 沒有專門的「最小欄寬」token，
+   不自創字面值。 */
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--sidebar-width), 1fr));
+  gap: var(--space-3);
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.meta-label {
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+}
+
+.meta-value {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.inline-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* 同一列裡「會換行的值」要先讓位給固定寬度的動作按鈕（按鈕已是 flex: none）。 */
+.inline-row > .meta-value {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* ---- §4 Empty ---- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.empty-text { color: var(--text-secondary); font-size: var(--text-sm); }
+
+/* ---- §4 Error ---- */
+.error-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-lg);
+}
+
+.error-code {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-sm);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-default);
+  background: var(--bg-code);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.error-message {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.error-hint { color: var(--text-secondary); font-size: var(--text-xs); }
+
+/* ---- 連線狀態列（串流）---- */
+.stream-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+/* ---- §5.3 run-timeline ---- */
+.timeline { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.timeline-notice {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.timeline-list:empty { display: none; }
+
+.event { border-bottom: 1px solid var(--border-subtle); background: var(--surface-1); }
+.event:last-child { border-bottom: none; }
+
+.event-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height-compact);
+  padding: 0 var(--space-3);
+  cursor: pointer;
+  list-style: none;
+  transition: background var(--transition);
+}
+
+.event-summary::-webkit-details-marker { display: none; }
+.event-summary:hover { background: var(--surface-hover); }
+
+.event[open] .event-chevron--closed { display: none; }
+.event:not([open]) .event-chevron--open { display: none; }
+
+.event-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.event-type {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-primary);
+  flex: none;
+  min-width: var(--space-16);
+}
+
+.event-text {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-body {
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.payload-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.payload-size { color: var(--text-secondary); font-size: var(--text-2xs); font-family: var(--font-mono); }
+
+.payload-large > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  padding: var(--space-2) 0;
+}
+
+/* ---- 暫存清單（ZEN-006A 臨時鷹架）---- */
+.stash-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.stash-item { border-bottom: 1px solid var(--border-subtle); }
+.stash-item:last-child { border-bottom: none; }
+
+.stash-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-height);
+  padding: 0 var(--space-3);
+  background: var(--surface-1);
+  transition: background var(--transition);
+}
+
+.stash-link:hover { background: var(--surface-hover); }
+
+.stash-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.stash-question {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stash-time {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  flex: none;
+}
+
+/* ---- §7 原生 dialog ---- */
+dialog {
+  width: min(var(--reading-max), calc(100% - var(--space-8)));
+  padding: var(--space-6);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  color: var(--text-primary);
+}
+
+dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialog-title { font-size: var(--text-lg); }
+
+.field { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.field-hint { color: var(--text-secondary); font-size: var(--text-xs); }
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* CSS custom properties 不能用在 media query 條件裡（無建置步驟也無法預處理），
+   所以這裡的斷點是全檔唯一的字面值尺寸，數值與 --reading-max 一致。 */
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  #app, .topbar { padding-left: var(--space-4); padding-right: var(--space-4); }
+}
