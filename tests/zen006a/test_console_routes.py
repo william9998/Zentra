@@ -80,14 +80,16 @@ def finished_run(client):
 # ------------------------------------------------------------ page routes
 
 
-def test_root_redirects_to_the_only_page_that_exists(client) -> None:
-    """BOARD deviation 1: ui-contract says /console/agents, which does not exist yet."""
+def test_root_redirects_to_the_contract_landing_page(client) -> None:
+    """ZEN-006A 的 D1 偏離（`/` → `/console/runs`）在 ZEN-008 收斂回契約了。
+
+    agents.html 交付之後，轉址必須指回 ui-contract 表頭寫的那一頁，
+    而且那一頁要真的在。"""
     response = client.get("/")
     assert response.status_code == 307
-    assert response.headers["location"] == "/console/runs"
-    assert client.get("/console/agents").status_code == 404, (
-        "redirecting to /console/agents would 404; the deviation is what keeps the root usable"
-    )
+    assert response.headers["location"] == "/console/agents"
+    assert client.get("/console/agents").status_code == 200, (
+        "轉址目的地必須存在；ZEN-006A 當初的偏離就是為了不要轉到一個 404")
 
 
 def test_console_runs_serves_the_current_runs_html(client) -> None:
@@ -119,14 +121,27 @@ def test_run_page_does_not_leak_run_existence(client, finished_run) -> None:
 
 
 @pytest.mark.parametrize("path", [
-    "/console", "/console/", "/console/agents", "/console/agents/x",
-    "/console/agents/x/versions/new", "/console/runs/a/b", "/console/runs/a%2Fb",
+    # ZEN-008：/console/agents、/console/agents/{id}、/console/agents/{id}/versions/new
+    # 已經是真的路由，從這張「不得存在」清單移到下面的 test_zen008_console_routes_exist。
+    "/console", "/console/", "/console/runs/a/b", "/console/runs/a%2Fb",
     "/console/index.html", "/console/runs.html", "/console/static/",
 ])
 def test_no_catch_all_or_spa_fallback(client, path: str) -> None:
     response = client.get(path)
     assert response.status_code == 404, f"{path} -> {response.status_code}"
     assert b"<!DOCTYPE html>" not in response.content, f"{path} served an HTML fallback"
+
+
+@pytest.mark.parametrize("path, page", [
+    ("/console/agents", "agents.html"),
+    ("/console/agents/01930000-0000-7000-8000-000000000001", "agent.html"),
+    ("/console/agents/01930000-0000-7000-8000-000000000001/versions/new", "version-new.html"),
+])
+def test_zen008_console_routes_serve_their_own_page(client, path: str, page: str) -> None:
+    """五頁都必須是各自的檔案，不是一個 SPA fallback。"""
+    response = client.get(path)
+    assert response.status_code == 200, path
+    assert response.content == (CONSOLE / page).read_bytes(), path
 
 
 def test_static_mount_root_redirects_then_404s(client) -> None:
@@ -187,8 +202,19 @@ def test_openapi_contains_no_ui_routes(client) -> None:
     assert "/" not in paths
     assert "/healthz" not in paths
     assert not [p for p in paths if p.startswith("/internal")], paths
+    assert not [p for p in paths if p.startswith("/mcp")], paths
+    # ZEN-008 擴張到 api-contract v0.3.1 的十條，仍是精確集合。
     assert paths == {
-        "/v1/agents/{agent_id}/runs", "/v1/runs/{run_id}", "/v1/runs/{run_id}/events",
+        "/v1/agents",
+        "/v1/agents/{agent_id}",
+        "/v1/agents/{agent_id}/openapi.json",
+        "/v1/agents/{agent_id}/runs",
+        "/v1/agents/{agent_id}/runs:invoke",
+        "/v1/agents/{agent_id}/versions",
+        "/v1/agents/{agent_id}/versions/{semver}",
+        "/v1/runs",
+        "/v1/runs/{run_id}",
+        "/v1/runs/{run_id}/events",
     }, paths
 
 

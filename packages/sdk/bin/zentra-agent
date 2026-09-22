@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from zentra_sdk.image_runtime import main
+
+main()

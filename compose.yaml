@@ -69,6 +69,8 @@ services:
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://api:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
+      # Path only. Credential bytes are a read-only compose secret below.
+      ZENTRA_REGISTRY_AUTH_FILE: /run/secrets/zentra_registry_auth
     # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。
     env_file:
       - path: .env
@@ -81,6 +83,10 @@ services:
       # 只有 worker 掛 docker.sock —— 它要動態建沙盒。api 不准掛。
       # ⚠️ 能操作 docker.sock 等同主機 root，這個風險在 v0.2 是常駐的（架構文件 §9）
       - /var/run/docker.sock:/var/run/docker.sock
+    secrets:
+      - source: zentra_registry_auth
+        target: zentra_registry_auth
+        mode: 0400
     networks: [zentra-net]
 
 networks:
@@ -92,3 +98,10 @@ networks:
 
 volumes:
   pgdata:
+
+secrets:
+  # Standard Docker config JSON: {"auths":{"registry":{"auth":"..."}}}.
+  # The committed default is empty/public-only. Production supplies a file
+  # outside the repository with ZENTRA_REGISTRY_AUTH_FILE on the compose host.
+  zentra_registry_auth:
+    file: ${ZENTRA_REGISTRY_AUTH_FILE:-docker/registry-auth.empty.json}

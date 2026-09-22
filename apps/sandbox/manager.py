@@ -12,7 +12,9 @@ from redis import Redis
 
 from apps.sandbox.drivers.base import (
     DriverCapabilities,
+    ImageMetadata,
     SandboxDriver,
+    SandboxExecution,
     SandboxExit,
     SandboxHandle,
     SandboxSpec,
@@ -52,6 +54,12 @@ class _BlockingDriverAdapter:
     def create(self, spec: SandboxSpec) -> SandboxHandle:
         return asyncio.run(self._driver.create(spec))
 
+    def prepare_image(self, image_ref: str) -> ImageMetadata:
+        return asyncio.run(self._driver.prepare_image(image_ref))
+
+    def inspect_image(self, image_ref: str) -> ImageMetadata:
+        return asyncio.run(self._driver.inspect_image(image_ref))
+
     def wait(self, handle: SandboxHandle, timeout: float) -> SandboxExit:
         return asyncio.run(self._driver.wait(handle, timeout))
 
@@ -71,7 +79,7 @@ class SandboxManager:
         driver: SandboxDriver,
         redis: Redis,
         *,
-        image: str,
+        image: str | None = None,
         network: str,
         gateway_url: str,
         max_concurrent: int,
@@ -103,7 +111,9 @@ class SandboxManager:
         return int(self._redis.zcard(INFLIGHT_KEY))
 
     def create(self, run_id: str, run_token: str) -> SandboxHandle:
-        """P4：注入沙盒的環境變數**只有這三個**。多一個 secret 就是違反立場。"""
+        """ZEN-000 compatibility for its built-in tagged runtime image."""
+        if self._image is None:
+            raise ValueError("legacy sandbox image is not configured")
         spec = SandboxSpec(
             run_id=run_id,
             image=self._image,
@@ -115,3 +125,89 @@ class SandboxManager:
             },
         )
         return self._blocking_driver.create(spec)
+
+    def prepare_image(self, image_ref: str) -> ImageMetadata:
+        """Ensure the exact digest is cached and return verified OCI metadata."""
+
+        return self._blocking_driver.prepare_image(image_ref)
+
+    def inspect_image(self, image_ref: str) -> ImageMetadata:
+        """Re-check the cached exact digest without resolving or pulling a tag."""
+
+        return self._blocking_driver.inspect_image(image_ref)
+
+    def create_validation(
+        self,
+        agent_version_id: str,
+        validation_token: str,
+        image_ref: str,
+    ) -> SandboxHandle:
+        spec = SandboxSpec.for_validation(
+            agent_version_id=agent_version_id,
+            image_ref=image_ref,
+            network=self._network,
+            gateway_url=self._gateway_url,
+            validation_token=validation_token,
+        )
+        return self._blocking_driver.create(spec)
+
+    def create_run(
+        self,
+        run_id: str,
+        run_token: str,
+        image_ref: str,
+    ) -> SandboxHandle:
+        spec = SandboxSpec.for_run(
+            run_id=run_id,
+            image_ref=image_ref,
+            network=self._network,
+            gateway_url=self._gateway_url,
+            run_token=run_token,
+        )
+        return self._blocking_driver.create(spec)
+
+    def execute_validation(
+        self,
+        agent_version_id: str,
+        validation_token: str,
+        image_ref: str,
+        *,
+        timeout: float = 600,
+    ) -> SandboxExecution:
+        """Run validation with a hard timeout and unconditional container cleanup.
+
+        Token revocation and version state remain backend responsibilities.
+        Callers which need to observe the live container id can instead use
+        ``create_validation`` plus ``driver.wait`` in their own ``finally``.
+        """
+
+        image = self.prepare_image(image_ref)
+        handle = self.create_validation(agent_version_id, validation_token, image_ref)
+        try:
+            result = self.driver.wait(handle, timeout=timeout)
+            # A successful validation is publishable only if the cached image
+            # still resolves to the same exact digest after user code exits.
+            checked = self.inspect_image(image_ref) if result.ok else image
+            if checked.digest != image.digest or checked.image_ref != image.image_ref:
+                raise RuntimeError("validation image identity changed during execution")
+            return SandboxExecution(image=checked, handle=handle, exit=result)
+        finally:
+            self.driver.destroy(handle)
+
+    def execute_run(
+        self,
+        run_id: str,
+        run_token: str,
+        image_ref: str,
+        *,
+        timeout: float,
+    ) -> SandboxExecution:
+        """Run one exact-digest sandbox and always destroy it before returning."""
+
+        image = self.prepare_image(image_ref)
+        handle = self.create_run(run_id, run_token, image_ref)
+        try:
+            result = self.driver.wait(handle, timeout=timeout)
+            return SandboxExecution(image=image, handle=handle, exit=result)
+        finally:
+            self.driver.destroy(handle)

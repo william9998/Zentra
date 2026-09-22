@@ -35,7 +35,20 @@ _TERMINAL = frozenset({RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLE
 class RunTrigger(StrEnum):
     API = "API"
     MCP = "MCP"
-    CONSOLE = "CONSOLE"
+
+
+class AgentVersionStatus(StrEnum):
+    BUILDING = "BUILDING"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {self.PUBLISHED, self.FAILED}
+
+
+class AgentSourceType(StrEnum):
+    OCI_IMAGE = "OCI_IMAGE"
 
 
 class ErrorCode(StrEnum):
@@ -47,6 +60,7 @@ class ErrorCode(StrEnum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     AGENT_NOT_PUBLISHED = "AGENT_NOT_PUBLISHED"
+    VERSION_CONFLICT = "VERSION_CONFLICT"
     BUILD_FAILED = "BUILD_FAILED"
     SANDBOX_TIMEOUT = "SANDBOX_TIMEOUT"
     SANDBOX_ERROR = "SANDBOX_ERROR"

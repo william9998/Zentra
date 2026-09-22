@@ -1,30 +1,90 @@
-"""SQLAlchemy 模型 —— 對應 docs/architecture/detailed-architecture.md §8。
-
-ZEN-000 只建兩張表（runs / run_events）。
-`agents` / `agent_versions` / `llm_calls` 留到 ZEN-001 與 ZEN-002 ——
-**不預先建空表**（SPEC §11）。
-"""
+"""SQLAlchemy models for the Agent registry and Run lifecycle."""
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from apps.api.enums import RunStatus, RunTrigger
+from apps.api.enums import AgentSourceType, AgentVersionStatus, RunStatus, RunTrigger
 
 
 class Base(DeclarativeBase):
     pass
 
 
+class Agent(Base):
+    __tablename__ = "agents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentVersion(Base):
+    __tablename__ = "agent_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    semver: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AgentSourceType.OCI_IMAGE
+    )
+    image_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    image_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    version_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    image_platform: Mapped[str | None] = mapped_column(String(64))
+    image_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    runtime_contract: Mapped[str | None] = mapped_column(String(64))
+    manifest: Mapped[dict | None] = mapped_column(JSONB)
+    entrypoints: Mapped[list[dict] | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AgentVersionStatus.BUILDING
+    )
+    error: Mapped[dict | None] = mapped_column(JSONB)
+    validation_payload: Mapped[dict | None] = mapped_column(JSONB)
+    build_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    builder_task_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "semver", name="uq_agent_versions_agent_semver"),
+        CheckConstraint("source_type = 'OCI_IMAGE'", name="ck_agent_versions_source_type"),
+        CheckConstraint(
+            "status IN ('BUILDING','PUBLISHED','FAILED')", name="ck_agent_versions_status"
+        ),
+        CheckConstraint(
+            "image_digest ~ '^sha256:[0-9a-f]{64}$'", name="ck_agent_versions_digest"
+        ),
+        CheckConstraint("version_id ~ '^[0-9a-f]{12}$'", name="ck_agent_versions_version_id"),
+        Index("ix_agent_versions_agent_status_created", "agent_id", "status", created_at.desc()),
+    )
+
+
 class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    agent_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False
+    )
+    agent_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_versions.id")
+    )
 
     # 單租戶（ADR-0005）：欄位留著，但不做 RLS，也還沒強制執行
     owner_id: Mapped[str | None] = mapped_column(String(64))
@@ -53,6 +113,7 @@ class Run(Base):
     __table_args__ = (
         Index("ix_runs_agent_status_created", "agent_id", "status", created_at.desc()),
         CheckConstraint("status IN ('QUEUED','SCHEDULING','RUNNING','SUCCEEDED','FAILED','CANCELLED')", name="ck_runs_status"),
+        CheckConstraint("trigger IN ('API','MCP')", name="ck_runs_trigger"),
         CheckConstraint("timeout_seconds BETWEEN 1 AND 900", name="ck_runs_timeout"),
     )
 

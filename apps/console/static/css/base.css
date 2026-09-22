@@ -155,10 +155,13 @@ label {
   font-size: var(--text-xs);
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="search"],
+select,
+textarea {
   width: 100%;
-  height: var(--control-lg);
-  padding: 0 var(--space-3);
+  min-height: var(--control-lg);
+  padding: var(--space-2) var(--space-3);
   background: var(--surface-3);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -167,9 +170,20 @@ input[type="text"] {
   font-size: var(--text-md);
 }
 
-input[type="text"]::placeholder { color: var(--text-disabled); }
+textarea { resize: vertical; line-height: var(--leading-relaxed); }
 
-input[type="text"]:focus-visible { border-color: var(--border-focus); }
+input[type="text"]::placeholder,
+input[type="search"]::placeholder,
+textarea::placeholder { color: var(--text-disabled); }
+
+input[type="text"]:focus-visible,
+input[type="search"]:focus-visible,
+select:focus-visible,
+textarea:focus-visible { border-color: var(--border-focus); }
+
+[aria-invalid="true"] { border-color: var(--danger); }
+
+.field-error { color: var(--danger); font-size: var(--text-xs); }
 
 /* ---- 文字工具 ---- */
 .mono { font-family: var(--font-mono); }
@@ -216,6 +230,8 @@ input[type="text"]:focus-visible { border-color: var(--border-focus); }
 .status-dot--SUCCEEDED  { background: var(--status-succeeded); }
 .status-dot--FAILED     { background: var(--status-failed); }
 .status-dot--CANCELLED  { background: var(--status-cancelled); }
+.status-dot--BUILDING   { background: var(--status-scheduling); animation: pulse 2s ease-in-out infinite; }
+.status-dot--PUBLISHED  { background: var(--status-succeeded); }
 
 .status-label { color: var(--text-primary); font-weight: var(--weight-medium); }
 .status--CANCELLED .status-label { color: var(--text-disabled); }
@@ -259,6 +275,7 @@ input[type="text"]:focus-visible { border-color: var(--border-focus); }
   }
 
   .status-dot--SCHEDULING { opacity: 0.7; }
+  .status-dot--BUILDING { opacity: 0.7; }
   .status-dot--RUNNING { opacity: 0.85; }
   .skeleton { opacity: 0.6; }
 }

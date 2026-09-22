@@ -1,4 +1,4 @@
-/* specs/ui-contract.md v0.4.0 §1 —— 原封不動搬過來的設計 token。
+/* specs/ui-contract.md v0.5.1 §1 —— 原封不動搬過來的設計 token。
    這個檔案是 token 的唯一出處：其他 CSS 只准引用變數，不准出現字面值色碼、間距、字級。
    要新增 token → 開 SPEC-QUESTION，不要在這裡自己加。 */
 

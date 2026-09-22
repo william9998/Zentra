@@ -8,7 +8,7 @@ celery_app = Celery(
     "zentra",
     broker=_settings.redis_url,     # ADR-0005：broker 與 result 都是 Redis，不用 RabbitMQ
     backend=_settings.redis_url,
-    include=["apps.worker.tasks.run"],
+    include=["apps.worker.tasks.run", "apps.worker.tasks.build"],
 )
 
 celery_app.conf.update(
@@ -17,6 +17,10 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_track_started=True,
     task_default_queue="q.run",
+    task_routes={
+        "zentra.run.execute": {"queue": "q.run"},
+        "zentra.build.execute": {"queue": "q.build"},
+    },
     timezone="UTC",
     enable_utc=True,
 )

@@ -150,6 +150,41 @@ export function formatDuration(ms) {
   return minutes + 'm ' + pad(Math.floor(seconds % 60), 2) + 's';
 }
 
+export function formatBytes(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—';
+  if (value < 1024) return value + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = value;
+  let unit = -1;
+  do {
+    amount /= 1024;
+    unit += 1;
+  } while (amount >= 1024 && unit < units.length - 1);
+  return amount.toFixed(amount >= 10 ? 0 : 1) + ' ' + units[unit];
+}
+
+/** 統一 Error 五態：保留 API message，並顯示 code / run id / details。 */
+export function createErrorBox(error, options = {}) {
+  const safe = error || {};
+  const box = el('div', 'error-box');
+  const head = el('div', 'inline-row');
+  head.appendChild(el('span', 'error-code', safe.code || 'INTERNAL_ERROR'));
+  if (safe.retryable) head.appendChild(el('span', 'error-hint', '可以重試'));
+  box.appendChild(head);
+  box.appendChild(el('p', 'error-message', safe.message || '發生未預期錯誤'));
+  if (safe.runId || options.runId) {
+    box.appendChild(el('p', 'error-hint mono', 'Run ID ' + (safe.runId || options.runId)));
+  }
+  if (options.hint) box.appendChild(el('p', 'error-hint', options.hint));
+  if (safe.details && Object.keys(safe.details).length > 0) {
+    const details = el('details');
+    details.appendChild(el('summary', 'error-hint', '錯誤細節'));
+    details.appendChild(el('pre', 'code', toPrettyJson(safe.details)));
+    box.appendChild(details);
+  }
+  return box;
+}
+
 export function truncate(text, max) {
   const value = String(text);
   return value.length > max ? value.slice(0, max) + '…' : value;

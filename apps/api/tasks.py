@@ -12,11 +12,23 @@ _settings = get_settings()
 
 RUN_TASK_NAME = "zentra.run.execute"
 RUN_QUEUE = "q.run"
+BUILD_TASK_NAME = "zentra.build.execute"
+BUILD_QUEUE = "q.build"
 
 _producer = Celery("zentra-producer", broker=_settings.redis_url, backend=_settings.redis_url)
-_producer.conf.task_routes = {RUN_TASK_NAME: {"queue": RUN_QUEUE}}
+_producer.conf.task_routes = {
+    RUN_TASK_NAME: {"queue": RUN_QUEUE},
+    BUILD_TASK_NAME: {"queue": BUILD_QUEUE},
+}
 
 
 def dispatch_run(run_id: str) -> str:
     result = _producer.send_task(RUN_TASK_NAME, args=[run_id], task_id=run_id)
+    return result.id
+
+
+def dispatch_build(agent_version_id: str) -> str:
+    result = _producer.send_task(
+        BUILD_TASK_NAME, args=[agent_version_id], task_id=f"build:{agent_version_id}"
+    )
     return result.id

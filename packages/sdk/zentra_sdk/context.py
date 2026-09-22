@@ -61,9 +61,11 @@ class ZentraContext:
 
 
 def agent(name: str, version: str = "0.0.0", **meta: Any):
-    """標記 `build()` 是這個 bundle 的 entrypoint。
+    """Mark ``build()`` as the image Agent factory.
 
-    平台在發布時（ZEN-001）靠這個 marker 找到並驗證契約。
+    The image runtime imports ``agent:build`` and reads this marker. Image
+    authors may provide ``entrypoints=[...]`` in the decorator metadata; that
+    exact JSON Schema list becomes the REST/OpenAPI/MCP source of truth.
     """
 
     def decorator(fn):

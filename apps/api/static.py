@@ -56,12 +56,23 @@ async def _page(filename: str) -> FileResponse:
 
 @router.get("/")
 async def root() -> RedirectResponse:
-    """契約目標是 `/console/agents`（ui-contract.md 表頭）。
+    return RedirectResponse("/console/agents", status_code=307)
 
-    ZEN-006A 這個切片還沒有 agents.html，先轉到 `/console/runs`；
-    **ZEN-006 交付 agents.html 時要改回 `/console/agents`。**
-    """
-    return RedirectResponse("/console/runs", status_code=307)
+
+@router.get("/console/agents")
+async def console_agents() -> FileResponse:
+    return await _page("agents.html")
+
+
+# The literal suffix must precede the agent detail route.
+@router.get("/console/agents/{agent_id}/versions/new")
+async def console_version_new(agent_id: str) -> FileResponse:
+    return await _page("version-new.html")
+
+
+@router.get("/console/agents/{agent_id}")
+async def console_agent(agent_id: str) -> FileResponse:
+    return await _page("agent.html")
 
 
 # 先註冊字面路徑，再註冊帶參數的 —— 讓 /console/runs 不會被 /console/runs/{run_id} 吃掉。

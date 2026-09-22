@@ -3,6 +3,9 @@
 > **全隊用同一組字。** 規格、程式碼、UI 文案、測試名稱都引用這裡的用詞。
 > 發現有人用了不同說法 → 開 `SPEC-QUESTION` 統一，不要並存兩種叫法。
 >
+> **v0.3.0 依 [ADR-0008](./adr/ADR-0008-oci-image-agent-packaging.md)**，Agent artifact 改為 OCI image digest；
+> 尚未實作的 bundle + per-version venv 路徑退出 MVP。
+>
 > **v0.2.0 降維後**（[ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md)）：
 > 移出 MVP 的詞收在最後一節 §5，**不要在程式碼或 UI 裡使用它們**。
 
@@ -10,12 +13,13 @@
 
 | 詞 | 英文 / 程式碼識別 | 定義 | 不要說成 |
 |---|---|---|---|
-| **Agent** | `agent` | 一個可被呼叫的智能體定義，由 manifest + code bundle 構成 | bot、assistant、model |
-| **Agent 版本** | `agent_version`, `agent@semver` | Agent 的不可變快照。**執行的最小單位**，發布後凍結 | revision、build |
-| **Version ID** | `version_id` | bundle 的 **SHA-256 前 12 碼**。P5 的識別依據，取代原本的 image digest | hash、digest、tag |
+| **Agent** | `agent` | 一個可被呼叫的智能體定義，由 manifest + OCI image 構成 | bot、assistant、model |
+| **Agent 版本** | `agent_version`, `agent@semver` | Agent 的不可變快照。**執行的最小單位**，以完整 OCI digest 凍結 | revision、build |
+| **Version ID** | `version_id` | OCI digest hex 的前 12 碼，只供 UI/日誌短顯示；P5 的權威身份是完整 `image_digest` | digest、tag |
+| **Image Digest** | `image_digest` | `sha256:<64 hex>` 的 OCI manifest digest。發布與 Run 都使用它，不使用可變 tag | image tag、version id |
+| **Image Reference** | `image_ref` | canonical `registry/repository@sha256:...`。版本發布後不可改 | tag-only reference |
 | **Manifest** | `manifest` | Agent 的宣告式定義：entrypoints、依賴、資源限制、模型設定 | config、metadata |
 | **Entrypoint** | `entrypoint` | Agent 對外暴露的一個可呼叫入口。**同一份定義同時生成 REST schema 與 MCP tool schema** | endpoint、function |
-| **Code Bundle** | `bundle` | 使用者上傳的 `.tar.gz`，解壓後唯讀掛進沙盒的 `/app/code` | package、artifact、zip |
 | **Run** | `run`, `run_id` | 一次 Agent 執行實例。有狀態機（SPEC §9）與事件流 | job、execution、session |
 | **Run 事件** | `run_event` | Run 過程中推送的單一事件（`node.start`、`token`、`log`…） | log、message |
 | **Sandbox** | `sandbox` | 執行 Agent 程式碼的隔離容器。**一 Run 一盒，結束即銷毀，絕不重用** | container、vm、worker |
@@ -27,11 +31,12 @@
 | **Sandbox Manager** | 管理沙盒生命週期與併發配額。**它建立沙盒，不執行程式碼** |
 | **SandboxDriver** | 沙盒的建立介面。MVP 只有 `DockerSandboxDriver`。`capabilities()` 必須誠實回報提供哪幾層隔離 |
 | **runner-worker** | Celery worker，負責申請沙盒、回寫狀態。**它不執行使用者程式碼**（P1） |
-| **build-worker** | Celery worker，負責解壓 bundle、裝 venv、起驗證沙盒。**解析依賴也在容器內做**（P1） |
+| **build-worker** | Celery worker，負責 pull/inspect exact OCI digest、起 validation container，再唯一決定版本終態。**不 import image 內程式碼**（P1） |
 | **Internal Gateway** | `api` 服務上的一組 `/internal/*` 路由，**沙盒唯一的網路對端**。代持 LLM 憑證、收事件、發 input。取代原本的 Tool / LLM / Egress 三個 Proxy |
 | **Run Token** | 注入沙盒的憑證。綁定單一 `run_id`，TTL = 該 Run 的 timeout，跑完撤銷。**只能對 Internal Gateway 使用** |
 | **Interface Generator** | 讀 manifest 的 entrypoints，同時產出 REST + MCP schema（P3 的實作） |
-| **ObjectStore** | bundle 與 venv 的儲存介面。MVP 實作是 `LocalObjectStore`（本機 volume），之後可換 `S3ObjectStore` |
+| **Validation Token** | 注入 validation container 的短效憑證。綁定單一 `agent_version_id`、TTL 最長 10 分鐘，完成後撤銷；不是 Registry credential |
+| **OCI Registry** | image blob 的權威來源。MVP 使用既有外部/企業 Registry，不是 Zentra compose 的服務 |
 
 ## 3. 容易搞混的區別
 
@@ -52,6 +57,7 @@
 | **L2 核心隔離** | MVP **只有 Docker 原生機制**（cap_drop、non-root、預設 seccomp），**沒有 gVisor**。`capabilities()` 必須如實回報 |
 | **沙盒網段** | `zentra-sandbox-net`，Docker `internal: true`，**無對外路由**。`api` 同時接上它與預設網段，成為唯一橋樑 |
 | **API Key** | 外部系統呼叫 `/v1/*` 用的長期憑證。**只存在平台側，不進沙盒** |
+| **Registry Credential** | worker 拉私有 image 使用的長期憑證。只存在 VM Docker credential store / compose secret；不進 PostgreSQL 或沙盒 |
 
 ## 5. MVP 外的詞（架構留位，**現在不要用**）
 
@@ -67,5 +73,7 @@
 | **Flow / Flow Run** | 多 Agent 編排 DAG | 原本就是 MVP 外 |
 | **Alias** | 指向某版本的可變指標 | 不指定 `version` 即用最新 `PUBLISHED`，夠用 |
 | **Tenant / `tenant_id` / RLS** | 多租戶隔離 | 單租戶。資料表留 `owner_id` 欄位，但不做 RLS |
-| **Warm Pool** | 預熱沙盒降低冷啟 | 共用 runtime image 的冷啟已 < 2s |
+| **Warm Pool** | 預熱沙盒降低冷啟 | 發布階段先 pull image；Run 使用本機 digest cache，不維護預熱容器 |
 | **HITL / `WAITING_INPUT` / Checkpointer** | 中斷後續跑 | 狀態機已移除 `WAITING_INPUT`。MVP 的 LangGraph 用行程內 `MemorySaver` |
+| **Code Bundle / per-version venv** | `.tar.gz` 上傳後由平台安裝依賴 | ADR-0008 改為開發者自建 OCI image；恢復需新 ADR 與雙路徑驗收 |
+| **平台內建 Registry / image tar 直傳** | 平台接收或託管 image blob | 會增加大檔儲存與第五個長駐服務；MVP 只註冊既有 Registry 的 digest |

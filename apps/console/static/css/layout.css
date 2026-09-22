@@ -136,6 +136,8 @@
   gap: var(--space-3);
 }
 
+.page--reading { max-width: var(--reading-max); }
+
 .page-header {
   display: flex;
   align-items: flex-start;
@@ -440,9 +442,160 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   gap: var(--space-2);
 }
 
+/* ---- Agent Registry / OCI registration（ui-contract v0.5.1）---- */
+.list-toolbar {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.list-toolbar input { max-width: var(--reading-max); }
+
+.data-list,
+.version-list,
+.endpoint-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.data-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-height);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+}
+
+.data-row:last-child { border-bottom: 0; }
+.data-row:not(.data-row--header):hover { background: var(--surface-hover); }
+
+.data-row--header {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.data-row--runs {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.data-row--run-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+.list-identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.list-title { font-size: var(--text-md); font-weight: var(--weight-medium); }
+
+.list-description {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-details summary { cursor: pointer; }
+
+.list-footer {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-3);
+}
+
+.version-row { border-bottom: 1px solid var(--border-subtle); }
+.version-row:last-child { border-bottom: 0; }
+
+.version-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-height);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  list-style: none;
+  background: var(--surface-1);
+}
+
+.version-summary::-webkit-details-marker { display: none; }
+.version-summary:hover { background: var(--surface-hover); }
+.version-semver { font-family: var(--font-mono); font-weight: var(--weight-medium); }
+
+.version-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.endpoint-row {
+  display: grid;
+  grid-template-columns: minmax(var(--space-16), 1fr) minmax(0, 6fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-height);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.endpoint-row:last-child { border-bottom: 0; }
+.endpoint-label { color: var(--text-secondary); font-size: var(--text-xs); }
+.endpoint-value { font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+
+.composer-form,
+.registration-form,
+.registration-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.composer-form { max-width: var(--reading-max); }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.registration-status {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
 /* CSS custom properties 不能用在 media query 條件裡（無建置步驟也無法預處理），
    所以這裡的斷點是全檔唯一的字面值尺寸，數值與 --reading-max 一致。 */
 @media (max-width: 768px) {
   .sidebar { display: none; }
   #app, .topbar { padding-left: var(--space-4); padding-right: var(--space-4); }
+  .data-row,
+  .data-row--runs,
+  .data-row--run-list,
+  .version-summary,
+  .endpoint-row,
+  .form-grid,
+  .filters { grid-template-columns: minmax(0, 1fr); }
 }

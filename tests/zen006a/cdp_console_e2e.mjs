@@ -24,6 +24,8 @@ const argOf = (name, fallback) => {
 const BASE = argOf('base', 'http://127.0.0.1:8000');
 const OUT = argOf('out', null);
 const IDLE_WATCH_MS = Number(argOf('idle-ms', '20000'));
+// ZEN-000 起就存在的固定 fixture Agent，永遠有一個 PUBLISHED 版本可以驅動 UI。
+const BUILTIN_AGENT_ID = argOf('agent-id', '01930000-0000-7000-8000-000000000001');
 
 const checks = [];
 // ok === null means "not observed" -- pytest reports those as untested, never as passed.
@@ -203,55 +205,46 @@ const XSS_QUESTION = '<img src=x onerror="window.__xssFired=1"><script>window.__
 
 async function scenarioMainFlow(browser) {
   const { page, log } = await newPage(browser);
-  await navigate(page, BASE + '/console/runs');
 
-  // --- Empty state (ui-contract §4)
-  const empty = await evaluate(page, `
-    const box = document.querySelector('.empty');
-    const text = box ? box.querySelector('.empty-text') : null;
-    const button = document.querySelector('[data-new-run]');
-    return {
-      text: text ? text.textContent.trim() : null,
-      hasSecondaryButton: Boolean(button && button.classList.contains('btn-secondary')),
-      buttonTag: button ? button.tagName : null,
-      onlyNoData: text ? /^(無資料|no data)$/i.test(text.textContent) : null,
-      stashEmptyText: (document.querySelectorAll('.empty-text')[1] || {}).textContent || null,
-    };
-  `);
-  record('runs.empty_has_explanation_and_secondary_button',
-    empty.text && empty.text.length > 8 && empty.hasSecondaryButton && empty.buttonTag === 'BUTTON'
-    && !empty.onlyNoData, empty);
+  // ZEN-008 更新：ZEN-006A 的「發起測試 Run」<dialog> 已經不在 runs.html 上，
+  // 建立 Run 移到 Agent 詳情頁的 run-composer。這裡改走新流程，
+  // **下游所有 Run 觀測頁的檢查原封不動** —— 那些才是這支 driver 真正在擋的東西。
+  await navigate(page, BASE + '/console/agents');
 
-  // --- Native <dialog> opens with focus in the field (ui-contract §7)
-  await evaluate(page, `document.querySelector('[data-new-run]').click(); return true;`);
-  await sleep(120);
+  // --- 建立 Agent 用的原生 <dialog>（ui-contract §7「原生元素優先」）
+  await evaluate(page, `document.querySelector('[data-create]').click(); return true;`);
+  await sleep(150);
   const dialogOpen = await evaluate(page, `
-    const dialog = document.querySelector('[data-dialog]');
+    const dialog = document.querySelector('[data-dialog] dialog');
     return {
-      tag: dialog.tagName, open: dialog.open,
-      activeId: document.activeElement ? document.activeElement.id : null,
-      isModal: dialog.matches(':modal'),
+      tag: dialog ? dialog.tagName : null, open: dialog ? dialog.open : null,
+      activeTag: document.activeElement ? document.activeElement.tagName : null,
+      activeInDialog: dialog ? dialog.contains(document.activeElement) : null,
+      isModal: dialog ? dialog.matches(':modal') : null,
     };
   `);
   record('dialog.native_opens_modal_and_focuses_input',
-    dialogOpen.tag === 'DIALOG' && dialogOpen.open && dialogOpen.isModal
-    && dialogOpen.activeId === 'question', dialogOpen);
+    dialogOpen.tag === 'DIALOG' && dialogOpen.open === true && dialogOpen.isModal === true
+    && dialogOpen.activeInDialog === true, dialogOpen);
 
-  // --- Empty submit is blocked client-side and sends no request
+  // --- 空白送出：前端擋下來，而且不得送出任何請求
   const beforeEmptySubmit = log.requests.length;
   await evaluate(page, `
-    document.querySelector('#question').value = '';
-    document.querySelector('[data-form]').requestSubmit();
+    const dialog = document.querySelector('[data-dialog] dialog');
+    const form = dialog.querySelector('form');
+    form.querySelectorAll('input, textarea').forEach((f) => { f.value = ''; });
+    form.requestSubmit();
     return true;
   `);
   await sleep(400);
   const postsAfterEmpty = log.requests.slice(beforeEmptySubmit)
     .filter((r) => r.method === 'POST').length;
-  const stillOpen = await evaluate(page, `return document.querySelector('[data-dialog]').open;`);
+  const stillOpen = await evaluate(page,
+    `return document.querySelector('[data-dialog] dialog').open;`);
   record('dialog.empty_submit_sends_no_request', postsAfterEmpty === 0 && stillOpen,
     { postsAfterEmpty, stillOpen });
 
-  // --- ESC closes the dialog (native behaviour, no custom key handling)
+  // --- ESC 關閉（原生行為，不是自己綁 keydown）
   await page.send('Input.dispatchKeyEvent', {
     type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
   });
@@ -260,22 +253,44 @@ async function scenarioMainFlow(browser) {
   });
   await sleep(250);
   record('dialog.escape_closes',
-    (await evaluate(page, `return !document.querySelector('[data-dialog]').open;`)), null);
+    (await evaluate(page, `return !document.querySelector('[data-dialog] dialog').open;`)), null);
 
-  // --- Cancel button closes as well
-  await evaluate(page, `document.querySelector('[data-new-run]').click(); return true;`);
-  await sleep(100);
-  await evaluate(page, `document.querySelector('[data-cancel]').click(); return true;`);
-  await sleep(150);
-  record('dialog.cancel_closes',
-    (await evaluate(page, `return !document.querySelector('[data-dialog]').open;`)), null);
-
-  // --- Real submit with an XSS payload as the question
-  await evaluate(page, `document.querySelector('[data-new-run]').click(); return true;`);
-  await sleep(100);
+  // --- 取消鈕也要能關
+  await evaluate(page, `document.querySelector('[data-create]').click(); return true;`);
+  await sleep(120);
   await evaluate(page, `
-    const input = document.querySelector('#question');
-    input.value = ${JSON.stringify(XSS_QUESTION)};
+    const dialog = document.querySelector('[data-dialog] dialog');
+    (dialog.querySelector('[data-cancel]') || dialog.querySelector('button[value="cancel"]')
+      || dialog.querySelector('.btn-secondary')).click();
+    return true;
+  `);
+  await sleep(200);
+  record('dialog.cancel_closes',
+    (await evaluate(page, `return !document.querySelector('[data-dialog] dialog').open;`)), null);
+
+  // --- Agent 詳情頁的 run-composer：只准選 PUBLISHED 版本
+  await navigate(page, BASE + '/console/agents/' + BUILTIN_AGENT_ID);
+  await waitFor(page, `document.querySelector('[data-form]') && !document.querySelector('[data-form]').hidden`);
+  const composer = await evaluate(page, `
+    const versions = Array.from(document.querySelectorAll('[data-version] option'));
+    const entrypoints = Array.from(document.querySelectorAll('[data-entrypoint] option'));
+    return {
+      versionLabels: versions.map((o) => o.textContent.trim()),
+      entrypointValues: entrypoints.map((o) => o.value),
+      hasFileInput: document.querySelectorAll('input[type=file]').length,
+      hasCredentialField: Array.from(document.querySelectorAll('input'))
+        .filter((i) => /password|token|secret|credential/i.test(i.name + i.id + i.type)).length,
+    };
+  `);
+  record('composer.offers_published_versions_and_no_credential_fields',
+    composer.versionLabels.length > 0 && composer.entrypointValues.includes('default')
+    && composer.hasFileInput === 0 && composer.hasCredentialField === 0
+    && !composer.versionLabels.some((t) => /BUILDING|FAILED/.test(t)), composer);
+
+  // --- 用 XSS payload 當 input 真的送出去
+  await evaluate(page, `
+    const input = document.querySelector('[data-input]');
+    input.value = JSON.stringify({ question: ${JSON.stringify(XSS_QUESTION)} });
     input.dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('[data-form]').requestSubmit();
     return true;
@@ -446,8 +461,15 @@ async function scenarioMainFlow(browser) {
   const apiPaths = [...new Set(log.requests
     .map((r) => new URL(r.url).pathname)
     .filter((p) => p.startsWith('/v1') || p.startsWith('/internal')))];
+  // ZEN-008 把 Console 從兩頁擴成五頁，端點上限跟著擴 —— 但仍然是**白名單**：
+  // 多出任何一條（尤其 /internal/*、/mcp/*、或自創路徑）就該紅。
   const allowed = apiPaths.every((p) =>
-    /^\/v1\/agents\/[0-9a-f-]+\/runs$/.test(p)
+    p === '/v1/agents'
+    || /^\/v1\/agents\/[0-9a-f-]+$/.test(p)
+    || /^\/v1\/agents\/[0-9a-f-]+\/runs$/.test(p)
+    || /^\/v1\/agents\/[0-9a-f-]+\/versions$/.test(p)
+    || /^\/v1\/agents\/[0-9a-f-]+\/versions\/[^/]+$/.test(p)
+    || p === '/v1/runs'
     || /^\/v1\/runs\/[0-9a-f-]+$/.test(p)
     || /^\/v1\/runs\/[0-9a-f-]+\/events$/.test(p));
   record('scope.only_three_endpoints_are_called', allowed, apiPaths);
@@ -477,20 +499,23 @@ async function scenarioMainFlow(browser) {
     reloadEvents === 1 && reloaded.label === '已完成' && reloaded.rows >= 5,
     { reloadEvents, ...reloaded });
 
-  // --- Back on the runs page: the localStorage scaffold lists the run as text
+  // --- ZEN-008：runs.html 的 localStorage 鷹架已移除，改讀真的 `GET /v1/runs`。
+  // 同一個檢查改問同一件事：剛才那筆 Run 找得到，而且畫面上沒有任何節點來自 payload。
   await navigate(page, BASE + '/console/runs');
-  const stash = await evaluate(page, `
-    const links = Array.from(document.querySelectorAll('.stash-link'));
+  await sleep(600);
+  const listed = await evaluate(page, `
+    const links = Array.from(document.querySelectorAll('a[href^="/console/runs/"]'));
     return {
       count: links.length,
-      firstHref: links[0] ? links[0].getAttribute('href') : null,
-      questionText: links[0] ? links[0].querySelector('.stash-question').textContent : null,
+      hrefs: links.map((a) => a.getAttribute('href')).slice(0, 20),
       imgCount: document.querySelectorAll('img').length,
+      inlineScripts: Array.from(document.querySelectorAll('script'))
+        .filter((s) => !s.src).length,
     };
   `);
-  record('stash.lists_run_and_renders_payload_as_text',
-    stash.count >= 1 && stash.firstHref === '/console/runs/' + runId
-    && stash.questionText.includes('<img') && stash.imgCount === 0, stash);
+  record('runs.list_comes_from_the_contract_endpoint_and_stays_text',
+    listed.count >= 1 && listed.hrefs.includes('/console/runs/' + runId)
+    && listed.imgCount === 0 && listed.inlineScripts === 0, listed);
 
   await page.send('Page.close').catch(() => {});
   return { runId, log };

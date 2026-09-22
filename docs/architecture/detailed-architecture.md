@@ -2,7 +2,9 @@
 
 > 規格定義以 [`specs/SPEC.md`](../../specs/SPEC.md) 為準，本文件只負責「畫清楚」。
 >
-> **本文件對應 SPEC `v0.2.2`（降維後）。** 依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
+> **本文件對應 SPEC `v0.3.0`。** OCI image 註冊與執行的完整流程見
+> [`oci-image-agent-flow.md`](oci-image-agent-flow.md) 與 [ADR-0008](../../specs/adr/ADR-0008-oci-image-agent-packaging.md)。
+> 單機四服務與安全邊界仍依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
 > 與 [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：
 > 單機 docker compose、**4 個**長駐服務、四層分層、一條主線，Console 是 `api` 服務的原生 HTML/CSS/JS 靜態檔。
 > v0.1 的 K8s 拓撲、三個 Proxy、知識層、Agent Flow、Next.js console 服務已移除，對照表見 §10。
@@ -18,6 +20,9 @@
 這張圖由左到右呈現 REST／MCP 呼叫如何建立 Run、經 Redis 與 Celery 派工、透過 Docker API
 動態建立一 Run 一盒的 Sandbox，以及事件／結果如何經 Internal Gateway 回寫 PostgreSQL 並串流到前端。
 安全標示以目前實作為準：有 Docker hardening，**沒有 gVisor**，`l2_kernel_isolation=false`。
+
+> 圖中的 `data/bundles · data/venvs` 是 v0.2 的舊 artifact 標示；v0.3 的權威資料流已改為
+> 「既有 OCI Registry → VM Docker image cache」，PostgreSQL 只存 digest 與 metadata。
 
 一台主機、一個 `docker compose`、**四個**長駐服務，加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
 沙盒掛在一個沒有對外路由的網段上，唯一的對端是 `api` 服務的 Internal Gateway。
@@ -124,6 +129,9 @@ graph TB
 ---
 
 ## 2. 發布一個版本（P1 + P5）
+
+> v0.3 的權威發布圖見 [`oci-image-agent-flow.md`](oci-image-agent-flow.md)。下圖是 v0.2 bundle 設計的歷史圖，
+> 已由 ADR-0008 取代，不得作為實作契約。
 
 ```mermaid
 sequenceDiagram

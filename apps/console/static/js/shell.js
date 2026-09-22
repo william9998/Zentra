@@ -16,11 +16,10 @@ const FRAME = `
       <span>Zentra</span>
     </div>
     <nav class="nav" aria-label="主要導覽">
-      <span class="nav-item nav-item--disabled" aria-disabled="true" title="Agent 畫面在 ZEN-006 才會上線">
+      <a class="nav-item" href="/console/agents" data-nav="/console/agents">
         <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-box"/></svg>
         <span>Agents</span>
-        <span class="nav-note">ZEN-006</span>
-      </span>
+      </a>
       <a class="nav-item" href="/console/runs" data-nav="/console/runs">
         <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-activity"/></svg>
         <span>Runs</span>

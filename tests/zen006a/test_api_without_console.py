@@ -70,13 +70,25 @@ def test_app_starts_and_healthz_works_without_console(probe) -> None:
 
 def test_openapi_still_clean_without_console(probe) -> None:
     assert probe["openapi_status"] == 200
-    assert probe["openapi_paths"] == [
-        "/v1/agents/{agent_id}/runs", "/v1/runs/{run_id}", "/v1/runs/{run_id}/events",
-    ]
+    # ZEN-008 更新：Console 從兩頁擴成五頁，公開 API 也從三條擴成 v0.3.1 的十條。
+    # 這裡仍然是**精確集合**，不是「至少包含」—— 多一條 UI 路由或 /internal 就該紅。
+    assert set(probe["openapi_paths"]) == {
+        "/v1/agents",
+        "/v1/agents/{agent_id}",
+        "/v1/agents/{agent_id}/openapi.json",
+        "/v1/agents/{agent_id}/runs",
+        "/v1/agents/{agent_id}/runs:invoke",
+        "/v1/agents/{agent_id}/versions",
+        "/v1/agents/{agent_id}/versions/{semver}",
+        "/v1/runs",
+        "/v1/runs/{run_id}",
+        "/v1/runs/{run_id}/events",
+    }
 
 
 def test_root_still_redirects_without_console(probe) -> None:
-    assert probe["root"] == [307, "/console/runs"]
+    # ZEN-008：agents.html 已交付，`/` 依 ui-contract 轉回 /console/agents
+    assert probe["root"] == [307, "/console/agents"]
 
 
 @pytest.mark.parametrize("path", [

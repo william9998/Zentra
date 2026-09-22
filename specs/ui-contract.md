@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.4.0` |
+| 契約版本 | `v0.5.1` |
 | 擁有者 | `@ui-designer` |
-| 對齊 Spec | `specs/SPEC.md v0.2.1` |
+| 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
 
 > **`@frontend-dev` 只能引用這份文件的 token，不得寫死色碼、間距、字級。**
@@ -16,19 +16,27 @@
 > 這些 token 本來就是純 CSS custom properties，直接貼進 `tokens.css` 就能用。
 > 改的是 §5（元件規格改寫成 ES module）與新增的 §6（前端結構與實作約束）。
 
+> **v0.5.0 依 [ADR-0008](./adr/ADR-0008-oci-image-agent-packaging.md)：Agent 版本改為註冊 OCI image。**
+> Console 不接收 image tar、不代 build Dockerfile，也不收 Registry credential。開發者先把 image push 到
+> VM 可存取的 Registry，再以 canonical `repository@sha256:<64 hex>` 註冊不可變版本。
+
+> **v0.5.1 對齊 SPEC / API v0.3.1 的 Run trigger 裁決。** Console 經 `/v1` 建立 Run，server 固定記為
+> `API`；只有 MCP `tools/call` 記為 `MCP`。Console 不送 `trigger` request 欄位或識別 header。
+
 > **Console 五個畫面**（[ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md) 降維後）。
 > 網址由 `api` 的五條 `FileResponse` 路由給出，**不是前端路由器**：
 >
 > | # | 網址 | 檔案 | 畫面 |
 > |---|---|---|---|
-> | 1 | `/console/agents` | `agents.html` | Agent 列表 |
-> | 2 | `/console/agents/{agent_id}` | `agent.html` | Agent 詳情：版本列表、`endpoints`（REST / MCP / OpenAPI）、最近 Runs |
-> | 3 | `/console/agents/{agent_id}/versions/new` | `version-new.html` | 上傳新版本（拖放 `.tar.gz`，輪詢 `BUILDING → PUBLISHED`） |
+> | 1 | `/console/agents` | `agents.html` | Agent 列表；以頁內 `<dialog>` 建立 Agent metadata |
+> | 2 | `/console/agents/{agent_id}` | `agent.html` | Agent 詳情：版本列表、呼叫區、`endpoints`（REST / MCP / OpenAPI）、最近 Runs |
+> | 3 | `/console/agents/{agent_id}/versions/new` | `version-new.html` | 註冊 canonical OCI image digest，輪詢 `BUILDING → PUBLISHED / FAILED` |
 > | 4 | `/console/runs` | `runs.html` | Run 列表（篩選 + cursor 分頁） |
 > | 5 | `/console/runs/{run_id}` | `run.html` | **Run 觀測** —— 產品最重要的畫面 |
 >
 > `/` 轉址到 `/console/agents`。每個頁面從 `location.pathname` 讀出自己的 id。
 > 建立精靈與 Flow 畫布**已移除**，對應功能在 MVP 外。
+> 「建立 Agent」是單一步驟 metadata 表單，不是第六個頁面或 Agent 組裝精靈。
 
 ---
 
@@ -108,7 +116,7 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 }
 ```
 
-> **只有 §1.4 的狀態指示器可以用狀態色。** 其他地方一律單色。
+> **只有 §2 的狀態指示器可以用狀態色。** 其他地方一律單色。
 
 ### 1.2 字體與字級
 
@@ -206,6 +214,20 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 > `WAITING_INPUT`（HITL）已於 SPEC v0.2.0 移出 MVP，狀態枚舉不再有這個值——
 > **不要渲染它，也不要保留對應的 `--status-waiting` 使用處**（token 本身留著，之後加回來時可直接用）。
 
+### 2.1 Agent Version 狀態
+
+Version 狀態同樣使用「6px 圓點 + 文字標籤」，不可與 Run 狀態混寫，也不可只顯示顏色。
+
+| 狀態 | 圓點色 | 標籤（繁中） | 畫面行為 |
+|---|---|---|---|
+| `BUILDING` | `--status-scheduling` | 驗證中 | 輪詢版本詳情；顯示已耗時與「平台正在拉取、檢查並驗證 image」 |
+| `PUBLISHED` | `--status-succeeded` | 已發布 | 顯示完整 digest、platform、size、runtime contract 與 entrypoints；可建立 Run |
+| `FAILED` | `--status-failed` | 驗證失敗 | 顯示 `BUILD_FAILED`、`error.message` 全文與 `details.stage`（`PULL` / `INSPECT` / `VALIDATE`） |
+
+`BUILDING` 期間 API 沒有回傳即時 stage，因此 UI 不得猜測目前是 `PULL`、`INSPECT` 或 `VALIDATE`。
+超過 3 秒後，使用聚合進度文案「平台正在拉取、檢查並驗證 image · 已耗時 12s」；三個 stage 只在
+`FAILED` 的 `error.details.stage` 中標示精確失敗位置。離開註冊頁不會中止後端工作，Agent 詳情頁仍可查看狀態。
+
 ---
 
 ## 3. 圖示規範
@@ -245,8 +267,7 @@ MVP 只需要這幾個（**不要多抓**，sprite 要小）：
 |---|---|---|
 | Agent | `Bot` | `i-bot` |
 | Run / 執行紀錄 | `Activity` | `i-activity` |
-| 沙盒 / 版本 | `Box` | `i-box` |
-| 上傳 | `Upload` | `i-upload` |
+| 沙盒 / 版本 / 註冊版本 | `Box` | `i-box` |
 | 複製 | `Copy` | `i-copy` |
 | 展開 / 收合 | `ChevronRight` / `ChevronDown` | `i-chevron-right` / `i-chevron-down` |
 | 重試 | `RotateCw` | `i-rotate-cw` |
@@ -263,8 +284,8 @@ MVP 只需要這幾個（**不要多抓**，sprite 要小）：
 |---|---|
 | Loading | 已知版面用骨架屏（`--surface-2` + 1.5s 微光）。**超過 3 秒必須顯示進度語意**（在做什麼、第幾步） |
 | Empty | 一行說明「這裡會出現什麼」+ 一個 secondary 按鈕。文字 `--text-secondary`，置中，上下留白 `--space-12`。**不要只寫「無資料」** |
-| Error | 必須含 `error.code`（mono 字體）、`run_id`、以及「我現在該做什麼」。`retryable` 時提供重試 |
-| Streaming | 見 §5.2 |
+| Error | 必須含 `error.code`（mono 字體）、識別碼與「我現在該做什麼」。Run 錯誤顯示 `run_id`；版本錯誤顯示 `agent_version_id`；建立 Agent 尚無資源 ID 時顯示欄位錯誤。`retryable=true` 才提供原請求重試 |
+| Partial / Streaming | 資料部分抵達或非同步工作未完成時保留已知內容並標明進度；Run token 串流另見 §5.2 |
 | Success | 正常態 |
 
 ---
@@ -297,6 +318,14 @@ export function mount(el, props) {
 - 頂部列 `--header-height`，只放麵包屑與當前頁動作，**不放品牌** logo（品牌在側欄頂）
 - 側欄可收合；狀態存 `localStorage`，收合後內容區左右留白補到 `--space-8`
 
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | shell 先同步顯示，內容 slot 提供頁面骨架；導覽不可因資料請求被鎖住 |
+| Empty | shell 本身不產生空狀態，由目前 page component 放入內容 slot |
+| Error | page error 留在內容 slot；側欄與麵包屑仍可導航 |
+| Partial / Streaming | 內容更新不重畫 shell；側欄收合狀態保持 |
+| Success | 顯示完整 header、sidebar 與 page slot |
+
 ### 5.2 `streaming-output.js` — 串流輸出
 
 - 內容寬度上限 `--reading-max`，行高 `--leading-relaxed`
@@ -307,6 +336,14 @@ export function mount(el, props) {
 - 右上角常駐「停止」（`i-square` + 文字），送 `POST /v1/runs/{id}/cancel`，**不是只 `close()` 本地連線**
 - `EventSource` 原生就會自動重連並帶 `Last-Event-ID`；斷線時顯示 `--text-secondary` 的「重新連線中」一行
 - `aria-live="polite"`
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 尚未收到 token 時顯示「等待輸出」與已耗時；不使用空白面板 |
+| Empty | Run 成功但沒有文字 token 時顯示「此 Run 沒有文字串流輸出」，並引導查看 output / timeline |
+| Error | 顯示 Run `error.code`、`run_id` 與下一步；retryable 時提供建立新 Run 的動作 |
+| Partial / Streaming | 節流追加 token、顯示游標與停止按鈕；斷線保留文字並顯示重新連線狀態 |
+| Success | 移除游標與停止按鈕，完整文字保持可選取與複製 |
 
 ### 5.3 `run-timeline.js` — 產品最重要的元件
 
@@ -320,15 +357,44 @@ export function mount(el, props) {
   超過 2000 筆時提示使用者改用 API 拉完整事件流
 - **目標：工程師從「這次跑壞了」到「哪個節點回了什麼」不超過 30 秒**
 
-### 5.4 `version-upload.js` — 上傳新版本
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 初始事件載入顯示固定列骨架 |
+| Empty | 尚未有事件時顯示「等待第一個執行事件」；終態仍無事件則提示重新整理 Run |
+| Error | 顯示串流／歷史讀取錯誤、`run_id` 與重連或重新載入動作；保留已載入事件 |
+| Partial / Streaming | 只 append 新事件；重連與載入更早事件都不清空現有列 |
+| Success | 收到終局 `run.status` 後停止 live 標示；全部事件仍可展開與複製 |
 
-- 拖放區佔內容寬度 `--reading-max`，虛線 `--border-default`，拖曳中轉 `--border-focus`
-- 只收 `.tar.gz`；型別或大小不符當場顯示，**不要等送出才報錯**
-- `FormData` + `fetch` 送 `POST /v1/agents/{id}/versions`（multipart）
-- 送出後以 `setInterval`（2s）輪詢版本狀態：`BUILDING`（進行中樣式）→ `PUBLISHED` / `FAILED`。
-  **`destroy()` 一定要 `clearInterval`**
-- `FAILED` 必須顯示 `error.message` 全文，可 `Copy` —— build 失敗的原因是使用者唯一的除錯線索
-- **發布不可逆**（P5：同一個 semver 不能重上）→ 原生 `<dialog>` 二次確認，明講版號與檔案 SHA
+### 5.4 `version-registration.js` — 註冊 OCI image 版本
+
+位於 `/console/agents/{agent_id}/versions/new`，內容寬度 `--reading-max`。這是文字表單，沒有檔案輸入、
+拖放區、upload progress、Registry 密碼或 Docker build 控制項。
+
+- `semver`：必填文字欄，說明「同一 Agent 內不可重用；發布後不可修改」。
+- `image_ref`：必填 mono 多行欄，placeholder 使用 canonical 範例
+  `ghcr.io/acme/research-agent@sha256:<64 hex>`；本地先檢查必須含 `@sha256:` 與 64 位 hex，後端仍是權威。
+- 欄位下固定提示：「請先將 image push 到 VM 可存取的 Registry。私有 Registry credential 由 VM 維運者預先配置，Console 不接收密碼。」
+- 點「註冊並驗證」先開原生 `<dialog>`，逐行顯示 Agent 名稱、`semver`、完整 `image_ref`，並說明
+  「此版本號與 digest 註冊後不可覆寫」。只有 dialog 的確認按鈕送出 JSON `POST /v1/agents/{id}/versions`。
+- 收到 `202` 後鎖定欄位，每 2 秒輪詢版本詳情。`destroy()` 必須 `clearInterval`；終態也要立即停止輪詢。
+- `BUILDING` 顯示聚合進度、已耗時與三個固定步驟說明「拉取 exact digest → inspect runtime → 隔離驗證」，
+  但不可把其中任何一步標成目前 stage，因 API 未提供即時 stage。
+- `PUBLISHED` 顯示完整 `artifact.digest`、`platform`、格式化後 size、`runtime_contract` 與 entrypoint 數量；
+  primary CTA「前往 Agent 詳情」。Copy 一律複製完整值，不能複製短碼。
+- `FAILED` 顯示 `BUILD_FAILED`、`error.message` 全文、`details.stage`、`agent_version_id` 與完整 image ref，
+  並提供 Copy。`BUILD_FAILED` 不可重試原請求；CTA 是「返回 Agent 詳情」與「改用新版本號重新註冊」。
+- `409 VERSION_CONFLICT` 明示該 semver 已存在且不可覆寫；`422 VALIDATION_ERROR` 將
+  `details` 對應到欄位。不得自創其他錯誤碼。
+
+五態：
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 初次載入 Agent metadata 時以表單骨架顯示；送出中按鈕改「註冊中」並 disabled，避免重送 |
+| Empty | `semver` 與 `image_ref` 空白表單；主 CTA disabled，說明先 push 再貼 canonical digest |
+| Error | 顯示 API `error.code`、訊息與可行動建議；若已建立版本則同時顯示 `agent_version_id` |
+| Partial / Streaming | `BUILDING` 輪詢態；保留 `202` 已知 metadata，超過 3 秒顯示驗證工作內容與已耗時 |
+| Success | `PUBLISHED` 摘要與前往詳情 CTA；輪詢已停止 |
 
 ### 5.5 `endpoints-card.js` — 三個門面
 
@@ -336,7 +402,94 @@ export function mount(el, props) {
 - 這是 P3 的使用者可見面，**三個都要在，不能只顯示 REST**
 - `Copy` 用 `navigator.clipboard.writeText`，成功後按鈕文字暫時轉「已複製」1.5s
 
-### 5.6 按鈕（CSS class，不是元件）
+五態：
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 三行固定高度骨架 |
+| Empty | 尚無 `PUBLISHED` 版本時保留三門面區位置，說明「發布版本後即可呼叫」並提供「註冊版本」secondary CTA |
+| Error | 顯示 `error.code` 與「重新載入」；不可留下看似可複製的舊 URL |
+| Partial / Streaming | Agent 詳情已到、版本仍 `BUILDING` 時顯示 API 回傳 URL，但標「尚不可呼叫」；Copy 可用 |
+| Success | 三個 URL 全部顯示且可複製；缺少任一欄即視為 Error，不能只渲染兩個 |
+
+### 5.6 `create-agent-dialog.js` — 建立 Agent metadata
+
+`/console/agents` 頂部唯一 primary CTA「建立 Agent」開啟原生 `<dialog>`；不新增 route，也不設計多步精靈。
+表單只有 `name`（必填）與 `description`（選填）。送 `POST /v1/agents`，`201` 後導向
+`/console/agents/{agent_id}`，讓使用者接著註冊第一個 image 版本。
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 送出後兩欄 disabled，按鈕文字「建立中」；保留輸入值 |
+| Empty | 初始空表單；name 未填時 primary CTA disabled，取消回到列表 |
+| Error | 顯示 `error.code`、訊息與欄位 `details`；保留輸入，focus 第一個錯誤欄 |
+| Partial / Streaming | name 已填而 description 未填是合法 partial；顯示下一步說明「建立後註冊 image 版本」 |
+| Success | 關閉 dialog 並導向新 Agent 詳情；不在列表頁複製成功 toast 與 redirect 兩套結果 |
+
+### 5.7 `agent-list.js` — Agent 列表與選擇入口
+
+列表列顯示 `name`、截斷 description、`latest_published_version`、`updated_at`；整列標題連到 Agent 詳情。
+`agent_id` 可在展開的次要資訊中完整複製。最新版本為 `null` 時顯示文字「尚無已發布版本」，不可顯示假狀態。
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 表頭與 5 列骨架；不顯示假資料 |
+| Empty | 「建立第一個 Agent，接著註冊 OCI image 版本」+「建立 Agent」secondary CTA |
+| Error | 顯示 `error.code`、訊息與「重新載入」；頁首建立 CTA 仍可用 |
+| Partial / Streaming | 已有 items、載入下一 cursor 時保留現有列，底部顯示一列骨架 |
+| Success | 顯示 items；next cursor 非 null 時提供「載入更多」，不做無限捲動 |
+
+### 5.8 `agent-version-list.js` — 版本驗證與 artifact 摘要
+
+Agent 詳情的版本列顯示 `semver`、§2.1 狀態、`version_id` 短碼、platform、size 與 `created_at`。
+展開列才顯示完整 `artifact.image_ref`、digest、runtime contract、entrypoints 與失敗資訊；Copy 使用完整值。
+列表頂部 secondary CTA「註冊版本」連至既有 version-new route。
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 固定列骨架 |
+| Empty | 「尚未註冊版本」+「註冊第一個版本」secondary CTA |
+| Error | 列表請求錯誤顯示 `error.code` 與重載；單一 FAILED version 依 §2.1 正常呈現，不算頁面 Error |
+| Partial / Streaming | 任一版本為 `BUILDING` 時每 2 秒輪詢該版本；已發布與失敗列保持可操作，離頁清除全部 interval |
+| Success | 所有版本依 created time 新到舊顯示；PUBLISHED 列可帶入呼叫區，FAILED 列可展開除錯 |
+
+### 5.9 `run-composer.js` — 選版本、entrypoint 並建立 Run
+
+位於 Agent 詳情，寬度 `--reading-max`。使用者依序選擇 `PUBLISHED` 版本、entrypoint，再輸入 JSON object。
+版本預設 `latest_published_version`；切換版本後讀取該版本詳情並更新 entrypoint 與 schema 說明。
+為控制原生 JS 複雜度，MVP 使用 mono JSON textarea，不把任意 JSON Schema 轉成動態表單。
+
+- 版本選單只列 `PUBLISHED`；`BUILDING` / `FAILED` 不可選。
+- entrypoint 選單顯示 name + description；下方 `<details>` 可展開唯讀 `input_schema`。
+- input 必須先能 parse 成 JSON object；前端可依 schema 提示，後端 `POST /v1/agents/{agent_id}/runs` 仍做權威驗證。
+- 提交 body 只含 `version`、`entrypoint`、`input`；呼叫端不可傳 `trigger`、`image_ref`、command、port、network 或 volume。
+- Console 不送 `X-Zentra-Trigger` 或其他 trigger discriminator。server 會把這個 REST Run 記為 `API`；
+  `trigger` 是回應中的唯讀接入協定，不是 UI 身分。
+- 收到 `202` 後立即導向 `/console/runs/{run_id}`，由既有 Run 觀測頁接手 SSE；不得在 Agent 詳情另開第二套事件流。
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 載入版本／entrypoints 時 select 與 textarea disabled，顯示欄位骨架 |
+| Empty | 沒有 PUBLISHED 版本時說明「先完成 image 驗證」並提供「註冊版本」secondary CTA；沒有 entrypoint 視為契約錯誤 |
+| Error | JSON parse 錯誤就地顯示；API 錯誤顯示 `error.code`、訊息與欄位 details；若已有 `run_id` 必須顯示並可前往觀測 |
+| Partial / Streaming | version 已選但版本詳情仍在載入時保留選擇；送出中鎖定欄位並顯示「建立 Run 中」，禁止重送 |
+| Success | `202` 回應後導向既有 Run 觀測頁；Run 終態與串流只由該頁顯示 |
+
+### 5.10 `recent-runs.js` — Agent 最近 Runs
+
+以 `GET /v1/runs?agent_id={agent_id}&limit=…` 顯示 status、agent version、trigger 與 created time；
+列連到 `/console/runs/{run_id}`。只顯示精簡 Run，不在 Agent 詳情重複 input/output。
+trigger 只接受 `API` 與 `MCP`：Console 建立的 Run 顯示 `API`，不得顯示或保留 `CONSOLE` 分支。
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 固定列骨架 |
+| Empty | 「此 Agent 還沒有執行紀錄」；有 PUBLISHED version 時 CTA 聚焦 Run composer，否則導向註冊版本 |
+| Error | 顯示 `error.code` 與重新載入；不影響版本與 Run composer |
+| Partial / Streaming | 載入下一 cursor 時保留現有列；RUNNING 列只顯示當前已知狀態，不在此頁開 SSE |
+| Success | 依 created time 新到舊顯示；有 next cursor 時提供「查看全部 Runs」連至 Runs 頁並帶 Agent 篩選 |
+
+### 5.11 按鈕（CSS class，不是元件）
 
 | class | 樣式 |
 |---|---|
@@ -346,6 +499,20 @@ export function mount(el, props) {
 | `.btn-danger` | 透明底、`--danger` 文字與邊框；hover 才填 `--danger` |
 
 高度 `--control-md`（CTA 用 `--control-lg`），左右內距 `--space-4`，圓角 `--radius-md`。
+
+### 5.12 五頁組合與完整操作流程
+
+1. `/console/agents`：載入 `agent-list.js`；頁首「建立 Agent」開 `create-agent-dialog.js`。
+2. 建立成功導向 `/console/agents/{agent_id}`。若尚無發布版本，頁面首先顯示註冊版本 CTA。
+3. `/console/agents/{agent_id}/versions/new`：`version-registration.js` 接收 semver + canonical image ref，
+   確認後註冊並輪詢終態；PUBLISHED 後回 Agent 詳情。
+4. Agent 詳情由 `agent-version-list.js`、`endpoints-card.js`、`run-composer.js` 與 `recent-runs.js` 組成。
+   首屏順序是 metadata → 版本 → 呼叫區 → endpoints → 最近 Runs；呼叫區只在有 PUBLISHED version 時可用。
+5. Run 建立成功導向 `/console/runs/{run_id}`，沿用 `streaming-output.js` 與 `run-timeline.js`；
+   `/console/runs` 仍提供跨 Agent 查找與篩選。
+
+同一頁最多一個 primary CTA：Agent 列表是「建立 Agent」、version-new 是「註冊並驗證」、Agent 詳情有可呼叫
+版本時是「執行 Agent」。其他動作用 secondary / ghost，避免 metadata、發布與執行三種操作互相競爭。
 
 ---
 
@@ -367,7 +534,9 @@ apps/console/
       store.js                   ← 約 40 行發布／訂閱，只有 run.html 需要
       shell.js                   ← §5.1
       components/
-        streaming-output.js  run-timeline.js  version-upload.js  endpoints-card.js
+        streaming-output.js  run-timeline.js  endpoints-card.js
+        create-agent-dialog.js  agent-list.js  agent-version-list.js
+        version-registration.js  run-composer.js  recent-runs.js
       pages/
         agents.js  agent.js  version-new.js  runs.js  run.js
 ```
@@ -388,13 +557,27 @@ async function req(path, opts = {}) {
   if (!r.ok) throw new ApiError((await r.json()).error);         // 統一錯誤格式，SPEC §8.4
   return r.status === 204 ? null : r.json();
 }
+const jsonPost = (body) => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
 export const listRuns   = (q)  => req('/runs?' + new URLSearchParams(q));
 export const getRun     = (id) => req(`/runs/${id}`);
 export const cancelRun  = (id) => req(`/runs/${id}/cancel`, { method: 'POST' });
+export const listAgents = (q)  => req('/agents?' + new URLSearchParams(q));
+export const createAgent = (body) => req('/agents', jsonPost(body));
+export const getAgent = (id) => req(`/agents/${id}`);
+export const listAgentVersions = (id) => req(`/agents/${id}/versions`);
+export const getAgentVersion = (id, semver) => req(`/agents/${id}/versions/${encodeURIComponent(semver)}`);
+export const registerAgentVersion = (id, body) => req(`/agents/${id}/versions`, jsonPost(body));
+export const createRun = (id, body) => req(`/agents/${id}/runs`, jsonPost(body));
 ```
 
 沒有型別檢查（ADR-0006 的已知代價），**所以這層的紀律是唯一的防線**。
-頁面裡出現 `data.run_id` 以外的手打欄位名 → 退回。
+API 原始欄位的讀取與正規化集中在這裡；頁面與元件只使用 `api.js` 回傳的 view model。
+`jsonPost()` 必須固定帶 `Content-Type: application/json`。`image_ref` 只能出現在版本註冊 request，
+不能出現在 Run request。`createRun()` 不得在 body 加 `trigger`，也不得送 `X-Zentra-Trigger`；trigger 完全由 server 決定。
 
 ### 6.3 硬性規則
 
@@ -436,3 +619,5 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 | v0.2.0 | 2026-09-20 | 改採 Stock-Insight-Chat 深色單色設計語言；**移除全部 emoji 圖示**，狀態改用圓點 + 文字；補齊尺寸/比例 token（控制項高度、圖示尺寸、版面寬度） | @ui-designer |
 | v0.3.0 | 2026-09-20 | 依 ADR-0005 降維：Console 收斂成五個畫面；移除 `<AgentWizard>` 與 `<FlowCanvas>`；新增 `<VersionUpload>` 與 `<EndpointsCard>`。設計 token 與無障礙底線不變 | @ui-designer |
 | v0.4.0 | 2026-09-20 | 依 [ADR-0006](./adr/ADR-0006-vanilla-frontend.md) 改用原生 HTML + CSS + ES modules（零建置）：§5 元件規格改寫成 `mount(el, props)` module；新增 §6 前端結構與實作約束（檔案配置、`api.js` 契約出口、六條硬性規則、認證）；§3 圖示改為自製 SVG sprite；RunTimeline 的虛擬捲動降級為分頁載入。**§0–§4 的設計語言、token、狀態語言、五態規範完全不變** | @ui-designer |
+| v0.5.0 | 2026-09-22 | 依 ADR-0008 與 ZEN-008 把 `.tar.gz` 上傳改為 canonical OCI digest 註冊；在既有五頁內新增 Agent metadata dialog、版本驗證狀態、artifact 摘要與 Run composer，定義每個新增元件的 Loading / Empty / Error / Partial / Success 五態；API 欄位對齊 `api-contract.md v0.3.0` | @ui-designer |
+| v0.5.1 | 2026-09-22 | 對齊 SPEC / API v0.3.1：Console Run request 不送 body/header trigger discriminator；server 將 Console 與其他 REST 呼叫記為 `API`，MCP 記為 `MCP`；可見流程不變 | @ui-designer |

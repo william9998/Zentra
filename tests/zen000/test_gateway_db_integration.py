@@ -17,7 +17,12 @@ from redis.asyncio import Redis
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from apps.api.enums import BUILTIN_AGENT_ID, RunStatus, RunTrigger
+from apps.api.enums import (
+    BUILTIN_AGENT_ID,
+    BUILTIN_AGENT_VERSION_ID,
+    RunStatus,
+    RunTrigger,
+)
 from apps.api.ids import uuid7
 from apps.api.models import Run, RunEvent
 from apps.api.schemas import SandboxEvent
@@ -47,8 +52,15 @@ def _base_url() -> str:
 
 
 def _run(run_id: UUID) -> Run:
+    """ZEN-008 更新：Run 一定綁一個 agent_version。
+
+    `/internal/runs/{id}/bootstrap` 現在會回該版本的 manifest（沙盒要用它），
+    所以 fixture 不能再留 `agent_version_id=NULL` —— 那是 Agent Registry
+    存在之前的形狀，API 已經產不出來了。
+    """
     return Run(
-        id=run_id, agent_id=UUID(BUILTIN_AGENT_ID), status=RunStatus.RUNNING,
+        id=run_id, agent_id=UUID(BUILTIN_AGENT_ID),
+        agent_version_id=UUID(BUILTIN_AGENT_VERSION_ID), status=RunStatus.RUNNING,
         trigger=RunTrigger.API, entrypoint="default", input={"question": "hello"},
         timeout_seconds=90, started_at=datetime.now(UTC),
     )

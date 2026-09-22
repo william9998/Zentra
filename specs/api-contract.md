@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.2.2` |
+| 契約版本 | `v0.3.1` |
 | 擁有者 | `@architect` |
-| 對齊 Spec | `specs/SPEC.md v0.2.2` |
+| 對齊 Spec | `specs/SPEC.md v0.3.1` |
 
 > **這是前端與後端的唯一交會點。**
 > 後端照此實作，前端照此 mock，QA 照此寫契約測試。
@@ -21,6 +21,12 @@
 
 > **v0.2.2 澄清 ZEN-000 所需的 Internal Gateway 內容格式與 Run 終態權責**：
 > `events` 的 request body 是事件陣列，`result` 只回寫資料；worker 才能在沙盒退出後決定終態。
+
+> **v0.3.0 依 ADR-0008 將尚未實作的 bundle upload 改為 OCI image digest registration**。
+> Runs、SSE、MCP 的呼叫形狀不變；Agent Version 的 artifact 與 validation 契約改為 image。
+>
+> **v0.3.1 裁決 `trigger` 是平台接入協定。** `/v1` HTTP（包含 Console）固定 `API`，
+> FastMCP handler 固定 `MCP`；移除無可信判定方式的 `CONSOLE`。
 
 ---
 
@@ -59,6 +65,7 @@
 | `VALIDATION_ERROR` | 422 | false | 請求格式錯誤，`details` 含欄位層級訊息 |
 | `QUOTA_EXCEEDED` | 429 | true | **超過併發 Run 上限（預設 10）**，含 `Retry-After` |
 | `AGENT_NOT_PUBLISHED` | 409 | false | Agent 版本未發布 |
+| `VERSION_CONFLICT` | 409 | false | 同一 Agent 的 semver 已存在，P5 禁止覆寫 |
 | `BUILD_FAILED` | — | false | 版本發布失敗（寫在 `agent_versions.error`） |
 | `SANDBOX_TIMEOUT` | — | true | 沙盒執行逾時（寫在 Run 的 error，非 HTTP） |
 | `SANDBOX_ERROR` | — | true | 沙盒啟動或崩潰 |
@@ -91,6 +98,17 @@ Request：
 | `input` | object | 是 | 由該 entrypoint 的 schema 驗證 |
 | `version` | string | 否 | 省略則用**最新的 `PUBLISHED` 版本** |
 | `config.timeout_seconds` | int | 否 | 預設 900，**硬上限 900**（SPEC §10） |
+
+只接受上表定義的 top-level 欄位；包含 `trigger` 在內的未知欄位回 `422 VALIDATION_ERROR` 且不建立 Run。
+任何 client header（包含 `X-Zentra-Trigger`、`Origin`、`Referer`）都不能改寫 Run trigger。
+
+**Trigger 的權威來源**：
+
+- 本端點與 `runs:invoke` 由 REST router 在伺服器內固定寫入 `API`。
+- Console 使用同一個端點，因此也寫入 `API`。同源只代表部署拓撲，不是可驗證的 caller identity。
+- MCP `tools/call` 由 FastMCP handler 在伺服器內固定寫入 `MCP`。
+- request body/header 都沒有 discriminator。若未來需要可信的 UI caller 稽核，必須先有 session/API-key 認證，
+  再另增 server-derived 欄位並 bump 契約；不得用可偽造 header 補洞。
 
 Response `202`：
 ```json
@@ -132,7 +150,7 @@ Response `200`：與 `GET /v1/runs/{run_id}` 相同的完整 Run 物件。
 | 欄位 | 值域 |
 |---|---|
 | `status` | `QUEUED` \| `SCHEDULING` \| `RUNNING` \| `SUCCEEDED` \| `FAILED` \| `CANCELLED` — **照抄 SPEC §9，不得自創** |
-| `trigger` | `API` \| `MCP` \| `CONSOLE` |
+| `trigger` | `API` \| `MCP`；表示 server-known ingress protocol。Console 經 REST 建立的 Run 為 `API` |
 | `cost_usd` | **字串**（decimal，避免浮點誤差） |
 
 `output`、`error`、`usage`、`started_at`、`finished_at` 在尚未產生時為 `null`，欄位仍須出現。
@@ -194,34 +212,100 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 | `PATCH` | `/v1/agents/{id}` | 改 metadata（**不可改已發布版本**，P5） |
 | `DELETE` | `/v1/agents/{id}` | 軟刪除 |
 | `GET` | `/v1/agents/{id}/versions` | 版本列表 |
-| `POST` | `/v1/agents/{id}/versions` | **上傳 bundle 並發布**（見下） |
+| `POST` | `/v1/agents/{id}/versions` | **註冊 OCI image digest 並發布**（見下） |
 | `GET` | `/v1/agents/{id}/versions/{semver}` | 版本詳情，含 `entrypoints` 與 build 錯誤 |
 | `GET` | `/v1/agents/{id}/openapi.json` | 該 Agent 的 OpenAPI 3.1 schema（P3） |
 
 > `PUT /v1/agents/{id}/aliases/{alias}`（流量切換）於 v0.2.0 移除。
 > 呼叫時不指定 `version` 即用最新 `PUBLISHED` 版本。
 
-### `POST /v1/agents/{id}/versions` — 上傳並發布
+### Agent metadata
 
-`multipart/form-data`：`bundle`（`.tar.gz`）+ `semver`（string）
+`POST /v1/agents` Request：
+
+```json
+{ "name": "research-agent", "description": "研究與摘要" }
+```
+
+Response `201`：
+
+```json
+{
+  "agent_id": "0192...",
+  "name": "research-agent",
+  "description": "研究與摘要",
+  "latest_published_version": null,
+  "created_at": "2026-09-22T08:00:00Z"
+}
+```
+
+`GET /v1/agents` Response `200`：
+
+```json
+{
+  "items": [{
+    "agent_id": "0192...",
+    "name": "research-agent",
+    "description": "研究與摘要",
+    "latest_published_version": "1.2.0",
+    "updated_at": "2026-09-22T08:10:00Z"
+  }],
+  "next_cursor": null
+}
+```
+
+`GET /v1/agents/{id}` 除上述欄位外，必須包含下方 `endpoints`。列表只回未 soft-delete 的 Agent。
+
+### `POST /v1/agents/{id}/versions` — 註冊並發布 OCI image
+
+`Content-Type: application/json`
+
+```json
+{
+  "semver": "1.2.0",
+  "image_ref": "ghcr.io/acme/research-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+| 欄位 | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `semver` | string | 是 | Agent 內唯一；發布後不可重用 |
+| `image_ref` | string | 是 | canonical OCI digest reference；只接受 `repository@sha256:<64 hex>`，tag-only 為 `422 VALIDATION_ERROR` |
 
 Response `202`：
 ```json
 {
   "agent_version_id": "0192...",
   "semver": "1.2.0",
-  "version_id": "a3f9c1e04b77",
+  "version_id": "0123456789ab",
+  "source_type": "OCI_IMAGE",
+  "artifact": {
+    "image_ref": "ghcr.io/acme/research-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "platform": null,
+    "size_bytes": null,
+    "runtime_contract": null
+  },
   "status": "BUILDING",
+  "error": null,
   "created_at": "..."
 }
 ```
 | 欄位 | 說明 |
 |---|---|
-| `version_id` | **bundle 的 SHA-256 前 12 碼**。P5 的識別依據 |
+| `version_id` | OCI digest hex 的前 12 碼，只供短顯示；P5 的權威身份是 `artifact.digest` 完整值 |
+| `source_type` | MVP 固定 `OCI_IMAGE`；不得出現 bundle 第二路徑 |
+| `artifact.image_ref` | canonical digest reference，發布後不可變 |
+| `artifact.platform` / `size_bytes` / `runtime_contract` | `BUILDING` 可為 `null`；inspect/validate 成功後必須有值 |
 | `status` | `BUILDING` \| `PUBLISHED` \| `FAILED` |
 
 發布是非同步的（`q.build`）。前端輪詢 `GET /v1/agents/{id}/versions/{semver}` 看 `status`。
-同一個 `semver` 重複上傳 → `409`（P5：版本不可變）。
+版本詳情使用同一個 response shape，另含 `manifest` 與 `entrypoints`；兩者在 `BUILDING` 為 `null`，
+`PUBLISHED` 時必須有值。`FAILED` 時 `error.code=BUILD_FAILED`，`error.details.stage` 必須是
+`PULL`、`INSPECT` 或 `VALIDATE`。
+
+同一個 `agent_id + semver` 重複註冊 → `409 VERSION_CONFLICT`，不得建立第二列。
+同一個 digest 可以被不同 Agent/semver 明確引用，但每一列仍是獨立不可變版本。
 
 ### Agent 詳情的 `endpoints`（P3 的體現）
 ```json
@@ -273,6 +357,10 @@ Run 結束立即撤銷。**帶著 A 的 token 存取 B 的 run_id → `403 PERMI
 | `POST` | `/internal/llm/v1/chat/completions` | **OpenAI 相容**。平台換上真金鑰、計量 token、寫 `llm_calls` |
 | `POST` | `/internal/versions/{version_id}/validation` | `--mode=validate` 沙盒回報驗證結果與抽出的 entrypoints schema |
 
+版本 validation 使用 `Authorization: Bearer <validation_token>`。token 綁定單一 `agent_version_id`，
+TTL 最長 10 分鐘，validation 結束立即撤銷。A version token 存取 B version → `403 PERMISSION_DENIED`。
+它不能存取 `/internal/runs/*` 或 `/internal/llm/*`。
+
 ZEN-000 用到的三條路由內容格式如下；這些是沙盒與平台間的契約，公開 `/v1` 的欄位與狀態不因骨架而縮減：
 
 | 路由 | Request | 成功 Response |
@@ -280,6 +368,32 @@ ZEN-000 用到的三條路由內容格式如下；這些是沙盒與平台間的
 | `GET /internal/runs/{run_id}/bootstrap` | 無 body | `200`：`{"run_id":"<uuid>","entrypoint":"default","input":{},"manifest":{}}` |
 | `POST /internal/runs/{run_id}/events` | **頂層 JSON 陣列**：`[{"event_id":"01930000-0000-7000-8000-000000000003","type":"node.start","payload":{"node":"echo_node","ts":"..."}}]`；沙盒可送 `node.start`、`node.end`、`token`、`log`、`custom`、`error`，`run.status` 只由平台產生 | `202`：`{"accepted":1,"last_seq":42}`；`accepted` 是新寫入的事件數，`last_seq` 是此批最後一筆（含重送）的 SSE id，空陣列時為 `null` |
 | `POST /internal/runs/{run_id}/result` | `{"output":{},"error":null,"usage":{}}`；失敗時 `output=null` 且 `error.code` 為 §0 枚舉值 | `202`：`{"accepted":true}` |
+
+`POST /internal/versions/{agent_version_id}/validation` Request：
+
+```json
+{
+  "valid": true,
+  "runtime_contract": "zentra.image/v1",
+  "manifest": {
+    "apiVersion": "zentra/v1",
+    "name": "research-agent",
+    "version": "1.2.0"
+  },
+  "entrypoints": [{
+    "name": "default",
+    "description": "研究並摘要",
+    "input_schema": {"type":"object","properties":{"question":{"type":"string"}},"required":["question"]},
+    "output_schema": {"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}
+  }],
+  "error": null
+}
+```
+
+失敗時 `valid=false`、`manifest=null`、`entrypoints=null`，且 `error` 使用 §0 統一形狀並固定
+`code=BUILD_FAILED`。成功 Response `202`：`{"accepted":true}`。此端點只保存 validation payload，
+**不能自行把版本轉成 `PUBLISHED`**；build-worker 確認 validation container 以 0 結束、digest 未改變且結果存在後，
+才唯一決定 `PUBLISHED` 或 `FAILED`。重送相同 payload 冪等；不同 payload 的第二次提交回 `422 VALIDATION_ERROR`。
 
 `result` 只保存沙盒回報的 output／error／usage，不轉 Run 狀態，也不發終局 `run.status`。
 worker 以沙盒退出狀態與已保存結果為依據，唯一決定 `SUCCEEDED` 或 `FAILED`，
@@ -304,6 +418,8 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.3.1 | 2026-09-22 | 將 `trigger` 收斂為 server-known ingress protocol：REST/Console=`API`、MCP=`MCP`；移除 `CONSOLE`，禁止 body/header discriminator。端點與 Run 建立流程未新增 | @architect |
+| v0.3.0 | 2026-09-22 | 依 ADR-0008 將 Agent Version 發布改為 JSON 註冊 canonical OCI digest；新增版本 artifact/source 欄位、Agent list/create 具體 shape 與 validation token/body。Runs、SSE、MCP 對外形狀不變 | @architect |
 | v0.2.2 | 2026-09-21 | 明定 `GET Run` 未產生欄位的 null 語意、無 LLM 用量；§4 補上 bootstrap/events/result schema、事件 `event_id` 冪等與 worker 唯一決定終態；澄清 `/internal/*` 可由主機埠到達且必驗 token。公開端點和枚舉未新增 | @architect |
 | v0.1.0 | 2026-09-20 | 初版：Runs / Agents / MCP / 錯誤枚舉 | @architect |
 | v0.2.1 | 2026-09-20 | Console 改為同源消費本契約（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)）：§0 補上同源 / 認證 / 靜態檔路由說明。**端點、欄位、枚舉全部未變** | @architect |

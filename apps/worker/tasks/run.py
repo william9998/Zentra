@@ -19,11 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import NoResultFound
 
 from apps.api.config import get_settings
-from apps.api.enums import ErrorCode, RunStatus
-from apps.api.models import Run
+from apps.api.enums import BUILTIN_AGENT_VERSION_ID, AgentVersionStatus, ErrorCode, RunStatus
+from apps.api.models import AgentVersion, Run
 from apps.api.services import runtoken
 from apps.api.services import events as async_events
-from apps.sandbox.drivers.base import SandboxHandle
+from apps.sandbox.drivers.base import SandboxHandle, SandboxPlatformError
 from apps.sandbox.drivers.docker_driver import DockerSandboxDriver
 from apps.sandbox.manager import QuotaExceeded, SandboxManager
 from apps.worker.celery_app import celery_app
@@ -236,7 +236,22 @@ def execute_run(self, run_id: str) -> dict:
             redis, run_id, run.timeout_seconds,
         )
 
-        handle = manager.create(run_id, token)
+        version = session.get(AgentVersion, run.agent_version_id)
+        if version is None or version.status != AgentVersionStatus.PUBLISHED:
+            _transition(
+                session, redis, rid, RunStatus.FAILED, terminal=True,
+                error=_error(
+                    ErrorCode.SANDBOX_ERROR, "published image metadata is unavailable", run_id, True
+                ),
+            )
+            return {"run_id": run_id, "status": str(RunStatus.FAILED)}
+
+        # Keep the ZEN-000 fixture runnable during the migration. Every user
+        # registered version uses the exact DB-resolved digest path.
+        if str(version.id) == BUILTIN_AGENT_VERSION_ID:
+            handle = manager.create(run_id, token)
+        else:
+            handle = manager.create_run(run_id, token, version.image_ref)
         run = _transition(session, redis, rid, RunStatus.RUNNING,
                           sandbox_id=handle.id, started_at=datetime.now(UTC))
 
@@ -249,6 +264,18 @@ def execute_run(self, run_id: str) -> dict:
 
         return _finish_sync(session, redis, rid, result.exit_code, result.logs,
                             timed_out=result.timed_out)
+
+    except SandboxPlatformError as exc:
+        log.exception("run %s sandbox platform failure", run_id)
+        session.rollback()
+        try:
+            current = session.get(Run, uuid.UUID(run_id))
+            if current and not RunStatus(current.status).is_terminal:
+                _transition(session, redis, current.id, RunStatus.FAILED, terminal=True,
+                            error=_error(ErrorCode.SANDBOX_ERROR, str(exc), run_id, True))
+        except Exception:
+            log.exception("failed to mark run %s SANDBOX_ERROR", run_id)
+        return {"run_id": run_id, "status": str(RunStatus.FAILED)}
 
     except Exception as exc:                      # noqa: BLE001 — 最後一道網，不能讓 Run 卡在 RUNNING
         log.exception("run %s crashed in worker", run_id)

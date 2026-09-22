@@ -1,4 +1,10 @@
-"""ZEN-006A static audit of apps/console against ui-contract v0.4.0 and api-contract v0.2.2.
+"""Console 靜態稽核：ui-contract v0.5.1 / api-contract v0.3.1（ZEN-008 更新）。
+
+本檔原本是 ZEN-006A 的範圍護欄（只准兩頁、只准三個端點）。ZEN-008 依契約把
+Console 擴成五頁、把 Agent/Version 端點接上，所以**上限跟著擴**——
+但它仍然是精確集合與白名單，不是「至少包含」：多一個畫面、多一條端點、
+多一個執行期函式庫都要紅。ZEN-006A 三條偏離（`/` 轉址、dialog、localStorage 鷹架）
+在 ZEN-008 全部收斂，對應斷言改成「必須已經收斂」。
 
 These tests need no running service: they audit the delivered source for the
 ui-contract §6.3 hard rules, §2 status language, §3 sprite rules and the
@@ -23,17 +29,30 @@ UI_CONTRACT = REPO / "specs" / "ui-contract.md"
 API_CONTRACT = REPO / "specs" / "api-contract.md"
 
 EXPECTED_FILES = {
+    "agent.html",
+    "agents.html",
     "run.html",
     "runs.html",
+    "version-new.html",
     "static/css/base.css",
     "static/css/layout.css",
     "static/css/tokens.css",
     "static/icons.svg",
     "static/js/api.js",
+    "static/js/components/agent-list.js",
+    "static/js/components/agent-version-list.js",
+    "static/js/components/create-agent-dialog.js",
+    "static/js/components/endpoints-card.js",
+    "static/js/components/recent-runs.js",
+    "static/js/components/run-composer.js",
     "static/js/components/run-timeline.js",
+    "static/js/components/version-registration.js",
     "static/js/dom.js",
+    "static/js/pages/agent.js",
+    "static/js/pages/agents.js",
     "static/js/pages/run.js",
     "static/js/pages/runs.js",
+    "static/js/pages/version-new.js",
     "static/js/shell.js",
     "static/js/store.js",
 }
@@ -48,8 +67,9 @@ CONTRACT_EVENT_TYPES = {
 }
 CONTRACT_ERROR_CODES = {
     "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "VALIDATION_ERROR",
-    "QUOTA_EXCEEDED", "AGENT_NOT_PUBLISHED", "BUILD_FAILED", "SANDBOX_TIMEOUT",
-    "SANDBOX_ERROR", "LLM_ERROR", "EGRESS_BLOCKED", "USER_CODE_ERROR", "INTERNAL_ERROR",
+    "QUOTA_EXCEEDED", "AGENT_NOT_PUBLISHED", "VERSION_CONFLICT", "BUILD_FAILED",
+    "SANDBOX_TIMEOUT", "SANDBOX_ERROR", "LLM_ERROR", "EGRESS_BLOCKED",
+    "USER_CODE_ERROR", "INTERNAL_ERROR",
 }
 # ui-contract §2 status labels, character for character.
 CONTRACT_STATUS_LABELS = {
@@ -62,13 +82,22 @@ CONTRACT_ICON_IDS = {
     "i-chevron-right", "i-chevron-down", "i-rotate-cw", "i-square", "i-search",
 }
 # Values removed in SPEC/api-contract v0.2.0; nobody may render or assert them.
-REMOVED_VALUES = ["WAITING_INPUT", "tool.call", "tool.result", "interrupt"]
+REMOVED_VALUES = ["WAITING_INPUT", "tool.call", "tool.result", "interrupt", "CONSOLE"]
 
-# BOARD ZEN-006A scope ceiling: only these three v1 endpoints exist for this slice.
+# ZEN-008 範圍上限：api-contract v0.3.1 裡 Console 用得到的端點，白名單制。
 ALLOWED_V1_PATTERNS = [
+    re.compile(r"^/agents$"),
+    re.compile(r"^/agents/\{?[^/]*\}?$"),
     re.compile(r"^/agents/\{?[^/]*\}?/runs$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/versions$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/versions/\{?[^/]*\}?$"),
+    re.compile(r"^/runs$"),
     re.compile(r"^/runs/\{?[^/]*\}?$"),
     re.compile(r"^/runs/\{?[^/]*\}?/events$"),
+    # ZEN-008-D5：api.js 定義了 cancelRun()，但 `POST /v1/runs/{id}/cancel` 屬 ZEN-004
+    # 尚未實作（實測 404）。目前沒有任何畫面呼叫它，所以列為已知死碼而非阻擋項；
+    # 下面 test_cancel_client_targets_an_endpoint_that_exists 讓它保持可見。
+    re.compile(r"^/runs/\{?[^/]*\}?/cancel$"),
 ]
 
 
@@ -101,8 +130,8 @@ HTML_FILES = [path for path in _files(".html")]
 # ---------------------------------------------------------------- inventory
 
 
-def test_delivered_file_set_is_exactly_the_zen006a_slice() -> None:
-    """S3: no extra screens or components sneaked in from ZEN-006."""
+def test_delivered_file_set_is_exactly_the_contract_five_pages() -> None:
+    """ui-contract 只定義五個畫面。第六頁或多餘元件混進來就該紅。"""
     assert {_rel(path) for path in _files()} == EXPECTED_FILES
 
 
@@ -318,7 +347,7 @@ def _frozen_enum(source: str, name: str) -> dict:
     return dict(re.findall(r"([A-Z_]+):\s*'([^']+)'", block.group(1)))
 
 
-def test_api_js_enums_match_api_contract_v022() -> None:
+def test_api_js_enums_match_api_contract() -> None:
     source = _read(CONSOLE / "static/js/api.js")
     assert set(_frozen_enum(source, "RUN_STATUS").values()) == CONTRACT_RUN_STATUS
     assert set(_frozen_enum(source, "EVENT_TYPE").values()) == CONTRACT_EVENT_TYPES
@@ -328,7 +357,7 @@ def test_api_js_enums_match_api_contract_v022() -> None:
 def test_contract_enums_still_say_what_this_test_asserts() -> None:
     """Guard against the contract moving underneath us without the Console noticing."""
     contract = _read(API_CONTRACT)
-    assert "| 契約版本 | `v0.2.2` |" in contract
+    assert "| 契約版本 | `v0.3.1` |" in contract
     for code in CONTRACT_ERROR_CODES:
         assert f"`{code}`" in contract, code
     for status in CONTRACT_RUN_STATUS:
@@ -406,8 +435,8 @@ def test_all_network_calls_go_through_api_js() -> None:
     assert len(re.findall(r"new EventSource\(", api)) == 1
 
 
-def test_only_the_three_existing_v1_endpoints_are_referenced() -> None:
-    """BOARD scope ceiling: POST agents/{id}/runs, GET runs/{id}, GET runs/{id}/events."""
+def test_only_whitelisted_v1_endpoints_are_referenced() -> None:
+    """Console 不得自創端點，也不得打尚未實作的端點。"""
     api = _collapse_concat(_strip_js_comments(_read(CONSOLE / "static/js/api.js")))
     paths = set(re.findall(r"req\(\s*'([^']+)'", api))
     paths.update(re.findall(r"new EventSource\(\s*BASE\s*\+\s*'([^']+)'", api))
@@ -417,15 +446,42 @@ def test_only_the_three_existing_v1_endpoints_are_referenced() -> None:
         assert any(pattern.match(stripped) for pattern in ALLOWED_V1_PATTERNS), (
             f"out-of-scope endpoint referenced: {path}"
         )
-    assert paths == {"/runs/{}", "/agents/{}/runs", "/runs/{}/events"}, paths
+    assert paths == {
+        "/agents", "/agents/{}", "/agents/{}/runs", "/agents/{}/versions",
+        "/agents/{}/versions/{}", "/runs", "/runs/{}", "/runs/{}/events",
+        "/runs/{}/cancel",   # ZEN-008-D5：死碼，見下方 xfail
+    }, paths
 
 
 def test_unimplemented_endpoints_are_not_called() -> None:
-    banned = ["/cancel", "/versions", "/openapi.json", "/mcp/", "listRuns", "cancelRun"]
+    """`/cancel` 是 ZEN-004；`/mcp/` 是 MCP 協定端點，瀏覽器永遠不該打它。
+
+    （`/versions` 與 `/openapi.json` 在 ZEN-008 已經實作，從這張清單移除；
+      `endpoints-card` 只是把 openapi URL **顯示**出來，不是自己去呼叫。）"""
+    banned = ["fetch('/mcp", 'fetch("/mcp', "new EventSource('/mcp", "/internal/"]
     for path in JS_FILES + HTML_FILES:
         source = _strip_js_comments(_read(path)) if path.suffix == ".js" else _read(path)
         hits = [name for name in banned if name in source]
         assert hits == [], f"{_rel(path)}: {hits}"
+
+
+def test_no_page_or_component_calls_the_unimplemented_cancel_client() -> None:
+    """真正的風險是「畫面上有一顆按鈕，按下去 404」。定義著沒人用，只是死碼。"""
+    callers = [
+        _rel(path) for path in JS_FILES
+        if path.name != "api.js" and re.search(r"\bcancelRun\b", _strip_js_comments(_read(path)))
+    ]
+    assert callers == [], f"這些畫面呼叫了尚未實作的 cancel 端點：{callers}"
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "ZEN-008-D5（次要）：api.js 匯出 cancelRun()，但 POST /v1/runs/{id}/cancel "
+    "在 ZEN-008 未實作（實測 404，不在 OpenAPI）。目前無人呼叫。"
+    "ZEN-004 補上端點後這條會變 XPASS。"))
+def test_cancel_client_targets_an_endpoint_that_exists() -> None:
+    api = _strip_js_comments(_read(CONSOLE / "static/js/api.js"))
+    openapi_backed = "/cancel" not in api
+    assert openapi_backed, "cancelRun() 指向一個後端還沒有的端點"
 
 
 # ------------------------------------------------------- P4 / isolation (X4-X5)
@@ -453,36 +509,45 @@ def test_console_stores_no_long_lived_credentials() -> None:
     assert storage_keys <= {"SIDEBAR_KEY", "STASH_KEY"}, storage_keys
 
 
-def test_localstorage_stash_is_marked_for_removal() -> None:
-    """BOARD deviation 3: the scaffold must be removable in one block after ZEN-004."""
-    source = _read(CONSOLE / "static/js/pages/runs.js")
-    assert "ZEN-004" in source and "刪除" in source
-    assert re.search(r"STASH_KEY\s*=\s*'zentra\.console\.recentRuns'", source)
-    stash = re.search(r"unshift\(\{(.*?)\}\);", source, re.S)
-    assert stash, "stash record shape not found"
-    fields = set(re.findall(r"(\w+)\s*[,:]", stash.group(1)))
-    assert fields <= {"runId", "question", "createdAt", "truncate", "toISOString"}, fields
+def test_localstorage_run_stash_has_been_removed() -> None:
+    """ZEN-006A 偏離 D3 的收斂點：Runs 頁改讀真的 `GET /v1/runs`，鷹架必須不見。"""
+    for path in JS_FILES:
+        source = _strip_js_comments(_read(path))
+        assert "zentra.console.recentRuns" not in source, _rel(path)
+    storage_keys = set()
+    for path in JS_FILES:
+        storage_keys.update(re.findall(
+            r"(?:local|session)Storage\.\w+\(\s*([A-Z_]+|'[^']*')", _read(path)))
+    assert storage_keys <= {"SIDEBAR_KEY"}, storage_keys
 
 
-def test_root_redirect_deviation_is_documented_in_code() -> None:
-    """BOARD deviation 1: '/' points at /console/runs; the code must say why and when it reverts."""
+def test_root_redirect_deviation_is_resolved() -> None:
+    """ZEN-006A 偏離 D1 的收斂點：`/` 轉回 ui-contract 寫的 `/console/agents`。"""
     static_py = _read(REPO / "apps" / "api" / "static.py")
-    assert 'RedirectResponse("/console/runs", status_code=307)' in static_py
-    assert "/console/agents" in static_py and "ZEN-006" in static_py
+    assert 'RedirectResponse("/console/agents", status_code=307)' in static_py
+    assert '"/console/runs", status_code=307' not in static_py
 
 
-def test_dialog_is_a_native_element_not_a_custom_component() -> None:
-    """BOARD deviation 2: allowed only because it is the native <dialog> (ui-contract §7)."""
-    source = _read(CONSOLE / "static/js/pages/runs.js")
-    assert "<dialog" in source and "showModal()" in source
-    assert not (CONSOLE / "static/js/components/new-run-dialog.js").exists()
+def test_dialogs_are_native_elements_not_custom_components() -> None:
+    """ui-contract §7「原生元素優先」：任何 modal 都必須是原生 <dialog>。"""
+    dialog_sources = [path for path in JS_FILES
+                      if "<dialog" in _read(path) or "showModal()" in _read(path)]
+    assert dialog_sources, "找不到任何 dialog，護欄失效"
+    for path in dialog_sources:
+        source = _read(path)
+        assert "<dialog" in source and "showModal()" in source, _rel(path)
+    for path in JS_FILES:
+        source = _strip_js_comments(_read(path))
+        assert 'role="dialog"' not in source and "role='dialog'" not in source, (
+            f"{_rel(path)} 自製了 modal，沒有用原生 <dialog>")
 
 
 def test_acceptance_file_is_present_for_this_task() -> None:
     """G5: a REVIEW task without written acceptance criteria cannot be judged."""
-    path = REPO / "specs" / "features" / "ZEN-006A" / "acceptance.md"
-    assert path.is_file()
-    assert "ui-contract" in _read(path)
+    for task in ("ZEN-006A", "ZEN-008"):
+        path = REPO / "specs" / "features" / task / "acceptance.md"
+        assert path.is_file(), task
+        assert "ui-contract" in _read(path), task
 
 
 def test_no_stray_json_config_in_console() -> None:

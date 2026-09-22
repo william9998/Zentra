@@ -1,6 +1,11 @@
 """ZEN-006A browser E2E: drives headless Chrome through cdp_console_e2e.mjs and
 turns every recorded check into an individually named pytest result.
 
+ZEN-008 更新：建立 Run 的入口從 runs.html 的 <dialog> 移到 Agent 詳情頁的 run-composer，
+driver 的開場流程與 `dialog.*`／`composer.*` 兩組檢查跟著改指到新畫面。
+Run 觀測頁（狀態語言、時間軸、XSS、SSE 關閉、P4 儲存體）的檢查**沒有動**——
+那些是這支 driver 真正在擋的東西，ZEN-008 沒有改變它們的契約。
+
     ZENTRA_TEST_BASE_URL=http://127.0.0.1:8000 PYTHONPATH=. pytest tests/zen006a/test_console_e2e.py -v
 
 Requirements (all already on this machine, none vendored into the repo):
@@ -30,7 +35,7 @@ CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # silently stops emitting a check fails the suite instead of quietly shrinking it.
 EXPECTED_CHECKS = [
     "env.chrome_version",
-    "runs.empty_has_explanation_and_secondary_button",
+    "composer.offers_published_versions_and_no_credential_fields",
     "dialog.native_opens_modal_and_focuses_input",
     "dialog.empty_submit_sends_no_request",
     "dialog.escape_closes",
@@ -63,7 +68,7 @@ EXPECTED_CHECKS = [
     "runtime.no_console_errors",
     "runtime.no_failed_asset_responses",
     "reload.terminal_run_rebuilds_and_does_not_reconnect",
-    "stash.lists_run_and_renders_payload_as_text",
+    "runs.list_comes_from_the_contract_endpoint_and_stays_text",
     "error404.page_shows_code_runid_and_next_step",
     "error404.code_uses_mono_font",
     "error404.no_uncaught_exception",
