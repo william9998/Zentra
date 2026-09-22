@@ -42,6 +42,8 @@ EXPECTED_FILES = {
     "static/js/components/agent-list.js",
     "static/js/components/agent-version-list.js",
     "static/js/components/create-agent-dialog.js",
+    "static/js/components/delete-agent-dialog.js",
+    "static/js/components/edit-agent-dialog.js",
     "static/js/components/endpoints-card.js",
     "static/js/components/recent-runs.js",
     "static/js/components/run-composer.js",
@@ -131,7 +133,13 @@ HTML_FILES = [path for path in _files(".html")]
 
 
 def test_delivered_file_set_is_exactly_the_contract_five_pages() -> None:
-    """ui-contract 只定義五個畫面。第六頁或多餘元件混進來就該紅。"""
+    """ui-contract 只定義五個畫面。第六頁或多餘元件混進來就該紅。
+
+    例外（**使用者於 2026-09-22 直接授權**，ui-contract 尚未追認）：
+    `edit-agent-dialog.js` / `delete-agent-dialog.js` 是 Agent 詳情頁的 metadata
+    編輯與刪除，走既有的 `PATCH` / `DELETE /v1/agents/{id}`。沒有新增畫面、沒有新增
+    route、沒有新端點。@ui-designer 補進 §5 之前，這兩行就是這條偏離的唯一記號。
+    """
     assert {_rel(path) for path in _files()} == EXPECTED_FILES
 
 

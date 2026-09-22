@@ -8,4 +8,5 @@
 - 完成 `ZEN-006A` Console 早期切片：Run 觀測頁與發起 Run 的 `<dialog>`，原生 HTML/CSS/ES modules、零建置（ADR-0006）。
 - `api` 服務新增 `/console/*` 頁面路由與 `/console/static` 掛載（`include_in_schema=False`，不進 OpenAPI）；api 映像改帶 `apps/console`。
 - 補上 ZEN-006A 驗收條件與 `tests/zen006a`（原始碼契約、路由、範圍上限與 CDP 瀏覽器 E2E，零 npm 依賴）。
+- Console Agent 詳情頁新增「編輯 metadata」與「刪除」兩個原生 `<dialog>`，接既有的 `PATCH` / `DELETE /v1/agents/{id}`；`api.js` 補 `updateAgent()` / `deleteAgent()`。使用者直接授權，**ui-contract 尚未追認（BOARD Q-009）**。
 

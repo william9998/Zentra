@@ -1,5 +1,7 @@
 import { ApiError, ERROR_CODE, VERSION_STATUS, getAgent } from '../api.js';
 import { mount as mountVersionList } from '../components/agent-version-list.js';
+import { mount as mountDeleteDialog } from '../components/delete-agent-dialog.js';
+import { mount as mountEditDialog } from '../components/edit-agent-dialog.js';
 import { mount as mountEndpoints } from '../components/endpoints-card.js';
 import { mount as mountRecentRuns } from '../components/recent-runs.js';
 import { mount as mountComposer } from '../components/run-composer.js';
@@ -13,9 +15,15 @@ const PAGE = `
         <h1 data-title>Agent</h1>
         <p class="page-subtitle" data-description>正在載入 Agent metadata…</p>
       </div>
-      <a class="btn-secondary btn-lg" data-register>註冊版本</a>
+      <div class="page-actions">
+        <button type="button" class="btn-ghost btn-lg" data-edit disabled>編輯</button>
+        <button type="button" class="btn-danger btn-lg" data-delete disabled>刪除</button>
+        <a class="btn-secondary btn-lg" data-register>註冊版本</a>
+      </div>
     </div>
     <div data-page-error hidden></div>
+    <div data-edit-dialog></div>
+    <div data-delete-dialog></div>
     <section class="card">
       <div class="card-header"><h2 class="card-title">基本資料</h2></div>
       <div class="meta-grid" data-meta></div>
@@ -60,6 +68,8 @@ function main() {
   const register = app.querySelector('[data-register]');
   const meta = app.querySelector('[data-meta]');
   const pageError = app.querySelector('[data-page-error]');
+  const editButton = app.querySelector('[data-edit]');
+  const deleteButton = app.querySelector('[data-delete]');
   register.href = '/console/agents/' + encodeURIComponent(agentId) + '/versions/new';
   for (let index = 0; index < 4; index += 1) {
     const item = el('div', 'meta-item');
@@ -103,6 +113,19 @@ function main() {
     onSelect(semver) { composer.selectVersion(semver); },
   });
 
+  // metadata 編輯／刪除。兩顆按鈕在 metadata 載進來之前保持 disabled ——
+  // 沒有 agent 物件就不知道要改什麼，也不該讓人按下去才發現。
+  const editDialog = mountEditDialog(app.querySelector('[data-edit-dialog]'), {
+    onSaved(updated) { applyMetadata(updated); },
+  });
+  const deleteDialog = mountDeleteDialog(app.querySelector('[data-delete-dialog]'), {
+    onDeleted() { location.href = '/console/agents'; },
+  });
+  const onEdit = () => editDialog.open(editButton);
+  const onDelete = () => deleteDialog.open(deleteButton);
+  editButton.addEventListener('click', onEdit);
+  deleteButton.addEventListener('click', onDelete);
+
   const renderMeta = (agent) => {
     meta.replaceChildren();
     const add = (label, value, copyable) => {
@@ -120,6 +143,18 @@ function main() {
     add('Updated', formatDateTime(agent.updatedAt));
   };
 
+  /** 首次載入與編輯成功後走同一條路徑，標題、麵包屑與 meta 不會各更新各的。 */
+  function applyMetadata(agent) {
+    title.textContent = agent.name;
+    description.textContent = agent.description || '沒有描述';
+    shell.setBreadcrumb([{ text: 'Agents', href: '/console/agents' }, { text: agent.name }]);
+    renderMeta(agent);
+    editDialog.update({ agent });
+    deleteDialog.update({ agent });
+    editButton.disabled = false;
+    deleteButton.disabled = false;
+  }
+
   const load = async () => {
     if (!agentId) {
       pageError.hidden = false;
@@ -131,10 +166,7 @@ function main() {
     try {
       const agent = await getAgent(agentId);
       if (destroyed) return;
-      title.textContent = agent.name;
-      description.textContent = agent.description || '沒有描述';
-      shell.setBreadcrumb([{ text: 'Agents', href: '/console/agents' }, { text: agent.name }]);
-      renderMeta(agent);
+      applyMetadata(agent);
       endpoints.update({ loading: false, endpoints: agent.endpoints,
         published: Boolean(agent.latestPublishedVersion) || knownPublished });
       composer.update({ latestPublishedVersion: agent.latestPublishedVersion });
@@ -150,6 +182,10 @@ function main() {
   load();
   const destroy = () => {
     destroyed = true;
+    editButton.removeEventListener('click', onEdit);
+    deleteButton.removeEventListener('click', onDelete);
+    editDialog.destroy();
+    deleteDialog.destroy();
     versions.destroy();
     composer.destroy();
     endpoints.destroy();

@@ -134,11 +134,14 @@ async function req(path, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 
-const jsonPost = (body) => ({
-  method: 'POST',
+const jsonBody = (method, body) => ({
+  method,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+const jsonPost = (body) => jsonBody('POST', body);
+const jsonPatch = (body) => jsonBody('PATCH', body);
 
 // ---- 正規化：契約欄位名到此為止 ----
 
@@ -339,6 +342,25 @@ export async function createAgent(body) {
 
 export async function getAgent(agentId) {
   return viewAgent(await req('/agents/' + encodeURIComponent(agentId)));
+}
+
+/**
+ * PATCH /v1/agents/{id} —— 只改 metadata（name / description）。
+ *
+ * 契約是 partial update：**沒送的欄位維持原值**，所以呼叫端只放真的改了的鍵，
+ * 不要補一份完整物件。空 body 後端回 422（至少要一個欄位），由呼叫端先擋。
+ * 版本、image digest 與已發布的行為都不在這裡 —— 那些發布後不可變（P5）。
+ */
+export async function updateAgent(agentId, changes) {
+  const body = {};
+  if (changes.name !== undefined) body.name = changes.name;
+  if (changes.description !== undefined) body.description = changes.description || null;
+  return viewAgent(await req('/agents/' + encodeURIComponent(agentId), jsonPatch(body)));
+}
+
+/** DELETE /v1/agents/{id} —— 軟刪除，回 204（沒有 body）。 */
+export async function deleteAgent(agentId) {
+  await req('/agents/' + encodeURIComponent(agentId), { method: 'DELETE' });
 }
 
 export async function listAgentVersions(agentId) {

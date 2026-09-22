@@ -128,6 +128,32 @@
 >
 > ZEN-006 正式開工前，上述三點要嘛收斂回 `ui-contract.md`，要嘛刪掉。**不得預設它們已成為契約。**
 
+> **Agent metadata 編輯／刪除（2026-09-22，使用者直接授權，主 session 實作）**：
+> Agent 詳情頁頁首新增「編輯」與「刪除」，接的是 api-contract §2 早就定義、後端也早就實作的
+> `PATCH /v1/agents/{id}` 與 `DELETE /v1/agents/{id}`（軟刪除）。**沒有新端點、沒有新畫面、沒有新 route。**
+> 新增 `apps/console/static/js/components/edit-agent-dialog.js`、`delete-agent-dialog.js`
+> 與 `layout.css` 的 `.page-actions`；`api.js` 補 `updateAgent()` / `deleteAgent()`。
+> PATCH 只送真的改動的欄位，兩欄都沒改時 primary CTA 維持 disabled（空 body 後端回 422）。
+>
+> **這是對 ui-contract v0.5.1 的偏離，待 @ui-designer 追認 —— 見 Q-009，不得視為已核准。**
+> §5 沒有這兩個元件的五態規格，§5.12 的流程也沒有這條路徑。
+> `tests/zen006a/test_console_source_contract.py` 的精確檔案集合護欄已跟著放寬兩個檔名，
+> 護欄本身（白名單制、端點上限、innerHTML 禁令）沒有放鬆。
+>
+> **證據**：`tests/zen006a` 在容器內對活著的服務 **93 passed / 1 xfailed**（含 4 條靜態護欄與路由測試）；
+> 另以 headless Chrome 實測完整點擊流程 **21/21**：預填現值、無變更時 disabled、儲存後標題與麵包屑就地更新、
+> 描述含 `<img onerror>` 以 textContent 寫入（DOM 內 `img` 數 0）、撞名回 `VALIDATION_ERROR` 且 dialog 不關、
+> 刪除後導回列表且詳情 API 回 404、0 未捕捉例外。該腳本是一次性驗證，未進 repo。
+>
+> **未驗證**：Safari／Firefox、窄螢幕、螢幕報讀器、鍵盤 focus trap 的完整行為。
+> **另一個 CDP 驅動的自動化測試沒有補**（`tests/zen006a/cdp_console_e2e.mjs` 需要 node，本機沒有）。
+>
+> **順帶發現的後端缺陷 `AGENT-D1`（既有行為，非本次引入，未修）**：`agents.name` 是無條件的
+> `UNIQUE` 約束，軟刪除只寫 `deleted_at`。因此**刪掉的 Agent 仍永久佔用名稱**，再建同名會回
+> `422 VALIDATION_ERROR: agent name already exists`，而使用者在 Console 上完全看不到那個 Agent。
+> 修法要 migration（改成 `deleted_at IS NULL` 的 partial unique index）＋ @architect 裁決刪除語意，
+> 屬 `apps/api/**`，不在本次授權範圍內。
+
 > **順序說明**：ZEN-000 刻意排第一，目的是**盡早證偽架構假設**而非交付功能。
 > 它一次碰到沙盒生命週期、Celery 冪等、平台注入 compile、事件串流四個高風險點。
 > ZEN-003（隔離硬化）與 ZEN-004（Run API）不相依，可平行。
@@ -151,6 +177,7 @@
 | Q-006 | 硬性規則 5「不准寫死間距」與 media query 衝突：CSS 變數不能用在 media query 條件裡，且零建置無法預處理。目前全 CSS 只有 `768px` 一個字面值斷點，可否接受？ | @frontend-dev | OPEN | — |
 | Q-007 | token 指定 `Inter` / `Outfit` / `Noto Sans TC`，但不引 CDN 也沒有字型檔。自帶字型檔（多幾百 KB 靜態資產）還是接受系統 fallback？目前是 fallback。 | @frontend-dev | OPEN | — |
 | Q-008 | ZEN-008 Console 與外部 REST 共用 `POST /v1/agents/{id}/runs`，如何可信產生不同 `trigger`？ | @qa-verifier | RESOLVED | `trigger` 表示接入協定：REST/Console=`API`、MCP=`MCP`。移除 `CONSOLE`；不接受 body/header discriminator（SPEC/API v0.3.1） |
+| Q-009 | Agent 詳情頁已實作「編輯 metadata」與「刪除」兩個 dialog（`PATCH` / `DELETE /v1/agents/{id}`，api-contract 早有定義），但 ui-contract §5 沒有這兩個元件的規格與五態、§5.12 的操作流程也沒有這條路徑。請 @ui-designer 追認或指定改法。**已由使用者於 2026-09-22 直接授權先實作**，見下方偏離紀錄。 | @orchestrator | OPEN | — |
 
 **提問格式**（新增時照抄）：
 ```
