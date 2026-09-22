@@ -37,6 +37,5 @@ v0.1 的編號在降維後重排。**舊交接單或註解提到這些編號時�
 | Agent Flow 視覺化編排 | 原本就是 MVP 外 |
 | 多租戶 / RLS / Alias 流量切換 | 單租戶 |
 | Kubernetes / gVisor / Warm Pool / CVE 掃描 | 單機 + 信任的程式碼 |
-| Image tar 直傳 / 平台內建 OCI Registry / Dockerfile build service | ADR-0008 選擇既有 Registry + immutable digest；避免大檔儲存與第五個長駐服務 |
 | Python bundle + per-version venv 發布 | ZEN-001 尚未實作即由 ADR-0008 的 OCI image 單一路徑取代；恢復需新 ADR 與雙路徑驗收 |
 | React / Vue / Alpine / htmx / bundler / TypeScript / npm | 前端是原生三件套，零建置（[ADR-0006](../specs/adr/ADR-0006-vanilla-frontend.md)） |

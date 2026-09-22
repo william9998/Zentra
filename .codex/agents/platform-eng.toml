@@ -33,7 +33,8 @@ MVP 只有 `DockerSandboxDriver`。**這個介面就是之後要回到 K8s 時�
 2. `destroy()` 必須冪等 —— 它會在逾時、取消、崩潰、正常結束四條路徑上被呼叫
 
 沙盒**不寫在 compose 裡** —— 它是每個 Run 動態建立、結束即銷毀的資源。
-compose 只跑四個長駐服務（postgres / redis / api / worker）；Console 靜態檔由 api 服務。
+compose 跑五個長駐服務（postgres / redis / registry / api / worker）；Console 靜態檔由 api 服務。
+`registry` 是 ADR-0009 新增的內部 OCI Registry：只掛 `zentra-net`、**絕不接 `zentra-sandbox-net`**。
 
 ## 沙盒四層隔離（每一層都要有，不能只做其中幾層）
 
@@ -80,7 +81,7 @@ compose 只跑四個長駐服務（postgres / redis / api / worker）；Console 
 - **不做** CVE / License 掃描、不建 per-agent image、不接私有 PyPI 鏡像（ADR-0005 砍掉）
 
 ## compose 拓撲
-- 四個長駐服務，不多不少。要加第五個 → 先開 `SPEC-QUESTION`
+- 五個長駐服務，不多不少（第五個 `registry` 由 [ADR-0009](../../specs/adr/ADR-0009-internal-registry-image-upload.md) 裁定）。要加第六個 → 先開 `SPEC-QUESTION`
 - **只有 `worker` 掛 `docker.sock`。** `api` 不准掛
 - `docker.sock` 等同主機 root —— 這個風險在 v0.2.0 是**常駐的**，記錄在架構文件 §9，不要假裝它不存在
 - 本機與正式是同一套。**不要寫兩份 compose**

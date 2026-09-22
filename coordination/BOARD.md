@@ -29,6 +29,32 @@
 | **ZEN-000** | **貫穿骨架**：API → Celery → 沙盒 → trivial LangGraph → SSE 串流 | `REVIEW` | @platform-eng + @backend-dev；@qa-verifier 驗收 | — | [spec](../specs/features/ZEN-000/spec.md) · [acceptance](../specs/features/ZEN-000/acceptance.md) |
 | **ZEN-008** | **OCI image 型 Agent**：digest 註冊 → pull/validate → Registry → Console/REST/MCP → 一 Run 一盒 | `IN_PROGRESS` | @backend-dev + @platform-eng + @frontend-dev；@qa-verifier 驗收 | ZEN-000；整合 ZEN-003/004/005/006 | [spec](../specs/features/ZEN-008/spec.md) · [acceptance](../specs/features/ZEN-008/acceptance.md) · [ADR](../specs/adr/ADR-0008-oci-image-agent-packaging.md) |
 
+> **ZEN-009 的由來（2026-09-22，使用者裁示）**：使用者要求「在前端上傳 docker image 建立 Agent」。
+> [ADR-0008](../specs/adr/ADR-0008-oci-image-agent-packaging.md) 當初評估過並否決了兩個選項：
+> **A（API 直接收 `docker save` tar）** 與 **B（Zentra 自帶 Registry）**。使用者選擇的是**兩者的組合**：
+> 上傳 UX 來自 A，架構來自 B —— 收 tar 後由平台 push 進內部 Registry，再走既有的 digest 流程。
+>
+> **決定性的實測（主 session，2026-09-22）**：`docker save` → `docker load` 之後
+> `RepoDigests` 變成 `[]`，registry 的 manifest digest（`sha256:5f177b80485c…`）消失，
+> 只剩 config digest（`sha256:a6040472a3b0…`），兩者**不是同一個識別**。tar 大小 216 MB。
+> 因此「直接收 tar 並以本機 image 執行」會讓 `PUBLISHED` 版本**失去可重新 pull 的來源**，
+> 一次 `docker image prune` 就永久不可執行 —— 這砸掉 P5「版本不可變且可重現」。
+> 選 B 的架構正是為了避開這點：digest 語意完全不變。
+>
+> **代價**：長駐服務 4 → 5，違反 [ADR-0005](../specs/adr/ADR-0005-mvp-single-host-scope.md) 的單機降維前提之一。
+> ADR-0008 否決 B 的理由是「TLS、認證、GC、容量、備份」，但那是假設做成對外通用 Registry；
+> 只掛 `zentra-net`、不對外開 port、不做認證的內部 Registry 成本較低。**這個取捨要由 @architect 在 ADR-0009 正式裁決，不是這段註記說了算。**
+>
+> **ADR-0009 已落地（2026-09-22），ZEN-009 進 `SPEC_READY`。**
+>
+> **ADR-0009 的關鍵假設已由主 session 實測確認**（架構師在交接單 §誠實回報 標為未實測）：
+> `save → load` 後 `RepoDigests` 為 `[]`；`tag → push` 進內部 Registry 後
+> `RepoDigests` 被填回 `localhost:5010/uploaded/demo@sha256:5f177b80485c…`，
+> **且 digest 與原始 registry push 的完全相同**（manifest 由同一組 layer/config 決定性算出）。
+> 接著刪光本機 image（`docker images -q` 歸零）後，**只憑 digest 重新 pull 成功**，
+> ImageID 與契約 label 皆相同。ZEN-009 的可重現性前提成立。
+> 這不取代 QA 的 §7.1 驗收——QA 仍須在實作完成後以自己的證據驗一次。
+
 > **ZEN-008 現況（2026-09-22，主 session 接手 Codex 未完成的實作）**：
 > Codex 完成實作但**在後端交件前用盡額度**，因此沒有 backend-dev 交接單。主 session 接手後：
 >
@@ -61,6 +87,7 @@
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @backend-dev | ZEN-000 | — |
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-008 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 + ZEN-008 | — |
+| **ZEN-009** | **上傳 image 建立版本**：Console 收 tar → worker load/push 進內部 Registry → 取 manifest digest → 接既有 validate 流程 | `SPEC_READY` | @platform-eng + @backend-dev + @ui-designer + @frontend-dev；@qa-verifier 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 + ZEN-008 | — |
 
 > **ZEN-008 架構裁決（2026-09-22）**：使用者明確要求 Docker image 型 Agent。
@@ -176,9 +203,9 @@
 | Q-005 | §6.2 規定契約欄位名只准出現在 `api.js`。屬性存取已遵守，但畫面把 `run_id` / `llm_calls` / `cost_usd` 當**標籤文字**顯示。標籤文字算不算違規？ | @frontend-dev | OPEN | — |
 | Q-006 | 硬性規則 5「不准寫死間距」與 media query 衝突：CSS 變數不能用在 media query 條件裡，且零建置無法預處理。目前全 CSS 只有 `768px` 一個字面值斷點，可否接受？ | @frontend-dev | OPEN | — |
 | Q-007 | token 指定 `Inter` / `Outfit` / `Noto Sans TC`，但不引 CDN 也沒有字型檔。自帶字型檔（多幾百 KB 靜態資產）還是接受系統 fallback？目前是 fallback。 | @frontend-dev | OPEN | — |
-| Q-008 | ZEN-008 spec §6 只寫「import Agent `build()`」，沒寫簽章。實際 runtime 呼叫的是 `build(context)`，寫成 `def build()` 會 `TypeError` 且只在驗證沙盒裡才看得到。契約要不要明訂簽章？ | @orchestrator | OPEN | — |
-| Q-009 | §6 說「Agent 所有依賴都已在 image 內」，但沒列出 **SDK 自己**需要 `jsonschema`。少裝會在 import 階段就死。要在契約列出 SDK 的執行期依賴，還是讓 SDK 自己宣告（`packages/sdk` 目前沒有 `pyproject.toml`）？ | @orchestrator | OPEN | — |
-| Q-010 | §11 把「官方 base image 與範例 Dockerfile」列為後續文件，但沒有它使用者做不出能通過驗證的 image。`examples/demo-echo/` 已補上可運作的範例——要不要升級成正式的官方 base image？ | @orchestrator | OPEN | — |
+| Q-008 | ZEN-008 spec §6 只寫「import Agent `build()`」，沒寫簽章。實際 runtime 呼叫的是 `build(context)`，寫成 `def build()` 會 `TypeError` 且只在驗證沙盒裡才看得到。契約要不要明訂簽章？ | @orchestrator | RESOLVED | **RESOLVED**：契約明訂 `def build(ctx: ZentraContext) -> StateGraph`，只接受一個位置參數；`validate` 先檢查 arity，不符回 `BUILD_FAILED`。收斂進 SPEC v0.4.0 §8.1。 |
+| Q-009 | §6 說「Agent 所有依賴都已在 image 內」，但沒列出 **SDK 自己**需要 `jsonschema`。少裝會在 import 階段就死。要在契約列出 SDK 的執行期依賴，還是讓 SDK 自己宣告（`packages/sdk` 目前沒有 `pyproject.toml`）？ | @orchestrator | RESOLVED | **RESOLVED**：由 SDK 自己宣告（新增 `packages/sdk/pyproject.toml`），image 契約不列舉傳遞依賴；runtime 啟動做 import 自檢。收斂進 SPEC v0.4.0 §8.1。 |
+| Q-010 | §11 把「官方 base image 與範例 Dockerfile」列為後續文件，但沒有它使用者做不出能通過驗證的 image。`examples/demo-echo/` 已補上可運作的範例——要不要升級成正式的官方 base image？ | @orchestrator | RESOLVED | **RESOLVED**：升級為正式產出 `zentra/agent-base:1.0`（`docker/agent-base.Dockerfile`），本機 build、不發佈、不簽章、不多架構。工作排進 ZEN-009。 |
 | Q-008 | ZEN-008 Console 與外部 REST 共用 `POST /v1/agents/{id}/runs`，如何可信產生不同 `trigger`？ | @qa-verifier | RESOLVED | `trigger` 表示接入協定：REST/Console=`API`、MCP=`MCP`。移除 `CONSOLE`；不接受 body/header discriminator（SPEC/API v0.3.1） |
 | Q-009 | Agent 詳情頁已實作「編輯 metadata」與「刪除」兩個 dialog（`PATCH` / `DELETE /v1/agents/{id}`，api-contract 早有定義），但 ui-contract §5 沒有這兩個元件的規格與五態、§5.12 的操作流程也沒有這條路徑。請 @ui-designer 追認或指定改法。**已由使用者於 2026-09-22 直接授權先實作**，見下方偏離紀錄。 | @orchestrator | OPEN | — |
 

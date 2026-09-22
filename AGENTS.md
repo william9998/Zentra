@@ -3,7 +3,7 @@
 > **每一個 agent（含主 session）在做任何事之前，必須讀完這份文件 + [`specs/SPEC.md`](./specs/SPEC.md)。**
 > 這份文件規範「團隊怎麼一起工作」；SPEC.md 規範「我們在做什麼」。
 >
-> **對齊 SPEC `v0.2.2`（降維後）。** 部署是單機 `docker compose`（4 個服務），分層是 L0–L3 四層，
+> **對齊 SPEC `v0.2.2`（降維後）。** 部署是單機 `docker compose`（5 個服務，含內部 Registry），分層是 L0–L3 四層，
 > 範圍是一條主線，前端是原生 HTML/CSS/JS。
 > 先讀 [ADR-0005](./specs/adr/ADR-0005-mvp-single-host-scope.md) 與 [ADR-0006](./specs/adr/ADR-0006-vanilla-frontend.md)。
 

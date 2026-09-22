@@ -76,4 +76,4 @@
 | **Warm Pool** | 預熱沙盒降低冷啟 | 發布階段先 pull image；Run 使用本機 digest cache，不維護預熱容器 |
 | **HITL / `WAITING_INPUT` / Checkpointer** | 中斷後續跑 | 狀態機已移除 `WAITING_INPUT`。MVP 的 LangGraph 用行程內 `MemorySaver` |
 | **Code Bundle / per-version venv** | `.tar.gz` 上傳後由平台安裝依賴 | ADR-0008 改為開發者自建 OCI image；恢復需新 ADR 與雙路徑驗收 |
-| **平台內建 Registry / image tar 直傳** | 平台接收或託管 image blob | 會增加大檔儲存與第五個長駐服務；MVP 只註冊既有 Registry 的 digest |
+| **平台內建 Registry / image tar 直傳** | 平台接收或託管 image blob | ~~MVP 只註冊既有 Registry 的 digest~~ → **v0.4.0 已納入**：[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 裁定加入內部 Registry（第五個長駐服務），上傳的 tar 由平台 push 後仍以 digest 識別。外部 Registry 註冊仍是正途 |

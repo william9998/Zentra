@@ -7,14 +7,20 @@
 
 | 欄位 | 值 |
 |---|---|
-| Spec 版本 | `v0.3.1` |
+| Spec 版本 | `v0.4.0` |
 | 狀態 | `DRAFT` |
 | 最後更新 | 2026-09-22 |
 | 擁有者 | `@architect` |
 
+> **v0.4.0 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 新增第二條 image 進場路徑。**
+> 使用者可以直接上傳 `docker save` 的 tar，平台 `docker load` → push 進**內部 OCI Registry** →
+> 以 registry 回報的 manifest digest 當版本身份，之後與 digest 註冊路徑**完全相同**。
+> 代價是長駐服務 **4 → 5**（修訂 ADR-0005 的服務清單）。
+> **`version_id` 語意不變、P1–P5 一條沒鬆**，且 P5 的可重現性被強化為不變式。
+>
 > **v0.3.0 依 [ADR-0008](./adr/ADR-0008-oci-image-agent-packaging.md) 改變 Agent 交付格式。**
 > 開發者自行 build 並 push OCI image，平台以 immutable digest 註冊、驗證與執行；
-> image 取代尚未實作的 bundle + per-version venv 路徑。部署仍是 4 個長駐服務，P1–P5 不變。
+> image 取代尚未實作的 bundle + per-version venv 路徑。（當時是 4 個長駐服務；v0.4.0 後為 5 個。）P1–P5 不變。
 >
 > **v0.2.x 是一次降維改版。** 依 [ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md)：
 > 部署從 Kubernetes 收斂成**單機 docker compose**，分層從 L0–L6 七層降到**四層**，範圍收斂成**一條主線**。
@@ -26,8 +32,9 @@
 
 ## 1. 產品一句話
 
-**Zentra 是一個 Agent 平台**：開發者把自己的 LangGraph Agent build 成 OCI image 並 push 到 Registry，
-平台以 immutable digest 註冊成版本、在**隔離沙盒**中執行，並自動對外開放 **REST API** 與 **MCP** 兩種接口。
+**Zentra 是一個 Agent 平台**：開發者把自己的 LangGraph Agent build 成 OCI image，
+**push 到 Registry 後以 digest 註冊，或直接把 image tar 上傳給平台**，
+平台以 immutable digest 凍結成版本、在**隔離沙盒**中執行，並自動對外開放 **REST API** 與 **MCP** 兩種接口。
 
 ### 1.1 交付條件（決定了下面所有取捨）
 
@@ -38,7 +45,7 @@
 | 程式碼來源 | **只跑自己信得過的程式碼** |
 | 交付目標 | MVP demo |
 | 時程 | 2 個月（8 週） |
-| 部署 | **單機 docker compose**（4 個服務），本機與正式是同一套 |
+| 部署 | **單機 docker compose**（**5 個服務**，v0.4.0 新增內部 Registry），本機與正式是同一套 |
 
 **這張表變了，整份規格就要重讀。** 尤其「信任的程式碼」這條——
 一旦要跑不是自己寫的 Agent，回去讀 [ADR-0001](./adr/ADR-0001-sandbox-isolation.md) 與 [ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md) 的「何時該重新檢討」。
@@ -68,7 +75,7 @@
 
 | 角色 | 情境 | 主要介面 |
 |---|---|---|
-| **Agent 開發者** | 寫 LangGraph、build/push OCI image、以 digest 註冊並發布版本 | Docker/OCI CLI + Zentra Console/API/SDK |
+| **Agent 開發者** | 寫 LangGraph、build OCI image，**然後二選一**：push 到 Registry 以 digest 註冊，或在 Console 上傳 `docker save` 的 tar | Docker/OCI CLI + Zentra Console/API/SDK |
 | **外部系統** | 以 REST 或 MCP 呼叫已發布的 Agent | `/v1/...` · `/mcp/agents/{id}` |
 | **維運者（＝同一個人）** | 看 Run 的事件流、失敗原因、token 用量 | Console |
 
@@ -82,7 +89,8 @@ MVP 沒有「平台組裝者」與「平台管理員」這兩個角色——它�
 L0 接入 + 控制   api (FastAPI)  REST · MCP · SSE · Console 靜態檔 · Internal Gateway · Agent Registry
 L1 派工          worker (Celery, Redis broker)  q.run · q.build
 L2 執行          Sandbox Manager → Sandbox（Docker，一 Run 一盒）
-L3 資料          PostgreSQL · Redis · Docker daemon image cache（image 本體的權威來源是外部 OCI Registry）
+L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daemon image cache
+                （image 本體的權威來源：註冊路徑＝外部 Registry；上傳路徑＝內部 Registry）
 ```
 
 > **沒有 Console BFF。** Console 是原生 HTML/CSS/JS 靜態檔，由 `api` 服務，
@@ -92,8 +100,9 @@ L3 資料          PostgreSQL · Redis · Docker daemon image cache（image 本�
 
 **分層硬規則**：
 1. 上層只能呼叫下一層或同層的公開介面。
-2. **L2 沙盒不得直連 L3 資料層**——沒有 Postgres 連線、沒有 Redis 連線，一律經 Internal Gateway。
+2. **L2 沙盒不得直連 L3 資料層**——沒有 Postgres 連線、沒有 Redis 連線、**沒有 Registry 連線**，一律經 Internal Gateway。
 3. 沙盒的網路對端**有且只有一個**：`api`。
+   **內部 Registry 絕對不接 `zentra-sandbox-net`**；沙盒的 image 是 daemon 給的，沙盒自己不拉 image。
 
 ## 6. 技術選型（已定案，變更需開 ADR）
 
@@ -108,7 +117,8 @@ L3 資料          PostgreSQL · Redis · Docker daemon image cache（image 本�
 | MCP | FastMCP（Streamable HTTP） | | 掛載在同一個 FastAPI app |
 | 資料庫 | PostgreSQL | 16 | 用 `pgvector/pgvector:pg16` 映像——擴充先備著，MVP 不用 |
 | 快取 / 串流 | Redis | 7 | Celery broker + result + Streams 事件匯流 |
-| Agent artifact | **OCI image digest** | OCI Image Spec | image 本體在既有 Registry；PostgreSQL 只存 metadata；VM 保留 Docker image cache |
+| Agent artifact | **OCI image digest** | OCI Image Spec | image 本體在外部或內部 Registry；PostgreSQL 只存 metadata；VM 保留 Docker image cache |
+| 內部 Registry | CNCF distribution `registry:2` | 2.8 | 只掛 `zentra-net`、只發布 `127.0.0.1:5000`、**無 TLS / 無認證 / 無自動 GC**（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md)） |
 | Image runtime contract | `zentra.image/v1` | | 固定 executable + validate/run mode；平台不執行 `pip install` |
 | 前端 | **原生 HTML + CSS + ES modules** | — | **零建置**：無 bundler、無 TypeScript、無 npm / pnpm（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)） |
 | UI | 原生 CSS custom properties | | 設計 token 見 [`specs/ui-contract.md`](./ui-contract.md)，**本來就是純 CSS 變數** |
@@ -118,15 +128,25 @@ L3 資料          PostgreSQL · Redis · Docker daemon image cache（image 本�
 | 觀測 | 結構化 JSON log + DB 事件表 | | 不引入 OTel / Langfuse / Prometheus |
 | 套件管理 | uv（Python）**only** | | 前端沒有套件管理員，因為沒有套件 |
 
-### 6.1 執行環境（4 個長駐服務）
+### 6.1 執行環境（5 個長駐服務）
 
 ```
-docker compose（長駐）                    Sandbox Manager 動態建立（不在 compose 檔裡）
+docker compose（長駐，5 個）              Sandbox Manager 動態建立（不在 compose 檔裡）
   postgres                                  sandbox-<run_id>
   redis                                     每 Run 一個，結束即銷毀
+  registry ← L3（內部 OCI Registry）
   api      ← L0（含 Console 靜態檔）
   worker   ← L1
 ```
+
+**內部 Registry（v0.4.0 新增，ADR-0009）**：只掛 `zentra-net`，**只發布 `127.0.0.1:5000:5000`**。
+必須發布 loopback port 的理由是拓撲而非偏好——push/pull 的執行者是**主機上的 Docker daemon**，
+它不在 `zentra-net` 上、解析不到服務名；`localhost` 同時讓 daemon 預設允許明文 HTTP，
+不必改 `daemon.json`。**前提：daemon 與 compose 同一台主機。**
+
+**備份範圍（誠實標示）**：`registrydata` volume 與 `pgdata` **同等重要**。
+上傳來源的 `PUBLISHED` 版本，其 image 本體只存在 `registrydata` 裡；刪掉它＝那些版本永久不可執行。
+MVP **不提供自動備份、不做自動 GC**（`delete.enabled=false`，手動 GC 見維運說明）。
 
 **Console 沒有自己的容器**：`api` 用 `StaticFiles` 掛載 `apps/console/`，
 並以五條 `FileResponse` 路由給出乾淨網址（`/console/agents`、`/console/runs/{run_id}` …），
@@ -154,16 +174,35 @@ docker compose（長駐）                    Sandbox Manager 動態建立（不
 
 ### 7.1 發布一個 Agent 版本
 
-1. 開發者自行 build image，push 到 VM 能存取的 OCI Registry，取得
-   `repository@sha256:<digest>`；tag-only reference 不接受
-2. `POST /v1/agents/{id}/versions` 註冊 `semver` + canonical `image_ref`
-3. `api` 寫 `agent_versions`（`BUILDING`），送 Celery task 進 `q.build`；PostgreSQL 不保存 image blob
-4. build worker 以平台側 Registry credential pull exact digest，inspect platform/label/runtime contract
+開發者自行 build image 後，有**兩條進場路徑**，它們在「拿到 canonical digest reference」這一刻匯流，
+**之後完全相同**（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md)）：
+
+| | 路徑 A：註冊（`origin=REGISTERED`） | 路徑 B：上傳（`origin=UPLOADED`） |
+|---|---|---|
+| 前置 | push 到 VM 能存取的 OCI Registry | 無，手上有 image 就行 |
+| 請求 | `POST .../versions`，JSON + canonical `image_ref` | 同一端點，`multipart/form-data` + `docker save` tar |
+| build 階段 | `PULL → INSPECT → VALIDATE` | `LOAD → PUSH → INSPECT → VALIDATE` |
+| digest 來源 | 呼叫端提供，worker 驗證一致 | 平台 push 進內部 Registry 後由 registry 回報 |
+
+1. 進場：路徑 A 提供 `repository@sha256:<digest>`（tag-only reference 不接受）；
+   路徑 B 上傳 tar，**呼叫端不能指定任何 image reference**
+2. `POST /v1/agents/{id}/versions` 送出 `semver` + （`image_ref` 或 tar）
+3. `api` 寫 `agent_versions`（`BUILDING`），送 Celery task 進 `q.build`；
+   **PostgreSQL 不保存 image blob**，tar 落在共享 volume 且用完即刪
+4. 路徑 B 先 `LOAD`（交給 daemon，平台行程不解析 tar）→ `PUSH` 進內部 Registry，
+   並以 `RepoDigests` 確認取得 manifest digest；路徑 A 則以平台側 Registry credential pull exact digest。
+   兩者接著 inspect platform/label/runtime contract
 5. 起一次性 validation container：以 uid 65534、唯讀 rootfs、internal 網段執行
    `/opt/zentra/bin/zentra-agent validate`；import 使用者模組、驗證 `build()` 與未 compile `StateGraph`，
    抽出 entrypoints schema，再以短效 validation token POST 回 Internal Gateway
 6. 通過 → 保存完整 digest、manifest、entrypoints 並轉 `PUBLISHED`，配發 REST/MCP/OpenAPI（P3）；
-   失敗 → `FAILED + BUILD_FAILED`。不論結果都撤銷 token、銷毀 validation container
+   失敗 → `FAILED + BUILD_FAILED`（`details.stage` ∈ `LOAD|PUSH|PULL|INSPECT|VALIDATE`）。
+   不論結果都撤銷 token、銷毀 validation container
+
+**P5 的不變式**：沒有可重新 pull 的 canonical digest reference，**不得**成為 `PUBLISHED`。
+`docker save`／`load` 會丟失 registry manifest digest（`RepoDigests` 變空），
+因此上傳路徑必須先 push 才有版本身份——這由 DB CHECK 與 `RepoDigests` 非空檢查共同保證。
+`artifact.origin` 只是描述來源，**任何執行期行為都不得依它分支**。
 
 ### 7.2 呼叫 Agent（非同步 Run）
 
@@ -211,6 +250,21 @@ def build(ctx: ZentraContext) -> StateGraph:
 MVP 的 `ctx` 提供：`ctx.llm()`、`ctx.logger`、`ctx.emit()`、`ctx.config`。
 **不提供** `ctx.tools`、`ctx.knowledge`、`ctx.secrets` —— 它們在 §11 的 MVP 外。
 
+**簽章是契約的一部分（v0.4.0 裁決 Q-008）**：`build` 必須接受**且只接受一個位置參數**，
+參數名稱不限，回傳未 compile 的 `StateGraph`。`validate` mode 必須在呼叫前檢查 arity，
+不符時回 `BUILD_FAILED` 並在 message 明說「`build()` 必須接受一個 ctx 參數」——
+這個錯誤只在驗證沙盒裡看得到，訊息是使用者唯一的線索。
+
+**SDK 依賴由 SDK 自己宣告（v0.4.0 裁決 Q-009）**：`packages/sdk/pyproject.toml` 宣告
+`jsonschema` / `httpx` / `langgraph` 等 runtime dependency。image 契約只要求
+「image 內有一份可用的 `zentra_sdk`」，**不列舉它的傳遞依賴**（列舉會過期）。
+runtime 啟動先做 import 自檢，缺件時報出缺哪個模組。
+
+**官方 base image（v0.4.0 裁決 Q-010）**：`zentra/agent-base:1.0`（`docker/agent-base.Dockerfile`）
+提供 Python 3.12 + `zentra_sdk` + LangGraph + `/opt/zentra/bin/zentra-agent` + label + `USER 65534:65534`。
+使用者的 Dockerfile 縮成 `FROM zentra/agent-base:1.0` + 一行 `COPY`。
+**本機 build，不發佈公開 Registry、不簽章、不多架構**，tag 固定 `1.0`。
+
 ### 8.2 REST（節錄）
 | Method | Path | 說明 |
 |---|---|---|
@@ -219,7 +273,7 @@ MVP 的 `ctx` 提供：`ctx.llm()`、`ctx.logger`、`ctx.emit()`、`ctx.config`�
 | `GET` | `/v1/runs/{run_id}` | 查 Run 狀態 |
 | `GET` | `/v1/runs/{run_id}/events` | SSE 事件串流 |
 | `POST` | `/v1/runs/{run_id}/cancel` | 取消 |
-| `POST` | `/v1/agents/{agent_id}/versions` | 以 OCI digest 註冊並發布新版本 |
+| `POST` | `/v1/agents/{agent_id}/versions` | 發布新版本：JSON = 註冊 OCI digest；multipart = 上傳 image tar |
 
 Run 的 `trigger` 表示**平台接入協定**，不是 UI 身分：所有 `/v1/.../runs` HTTP 呼叫（包含同源 Console）
 都由伺服器記為 `API`；只有 FastMCP 的 `tools/call` 記為 `MCP`。同源、`Referer`、`Origin`、
@@ -263,16 +317,20 @@ TIMEOUT / SANDBOX_ERROR / USER_CODE_ERROR 皆歸入 FAILED，以 error.code 區�
 | 可用性 | **不設目標** | 單機即單點故障。`restart: unless-stopped` + 健康檢查，主機重開 = 停機。**誠實不承諾，而不是承諾做不到的數字** |
 | 資料隔離 | 單租戶。資料表留 `owner_id` 欄位但**不做 RLS** | 多租戶在 MVP 外 |
 | 稽核 | 所有 LLM 呼叫 100% 留存於 `llm_calls` | 沙盒沒有其他出口，這就是全部的外網活動 |
+| image 上傳 | 單檔 **≤ 2 GiB**（可設定）；無斷點續傳、無分塊 | 中斷即整包重來，且必須換新 `semver`（v0.4.0） |
+| 內部 Registry 容量 | 上限＝主機磁碟。**無自動 GC、無配額系統** | 上傳前做磁碟餘裕預檢（`429 QUOTA_EXCEEDED`）；空間不足在 build 階段表現為 `BUILD_FAILED / stage=PUSH` |
 
 ## 11. 範圍界線
 
 ### MVP 內（唯一主線）
 
 ```
-push OCI image → 以 digest 發布不可變版本 → 沙盒執行 → 自動 REST + MCP → Run 觀測（SSE）
+（push OCI image 並註冊 digest ─┬─→）以 digest 發布不可變版本 → 沙盒執行
+（上傳 image tar ──────────────┘）   → 自動 REST + MCP → Run 觀測（SSE）
 ```
 
-具體：OCI image 型 Agent、版本發布與 digest 凍結、Celery 派工、Docker 沙盒四層隔離、
+具體：OCI image 型 Agent、**兩條 image 進場路徑（外部 digest 註冊 + tar 上傳 → 內部 Registry）**、
+版本發布與 digest 凍結、Celery 派工、Docker 沙盒四層隔離、
 Internal Gateway（LLM 代理 + 事件回收）、REST + MCP 雙門面、Run 觀測、Console 五個畫面（原生 HTML/CSS/JS）、`zentra` CLI。
 
 ### MVP 外（架構留位，不寫程式碼）
@@ -280,7 +338,12 @@ Internal Gateway（LLM 代理 + 事件回收）、REST + MCP 雙門面、Run 觀
 平台組裝式 Agent、知識庫 / Ingestion / Hybrid Search、Tool Registry、Skill Registry、
 HITL resume、Agent Flow 視覺化編排、多租戶與 RLS、Alias 流量切換、排程觸發（Beat）、
 計費出帳、CVE / License / image 簽章掃描、Warm Pool、Kubernetes 部署、
-Python bundle/venv 發布、image tar 直傳、平台內建 OCI Registry 與 Dockerfile build service。
+Python bundle/venv 發布、**Dockerfile 上傳與遠端 build service**、
+內部 Registry 的 TLS / 認證 / 自動 GC / 配額 / 自動備份、版本或 image 的刪除功能、
+斷點續傳與分塊上傳。
+
+> v0.4.0 把「image tar 直傳」與「平台內建 OCI Registry」**移出**本清單（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 已裁定實作）。
+> 移出的只有這兩項，同段其餘各項一律仍在 MVP 外。
 
 > **「架構留位」的意思是：介面切乾淨，不是預先建一個沒人用的抽象。**
 > `SandboxDriver`、`ObjectStore`、`entrypoints` 這三個介面是留位；
@@ -299,6 +362,7 @@ Python bundle/venv 發布、image tar 直傳、平台內建 OCI Registry 與 Doc
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 新增 image tar 上傳路徑與**內部 OCI Registry**（長駐服務 4 → 5，修訂 ADR-0005 的服務清單）；明定兩條路徑的匯流點與「`origin` 不得影響執行期行為」；把 P5 可重現性寫成不變式（`RepoDigests` 非空 + DB CHECK）；裁決 Q-008（`build(ctx)` 簽章）、Q-009（SDK 自行宣告依賴）、Q-010（官方 base image）。`version_id` 語意、Run 狀態機、錯誤 code、沙盒隔離與 P1–P5 均未變 | @architect |
 | v0.3.1 | 2026-09-22 | 裁決 Run `trigger` 為可信的接入協定：REST 與 Console 共用 `/v1`，一律為 `API`；FastMCP handler 為 `MCP`；移除無法可靠判定的 `CONSOLE`。不新增 client 可控 discriminator | @architect |
 | v0.3.0 | 2026-09-22 | 依 [ADR-0008](./adr/ADR-0008-oci-image-agent-packaging.md) 將尚未實作的 Python bundle + per-version venv 發布路徑改為 OCI image digest 註冊；image 本體在既有 Registry，PostgreSQL 只存 metadata；新增 `zentra.image/v1` validate/run 契約。REST/MCP → Celery → 一 Run 一盒 → 銷毀與 P1–P5 不變 | @architect |
 | v0.2.2 | 2026-09-21 | 澄清 Run 完成權責：沙盒經 Internal Gateway 回寫結果，worker 確認退出並唯一決定終態、終局 SSE 事件、token 撤銷與沙盒銷毀；事件以 `(run_id,event_id)` 冪等落庫、SSE 以 DB `seq` 去重；不改 P1–P5 或 MVP 範圍 | @architect |

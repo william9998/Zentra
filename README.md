@@ -119,7 +119,7 @@ Local and production are the same `docker compose` stack — there is no separat
 > **已依 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) 降維：** 內部工具、單租戶、信任的程式碼、八週 MVP。
 > 部署是**一台主機跑 `docker compose`**，不用 Kubernetes。
 > 前端再依 [ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md) 改為**原生 HTML + CSS + ES modules，零建置**，
-> 由 API 自己服務 —— **總共四個服務**。
+> 由 API 自己服務 —— **總共五個服務**（含 ADR-0009 新增的內部 Registry）。
 > 下面五條立場一條沒動，但底下的基礎設施只剩四分之一。
 
 ### 為什麼這樣設計
@@ -142,7 +142,7 @@ Local and production are the same `docker compose` stack — there is no separat
 
 ![Zentra 系統架構](docs/architecture/zentra-architecture.svg)
 
-一台主機、一個 `docker compose`、**四個**長駐服務（postgres · redis · api · worker），
+一台主機、一個 `docker compose`、**五個**長駐服務（postgres · redis · registry · api · worker），
 加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
 沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `api` 服務的 **Internal Gateway**——
 由它代持 LLM 金鑰、計量 token、回收事件。

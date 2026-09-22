@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.3.1` |
+| 契約版本 | `v0.4.0` |
 | 擁有者 | `@architect` |
-| 對齊 Spec | `specs/SPEC.md v0.3.1` |
+| 對齊 Spec | `specs/SPEC.md v0.4.0` |
 
 > **這是前端與後端的唯一交會點。**
 > 後端照此實作，前端照此 mock，QA 照此寫契約測試。
@@ -27,6 +27,12 @@
 >
 > **v0.3.1 裁決 `trigger` 是平台接入協定。** `/v1` HTTP（包含 Console）固定 `API`，
 > FastMCP handler 固定 `MCP`；移除無可信判定方式的 `CONSOLE`。
+>
+> **v0.4.0 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 新增 image tar 上傳這條進場路徑**：
+> `POST /v1/agents/{id}/versions` 同一個端點同時接 JSON（外部 Registry digest 註冊）與
+> multipart（上傳 `docker save` tar，由平台 push 進內部 Registry）。
+> **`version_id` 語意不變**、`source_type` 仍固定 `OCI_IMAGE`、**沒有新增任何錯誤 code**。
+> Runs、SSE、MCP 的形狀一個欄位都沒改。
 
 ---
 
@@ -63,7 +69,7 @@
 | `PERMISSION_DENIED` | 403 | false | 已認證但無此 scope |
 | `NOT_FOUND` | 404 | false | 資源不存在 |
 | `VALIDATION_ERROR` | 422 | false | 請求格式錯誤，`details` 含欄位層級訊息 |
-| `QUOTA_EXCEEDED` | 429 | true | **超過併發 Run 上限（預設 10）**，含 `Retry-After` |
+| `QUOTA_EXCEEDED` | 429 | true | **超過資源上限**：併發 Run 上限（預設 10）或上傳前磁碟餘裕不足（`details.reason="insufficient_disk"`）。含 `Retry-After` |
 | `AGENT_NOT_PUBLISHED` | 409 | false | Agent 版本未發布 |
 | `VERSION_CONFLICT` | 409 | false | 同一 Agent 的 semver 已存在，P5 禁止覆寫 |
 | `BUILD_FAILED` | — | false | 版本發布失敗（寫在 `agent_versions.error`） |
@@ -256,9 +262,19 @@ Response `201`：
 
 `GET /v1/agents/{id}` 除上述欄位外，必須包含下方 `endpoints`。列表只回未 soft-delete 的 Agent。
 
-### `POST /v1/agents/{id}/versions` — 註冊並發布 OCI image
+### `POST /v1/agents/{id}/versions` — 註冊或上傳 OCI image 並發布
 
-`Content-Type: application/json`
+同一個端點有**兩條進場路徑**，由 `Content-Type` 決定。兩者建立的是同一種資源、同一個 response shape、
+同一個狀態機，且在取得 canonical digest 之後走**完全相同**的後續流程（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md)）。
+
+| Content-Type | 路徑 | `artifact.origin` |
+|---|---|---|
+| `application/json` | 註冊外部 Registry 上已存在的 canonical digest | `REGISTERED` |
+| `multipart/form-data` | 上傳 `docker save` 產生的 tar，由平台 push 進內部 Registry | `UPLOADED` |
+
+其他 Content-Type → `422 VALIDATION_ERROR`。
+
+#### 路徑 A：`Content-Type: application/json`
 
 ```json
 {
@@ -280,6 +296,7 @@ Response `202`：
   "version_id": "0123456789ab",
   "source_type": "OCI_IMAGE",
   "artifact": {
+    "origin": "REGISTERED",
     "image_ref": "ghcr.io/acme/research-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "platform": null,
@@ -302,10 +319,62 @@ Response `202`：
 發布是非同步的（`q.build`）。前端輪詢 `GET /v1/agents/{id}/versions/{semver}` 看 `status`。
 版本詳情使用同一個 response shape，另含 `manifest` 與 `entrypoints`；兩者在 `BUILDING` 為 `null`，
 `PUBLISHED` 時必須有值。`FAILED` 時 `error.code=BUILD_FAILED`，`error.details.stage` 必須是
-`PULL`、`INSPECT` 或 `VALIDATE`。
+`LOAD`、`PUSH`、`PULL`、`INSPECT` 或 `VALIDATE` 之一。
+`LOAD` / `PUSH` 只出現在 `origin=UPLOADED`（`LOAD → PUSH → INSPECT → VALIDATE`）；
+`PULL` 只出現在 `origin=REGISTERED`（`PULL → INSPECT → VALIDATE`）。
+`BUILD_FAILED` 一律 `retryable:false`：上傳的 tar 在終態時已被刪除，重試必須以**新的 `semver`** 重新送出。
 
 同一個 `agent_id + semver` 重複註冊 → `409 VERSION_CONFLICT`，不得建立第二列。
 同一個 digest 可以被不同 Agent/semver 明確引用，但每一列仍是獨立不可變版本。
+
+#### 路徑 B：`Content-Type: multipart/form-data`（上傳 image tar）
+
+| part | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `semver` | text | 是 | 與路徑 A 相同語意 |
+| `file` | binary | 是 | `docker save` 產生的 tar。`filename` 僅供 log，不決定任何路徑或 image 身份 |
+
+- 只接受上表這兩個 part。**任何其他 part（含 `image_ref`、registry 位址、憑證、Dockerfile）→ `422 VALIDATION_ERROR`。**
+- 大小上限由平台設定（預設 **2 GiB**）。超過 → `422 VALIDATION_ERROR`，
+  `details = {"field":"file","reason":"too_large","limit_bytes":<int>}`，**不建立版本列**。
+- 上傳前磁碟餘裕不足 → `429 QUOTA_EXCEEDED` + `Retry-After`，`details.reason="insufficient_disk"`。
+- `semver` 衝突在**讀取 body 之前**就回 `409 VERSION_CONFLICT`。
+- **client 不能指定 image reference。** 平台把 image push 進內部 Registry 後，
+  以 registry 回報的 **manifest digest** 產生 canonical `image_ref`。
+
+Response `202`：與路徑 A 同一個 shape，但在 `BUILDING` 期間 digest 尚未產生：
+
+```json
+{
+  "agent_version_id": "0192...",
+  "semver": "1.2.0",
+  "version_id": null,
+  "source_type": "OCI_IMAGE",
+  "artifact": {
+    "origin": "UPLOADED",
+    "image_ref": null,
+    "digest": null,
+    "platform": null,
+    "size_bytes": null,
+    "runtime_contract": null
+  },
+  "status": "BUILDING",
+  "error": null,
+  "created_at": "..."
+}
+```
+
+#### 兩條路徑共同的規則
+
+| 欄位 | 說明 |
+|---|---|
+| `artifact.origin` | `REGISTERED` \| `UPLOADED`。**純描述性 metadata：任何執行期行為都不得依它分支。** 既有資料一律 `REGISTERED` |
+| `source_type` | 仍固定 `OCI_IMAGE`。**上傳不是第二種 artifact 型別**，不得出現第二個值 |
+| `version_id` | 語意不變 = `artifact.digest` 的 hex 前 12 碼。`origin=UPLOADED` 且 `status=BUILDING` 時為 `null`；`PUBLISHED` 時必有值 |
+| `artifact.image_ref` / `artifact.digest` | `origin=REGISTERED` 一律有值；`origin=UPLOADED` 在 `BUILDING` 為 `null`，push 成功後才有值。**欄位在任何狀態都必須出現** |
+
+**`PUBLISHED` 的必要條件**：`version_id`、`artifact.image_ref`、`artifact.digest` 三者皆非 `null`。
+沒有可重新 pull 的 canonical digest reference 的版本**不得**成為 `PUBLISHED`（P5）。
 
 ### Agent 詳情的 `endpoints`（P3 的體現）
 ```json
@@ -418,6 +487,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 讓 `POST /v1/agents/{id}/versions` 同時接受 multipart image tar 上傳；新增 `artifact.origin`（純描述性）；`version_id`/`artifact.image_ref`/`artifact.digest` 在 `UPLOADED` + `BUILDING` 期間可為 `null`；`details.stage` 值域加 `LOAD`/`PUSH`；`QUOTA_EXCEEDED` 說明放寬到含磁碟餘裕。**沒有新增錯誤 code**，`version_id` 語意與 Runs/SSE/MCP 形狀未變 | @architect |
 | v0.3.1 | 2026-09-22 | 將 `trigger` 收斂為 server-known ingress protocol：REST/Console=`API`、MCP=`MCP`；移除 `CONSOLE`，禁止 body/header discriminator。端點與 Run 建立流程未新增 | @architect |
 | v0.3.0 | 2026-09-22 | 依 ADR-0008 將 Agent Version 發布改為 JSON 註冊 canonical OCI digest；新增版本 artifact/source 欄位、Agent list/create 具體 shape 與 validation token/body。Runs、SSE、MCP 對外形狀不變 | @architect |
 | v0.2.2 | 2026-09-21 | 明定 `GET Run` 未產生欄位的 null 語意、無 LLM 用量；§4 補上 bootstrap/events/result schema、事件 `event_id` 冪等與 worker 唯一決定終態；澄清 `/internal/*` 可由主機埠到達且必驗 token。公開端點和枚舉未新增 | @architect |

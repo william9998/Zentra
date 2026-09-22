@@ -6,8 +6,15 @@
 > [`oci-image-agent-flow.md`](oci-image-agent-flow.md) 與 [ADR-0008](../../specs/adr/ADR-0008-oci-image-agent-packaging.md)。
 > 單機四服務與安全邊界仍依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
 > 與 [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：
-> 單機 docker compose、**4 個**長駐服務、四層分層、一條主線，Console 是 `api` 服務的原生 HTML/CSS/JS 靜態檔。
+> 單機 docker compose、四層分層、一條主線，Console 是 `api` 服務的原生 HTML/CSS/JS 靜態檔。
 > v0.1 的 K8s 拓撲、三個 Proxy、知識層、Agent Flow、Next.js console 服務已移除，對照表見 §10。
+>
+> ⚠️ **SPEC `v0.4.0`（[ADR-0009](../../specs/adr/ADR-0009-internal-registry-image-upload.md)）新增了第 5 個長駐服務
+> `registry`（內部 OCI Registry），以支援「上傳 image tar 建立版本」。**
+> 本文中所有「4 個長駐服務」的敘述請讀成 **5 個**（postgres · redis · **registry** · api · worker）。
+> `registry` 只掛 `zentra-net`、只發布 `127.0.0.1:5000`，**絕不接 `zentra-sandbox-net`**，
+> 沙盒的網路對端仍然只有 `api` 一個。上傳路徑的資料流見
+> [`oci-image-agent-flow.md`](oci-image-agent-flow.md) §上傳路徑；本文其餘圖示尚未重畫。
 
 ## 0. 總覽
 

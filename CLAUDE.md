@@ -16,7 +16,8 @@ Agent 框架統一用 **LangChain + LangGraph**，不接受其他框架。
 
 > **已依 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) 降維（SPEC v0.2.0）。**
 > 交付條件：**內部工具 · 單租戶 · 只跑信任的程式碼 · 八週 MVP**。
-> 部署是**一台主機跑 `docker compose`**，4 個長駐服務，**沒有 Kubernetes、沒有 gVisor**。
+> 部署是**一台主機跑 `docker compose`**，5 個長駐服務（`postgres` · `redis` · `registry` · `api` · `worker`），
+> **沒有 Kubernetes、沒有 gVisor**。`registry` 是 [ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md) 新增的內部 OCI Registry，只掛 `zentra-net`。
 > 前端是**原生 HTML + CSS + ES modules，零建置**（[ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md)），
 > 沒有 React / Tailwind / npm，Console 由 `api` 直接服務靜態檔。
 > 範圍收斂成一條主線：上傳 → 發布 → 沙盒執行 → REST + MCP → Run 觀測。
@@ -74,7 +75,7 @@ packages/sdk/        使用者在沙盒內寫 agent 時用的 zentra_sdk
 ```bash
 # 完整環境（本機與正式是同一套）
 docker network create --internal zentra-sandbox-net
-docker compose up -d            # postgres + redis + api + worker
+docker compose up -d            # postgres + redis + registry + api + worker
                                 # Console → http://localhost:8000/console/agents
 
 # 後端（要熱重載時把 api/worker 拿出來跑）
@@ -85,6 +86,9 @@ uv run pytest
 
 # 沙盒映像（共用一份，不是 per-agent build）
 docker build -t zentra/agent-runtime:1.0 -f docker/agent-runtime.Dockerfile .
+
+# Agent base image（使用者的 agent image 以此為基底，ADR-0009 / Q-010）
+docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 
 # 前端：沒有指令。沒有 dev server、沒有建置、沒有 node_modules。
 # 改 apps/console/**.html|.css|.js → 重新整理瀏覽器。

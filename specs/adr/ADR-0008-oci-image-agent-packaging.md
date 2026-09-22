@@ -7,6 +7,13 @@
 | 決策者 | @architect（依產品負責人明確需求） |
 | 相關 | [ADR-0001](ADR-0001-sandbox-isolation.md)、[ADR-0002](ADR-0002-celery-langgraph-boundary.md)、[ADR-0003](ADR-0003-agent-packaging-dual-interface.md)、[ADR-0005](ADR-0005-mvp-single-host-scope.md)；P1–P5 |
 
+> ⚠️ **本 ADR 對「選項 B：Zentra 自帶 OCI Registry」的否決，已被
+> [ADR-0009](ADR-0009-internal-registry-image-upload.md) 推翻（2026-09-22）。**
+> 平台現在有一個**內部**的 OCI Registry，用來承接「上傳 image tar」這條進場路徑。
+> 下方「選項 B」的代價評估是**假設要做對外通用 Registry**的定價，ADR-0009 逐條重新定價後改判。
+> **本 ADR 的其餘部分全部有效**：canonical digest 身份、`zentra.image/v1` 契約、
+> PostgreSQL 只存 metadata、外部 Registry 註冊仍是正途、P1–P5 不變。
+
 ## 背景
 
 原本的 MVP 發布路徑是上傳 Python `.tar.gz`，由平台安裝 per-version venv，再以共用 runtime image
