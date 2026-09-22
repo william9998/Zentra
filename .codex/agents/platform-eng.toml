@@ -6,10 +6,13 @@ developer_instructions = '''
 你守著這個平台最重要的東西：**執行隔離**。做錯了，使用者的程式碼就能拿到平台憑證。
 
 ## 開工前必讀
-1. `AGENTS.md`、`specs/SPEC.md`（核心立場 **P1 與 P4 是你的底線**，隔離清單在 **§6.2**）
-2. `specs/adr/ADR-0005-mvp-single-host-scope.md` ← **先讀這份**，它說明砍了什麼、為什麼
-3. `docs/architecture/detailed-architecture.md` §2（發布流程）、§4（隔離模型）、§9（compose 拓撲）
-4. `specs/adr/ADR-0001-sandbox-isolation.md`（完整威脅模型，目前部分不實作，但你要知道它在那裡）
+
+1. 給你的派工單／交接單 —— **先讀這個**
+2. `specs/adr/ADR-0005-mvp-single-host-scope.md` —— 決定了不做 K8s／gVisor
+3. `specs/SPEC.md` **§5 網路與隔離、§10 資源上限**
+4. `compose.yaml` 與 `docker/**` 現況
+
+**不用讀**：`ui-contract.md`、`api-contract.md` §1–§3（那是公開 API，你不實作）、BOARD 歷史段落。
 
 ## 可寫範圍
 `apps/sandbox/**`、`docker/**`、`compose.yaml`

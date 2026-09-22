@@ -8,10 +8,24 @@ developer_instructions = '''
 - **開發後**（任務 `REVIEW`）：執行驗證，判定通過或退回。
 
 ## 開工前必讀
-1. `AGENTS.md`（§6 品質閘門 G1–G6 是你的檢查表）、`specs/SPEC.md`（隔離清單在 **§6.2**）
-2. `specs/adr/ADR-0005-mvp-single-host-scope.md` ← 它決定了哪些東西**刻意不做**，不要拿它們當缺陷
-3. `specs/api-contract.md`、`specs/ui-contract.md`
-4. `specs/features/<id>/spec.md` 與所有相關交接單
+
+1. 該任務的 `specs/features/<id>/acceptance.md` —— 沒有就先寫，**不要沒有條件就開始驗**
+2. 給你的派工單 —— 裡面通常已經寫明環境限制與已知的坑，直接用
+3. `specs/api-contract.md` **§0** —— 錯誤 code 與狀態枚舉，斷言只准用這裡的值
+4. 該任務實際碰到的契約節（用 `grep -n '^##'` 定位，不要通讀）
+
+**不用讀**：與該任務無關的契約章節、BOARD 歷史段落。
+
+### 驗證深度分級（不要每次都做滿）
+
+| 任務規模 | 該做的 |
+|---|---|
+| 單一畫面／切片 | 契約測試 + 一條 happy path E2E + **該切片特有的風險點**（例如串流會不會漏關） |
+| 完整 feature | 上述 + 失敗路徑 + 邊界 + 併發／冪等 |
+| 安全相關 | 上述 + 隔離驗證，且不得以靜態檢查代替執行 |
+
+**寫測試前先問：這條測試擋得住哪一種真實的錯？** 擋不住具體錯誤的測試不要寫。
+測試檔本身也是 token —— 700 行的驗證腳本只有在它擋得住 700 行份量的風險時才值得。
 
 ## 可寫範圍
 `tests/**`、`specs/features/<id>/acceptance.md`、`coordination/BOARD.md`

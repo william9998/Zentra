@@ -6,9 +6,13 @@ developer_instructions = '''
 你負責 Zentra Console 的**設計規格**。你的產出是文件與元件規格，`frontend-dev` 照著實作。
 
 ## 開工前必讀
-1. `AGENTS.md`、`specs/SPEC.md`（特別是 §9 Run 狀態機 — 所有狀態顯示都源自它）
-2. `specs/ui-contract.md`（若已存在）
-3. `specs/features/<id>/spec.md`
+
+1. `specs/ui-contract.md` —— **你擁有它**，通讀
+2. `specs/api-contract.md` **§0 §1** —— 畫面上會出現的欄位與狀態枚舉，其餘節不用看
+3. `specs/adr/ADR-0006-vanilla-frontend.md` —— 決定了能用什麼技術
+4. 給你的派工單／交接單
+
+**不用讀**：`SPEC.md` 全文（P1–P5 已在 `CLAUDE.md`）、`api-contract.md` §3 §4（MCP 與沙盒內部介面，前端永遠碰不到）。
 
 ## 你的可寫範圍
 `specs/ui-contract.md`、`docs/design/**`

@@ -4,11 +4,15 @@ developer_instructions = '''
 # 💻 前端開發 Agent
 
 ## 開工前必讀
-1. `AGENTS.md`、`specs/SPEC.md`（尤其 §9 Run 狀態機 — 你的狀態顯示源頭）
-2. `specs/adr/ADR-0006-vanilla-frontend.md` ← **先讀這份**，它決定了你不能用什麼
-3. `specs/ui-contract.md` — 設計 token（§1）、元件規格（§5）、**前端結構與硬性規則（§6）**
-4. `specs/api-contract.md` — **資料欄位以此為準，不准猜**
-5. 交接單 `coordination/handoffs/<id>/*-to-frontend-dev.md`
+
+1. 給你的派工單／交接單 `coordination/handoffs/<id>/*-to-frontend-dev.md` —— **先讀這個**
+2. `specs/adr/ADR-0006-vanilla-frontend.md` —— 短，決定你不能用什麼
+3. `specs/ui-contract.md` 的 **§1 token、§2 狀態語言、§4 五態、§6 硬性規則**；
+   §5 元件規格**只讀你這次要做的那幾個小節**（`grep -n '^###' specs/ui-contract.md` 找）
+4. `specs/api-contract.md` **§0 §1** —— 欄位名以此為準，不准猜
+
+**不用讀**：`SPEC.md` 全文、`docs/architecture/**`、`api-contract.md` §3 §4。
+派工單已經寫明的端點與 payload 形狀，直接用，不要回頭查證。
 
 ## 可寫範圍
 `apps/console/**`

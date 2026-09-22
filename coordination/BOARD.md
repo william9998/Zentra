@@ -4,7 +4,8 @@
 > 狀態機：`BACKLOG → SPEC_READY → IN_PROGRESS → REVIEW → QA → DONE`（任何階段可轉 `BLOCKED`）
 > 規則：只有 `@architect` 能推進到 `SPEC_READY`；只有 `@qa-verifier` 能推進到 `DONE`。
 >
-> **對齊 SPEC `v0.2.2`（降維後）。** 舊編號 ZEN-001～ZEN-011 已作廢並重排，見 §已作廢。
+> **對齊 SPEC `v0.3.1`。** OCI image 發布依 ADR-0008 取代尚未實作的 bundle/venv 路徑；
+> 舊編號 ZEN-001～ZEN-011 的歷史對照見 §已作廢。
 
 ## 八週路線圖
 
@@ -13,7 +14,7 @@
 | 週 | 里程碑 | 任務 |
 |---|---|---|
 | W1–2 | 一條 curl 打得通的路徑 | ZEN-000 |
-| W2–3 | 上傳自己的程式碼就能跑 | ZEN-001 |
+| W2–3 | 註冊自己的 OCI image 就能跑 | ZEN-008 |
 | W3–4 | Agent 能呼叫 LLM，且金鑰不進沙盒 | ZEN-002 |
 | W4 | 隔離四層有自動化證據 | ZEN-003 |
 | W4–5 | Run API 撐得住失敗與取消 | ZEN-004 |
@@ -26,13 +27,51 @@
 | ID | 任務 | 狀態 | 負責 | 依賴 | 交接單 |
 |---|---|---|---|---|---|
 | **ZEN-000** | **貫穿骨架**：API → Celery → 沙盒 → trivial LangGraph → SSE 串流 | `REVIEW` | @platform-eng + @backend-dev；@qa-verifier 驗收 | — | [spec](../specs/features/ZEN-000/spec.md) · [acceptance](../specs/features/ZEN-000/acceptance.md) |
-| ZEN-001 | **版本發布**：上傳 bundle → uv venv → 驗證沙盒抽 entrypoints → `PUBLISHED`（P1 + P5） | `BACKLOG` | @architect → @backend-dev + @platform-eng | ZEN-000 | — |
-| ZEN-002 | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `BACKLOG` | @backend-dev | ZEN-001 | — |
+| **ZEN-008** | **OCI image 型 Agent**：digest 註冊 → pull/validate → Registry → Console/REST/MCP → 一 Run 一盒 | `IN_PROGRESS` | @backend-dev + @platform-eng + @frontend-dev；@qa-verifier 驗收 | ZEN-000；整合 ZEN-003/004/005/006 | [spec](../specs/features/ZEN-008/spec.md) · [acceptance](../specs/features/ZEN-008/acceptance.md) · [ADR](../specs/adr/ADR-0008-oci-image-agent-packaging.md) |
+
+> **ZEN-008 現況（2026-09-22，主 session 接手 Codex 未完成的實作）**：
+> Codex 完成實作但**在後端交件前用盡額度**，因此沒有 backend-dev 交接單。主 session 接手後：
+>
+> **修正三個真缺陷**（都擋住系統啟動或 migration）：
+> 1. `apps/api/services/runs.py` 的 `BUILTIN_MANIFEST` 引用已移除的 `BUILTIN_AGENT_SEMVER` → API 無法 import。該常數在 ZEN-008 後為死碼（manifest 改由 migration seed 進 DB），已刪除。
+> 2. `migrations/versions/0004`：seed 以 `bindparams` 傳 `str` 進 uuid 欄位 → 改用 `CAST(:id AS uuid)`（3 處）。
+> 3. 同上：SQLAlchemy `text()` 把 JSON 字面值的 `"builtin":true` 冒號解析成綁定參數 → 改用綁定參數傳 JSON。
+>
+> **補上 MCP 門面**（原本完全沒實作，`fastmcp` 宣告了依賴但零使用，`endpoints.mcp` 只是字串）：
+> 新增 `apps/api/mcp.py`，`/mcp/agents/{agent_id}` Streamable HTTP。實測 `tools/list` 的 `inputSchema`
+> 與 entrypoint 的 `input_schema` 逐欄位相同、`tools/call` 同步約 1.8 秒、`_async: true` 回 `run_id`、
+> DB 記錄 `trigger=MCP`、`/openapi.json` 無洩漏。P3 同源是結構性的：兩個門面共用
+> `services.agents.mcp_tools()` 與 `services.runs.create_run`，沒有第二條可漂移的實作路徑。
+>
+> **測試現況**：`tests/zen008/` 由 @qa-verifier 寫出 10 個檔案 → **66 passed / 2 failed / 137 skipped**。
+> `tests/zen000` + `tests/zen006a` 經同一輪更新後 **157 passed / 10 skipped / 2 xfailed**（過期的 L4 斷言與被 ZEN-008 撐破的範圍護欄已更新，非刪除）。
+> 137 個 skipped 全部等同一個前置條件：本機測試 registry（`docker run -d --name zentra-qa-registry -p 5010:5000 registry:2`），
+> 那是 OCI pull/digest 主路徑，**未驗＝核心未驗**。
+>
+> **QA 發現的 2 個真缺陷（未修，屬 `apps/api/**`）**：
+> - `GET /v1/agents` 回應缺 `next_cursor`，違反 api-contract §0 的分頁約定。
+> - `GET /v1/agents/{id}` 在值為 null 時直接省略 `description` 與 `latest_published_version` 欄位，而非保留欄位給 `null`。
+>
+> **其他已知缺口**：migration 0004 未處理孤兒 runs（既有 runs 指向不存在 agent 時，加 FK 會直接失敗；
+> dev DB 當時是經使用者授權刪除一列測試殘骸才通過）；無 backend-dev 交接單。
+>
+> **@qa-verifier 的驗收在寫裁定前被使用者中止，因此沒有裁定。維持 `IN_PROGRESS`，不得視為通過。**
+| ZEN-002 | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `BACKLOG` | @backend-dev | ZEN-008 | — |
 | ZEN-003 | **沙盒四層隔離硬化**：internal 網段、cap_drop、cgroups、唯讀 + `capabilities()` | `BACKLOG` | @platform-eng | ZEN-000 | — |
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @backend-dev | ZEN-000 | — |
-| ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-001 | — |
-| ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 上傳新版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 | — |
-| ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 | — |
+| ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-008 | — |
+| ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 + ZEN-008 | — |
+| ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 + ZEN-008 | — |
+
+> **ZEN-008 架構裁決（2026-09-22）**：使用者明確要求 Docker image 型 Agent。
+> ADR-0008 選擇「既有 OCI Registry + canonical digest reference」，不收 image tar、不在 compose 加 Registry；
+> PostgreSQL 只存 metadata，q.build pull/validate 後才 PUBLISHED。由於 ZEN-001 bundle 路徑尚未實作，
+> OCI image 直接取代它，避免雙軌。SPEC/API v0.3.1、UI contract v0.5.1 與開發前 acceptance
+> 已由各自 owner 完成並經 architect 一致性檢查；Q-008 已解決。**2026-09-22 裁定進入 `SPEC_READY`。**
+>
+> **ZEN-008 trigger 裁決（2026-09-22）**：QA 發現 Console 與外部 REST 共用同一 POST，卻要求
+> `trigger=CONSOLE/API`，在無認證 MVP 無法可信區分。SPEC/API v0.3.1 將 trigger 定義為 server-known ingress：
+> REST（含 Console）=`API`、FastMCP=`MCP`；body/header 不得改寫，`CONSOLE` 自枚舉移除。
 
 > **ZEN-000 現況（2026-09-21）**：四服務 compose、固定 Agent 的 API → Celery → 沙盒 → SSE 主線已跑通。
 > 主 session 重建映像後執行公開 API 測試 **10 passed**、Gateway DB 整合 **3 passed**，
@@ -111,46 +150,13 @@
 | Q-005 | §6.2 規定契約欄位名只准出現在 `api.js`。屬性存取已遵守，但畫面把 `run_id` / `llm_calls` / `cost_usd` 當**標籤文字**顯示。標籤文字算不算違規？ | @frontend-dev | OPEN | — |
 | Q-006 | 硬性規則 5「不准寫死間距」與 media query 衝突：CSS 變數不能用在 media query 條件裡，且零建置無法預處理。目前全 CSS 只有 `768px` 一個字面值斷點，可否接受？ | @frontend-dev | OPEN | — |
 | Q-007 | token 指定 `Inter` / `Outfit` / `Noto Sans TC`，但不引 CDN 也沒有字型檔。自帶字型檔（多幾百 KB 靜態資產）還是接受系統 fallback？目前是 fallback。 | @frontend-dev | OPEN | — |
+| Q-008 | ZEN-008 Console 與外部 REST 共用 `POST /v1/agents/{id}/runs`，如何可信產生不同 `trigger`？ | @qa-verifier | RESOLVED | `trigger` 表示接入協定：REST/Console=`API`、MCP=`MCP`。移除 `CONSOLE`；不接受 body/header discriminator（SPEC/API v0.3.1） |
 
 **提問格式**（新增時照抄）：
 ```
 | Q-00X | <具體問題，附上為什麼卡住> | @<你> | OPEN | — |
 ```
 提問後請同時把相關任務標為 `BLOCKED`，並繼續做不相依的部分。
-
-## 刻意不做（不要自己加回來）
-
-依 [ADR-0005](../specs/adr/ADR-0005-mvp-single-host-scope.md) 與 [SPEC §11](../specs/SPEC.md)，
-下列項目**不在八週內做**。發現「順手可以加」→ 記在這裡，不要動手（鐵則 6）。
-
-| 項目 | 為什麼不做 |
-|---|---|
-| 平台組裝式 Agent（Console 精靈） | 第二條建立路徑，八週做不完 |
-| 知識庫 / Ingestion / Hybrid Search | 整個知識層移出 MVP |
-| Tool Registry / Skill Registry | 使用者可在自己的 Agent 程式碼裡寫工具 |
-| HITL resume / `WAITING_INPUT` | 狀態機已移除該值 |
-| Agent Flow 視覺化編排 | 原本就是 MVP 外 |
-| 多租戶 / RLS / Alias 流量切換 | 單租戶 |
-| Kubernetes / gVisor / Warm Pool / CVE 掃描 | 單機 + 信任的程式碼 |
-| React / Vue / Alpine / htmx / bundler / TypeScript / npm | 前端是原生三件套，零建置（[ADR-0006](../specs/adr/ADR-0006-vanilla-frontend.md)） |
-
-## 已作廢的舊編號
-
-v0.1 的編號在降維後重排。**舊交接單或註解提到這些編號時，對照這張表**：
-
-| 舊 ID | 舊任務 | 現況 |
-|---|---|---|
-| ZEN-001 | 純骨架 | 已於 v0.1 併入 ZEN-000 |
-| ZEN-002 | Manifest schema 與 Registry 資料模型 | → 併入新的 ZEN-001 |
-| ZEN-003 | 沙盒五層隔離（K8s driver + gVisor） | → 新的 ZEN-003，降為四層 Docker 隔離 |
-| ZEN-004 | Celery 多佇列 tier + 死信 + Beat | 作廢（兩條佇列，無 Beat） |
-| ZEN-005 | Zentra SDK v1 | → 新的 ZEN-002 |
-| ZEN-006 | Run API 完整版 | → 新的 ZEN-004 |
-| ZEN-007 | Interface Generator | → 新的 ZEN-005 |
-| ZEN-008 | Console Run 觀測頁 | → 併入新的 ZEN-006 |
-| ZEN-009 | 知識庫 Ingestion + Hybrid Search | 作廢（MVP 外） |
-| ZEN-010 | 沙盒安全驗證套件（CI 上跑） | → 併入新的 ZEN-003 與 ZEN-007 |
-| ZEN-011 | Build pipeline（CVE / License 掃描） | 作廢；發布流程併入新的 ZEN-001，不含掃描 |
 
 ## 開發工具維護（不改產品 MVP 範圍）
 

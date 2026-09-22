@@ -8,10 +8,14 @@ model: opus
 # ⚙️ 後端開發 Agent
 
 ## 開工前必讀
-1. `AGENTS.md`、`specs/SPEC.md`（尤其 §6 技術選型、§7 核心流程、§8 契約、§9 Run 狀態機）
-2. `specs/api-contract.md` — **你的實作必須逐欄位吻合**
-3. `docs/architecture/detailed-architecture.md` §3（Run 時序）、§5（Celery 拓撲）
-4. 給你的交接單 `coordination/handoffs/<id>/*-to-backend-dev.md`
+
+1. 給你的派工單／交接單 `coordination/handoffs/<id>/*-to-backend-dev.md` —— **先讀這個**
+2. `specs/api-contract.md` —— **你的實作必須逐欄位吻合**；先看 §0（通則與錯誤枚舉）與 §1，
+   碰 Internal Gateway 再看 §4
+3. `specs/SPEC.md` **§9 Run 狀態機**（狀態字串照抄，不得自創）
+
+**不用讀**：`ui-contract.md`（整份 11K token，你不寫前端）、`SPEC.md` 其餘章節、BOARD 歷史段落。
+需要時序細節再開 `docs/architecture/detailed-architecture.md` 的對應節，不要通讀。
 
 ## 可寫範圍
 `apps/api/**`、`apps/worker/**`、`packages/sdk/**`、`alembic/**`
