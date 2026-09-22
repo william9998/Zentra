@@ -176,6 +176,9 @@
 | Q-005 | §6.2 規定契約欄位名只准出現在 `api.js`。屬性存取已遵守，但畫面把 `run_id` / `llm_calls` / `cost_usd` 當**標籤文字**顯示。標籤文字算不算違規？ | @frontend-dev | OPEN | — |
 | Q-006 | 硬性規則 5「不准寫死間距」與 media query 衝突：CSS 變數不能用在 media query 條件裡，且零建置無法預處理。目前全 CSS 只有 `768px` 一個字面值斷點，可否接受？ | @frontend-dev | OPEN | — |
 | Q-007 | token 指定 `Inter` / `Outfit` / `Noto Sans TC`，但不引 CDN 也沒有字型檔。自帶字型檔（多幾百 KB 靜態資產）還是接受系統 fallback？目前是 fallback。 | @frontend-dev | OPEN | — |
+| Q-008 | ZEN-008 spec §6 只寫「import Agent `build()`」，沒寫簽章。實際 runtime 呼叫的是 `build(context)`，寫成 `def build()` 會 `TypeError` 且只在驗證沙盒裡才看得到。契約要不要明訂簽章？ | @orchestrator | OPEN | — |
+| Q-009 | §6 說「Agent 所有依賴都已在 image 內」，但沒列出 **SDK 自己**需要 `jsonschema`。少裝會在 import 階段就死。要在契約列出 SDK 的執行期依賴，還是讓 SDK 自己宣告（`packages/sdk` 目前沒有 `pyproject.toml`）？ | @orchestrator | OPEN | — |
+| Q-010 | §11 把「官方 base image 與範例 Dockerfile」列為後續文件，但沒有它使用者做不出能通過驗證的 image。`examples/demo-echo/` 已補上可運作的範例——要不要升級成正式的官方 base image？ | @orchestrator | OPEN | — |
 | Q-008 | ZEN-008 Console 與外部 REST 共用 `POST /v1/agents/{id}/runs`，如何可信產生不同 `trigger`？ | @qa-verifier | RESOLVED | `trigger` 表示接入協定：REST/Console=`API`、MCP=`MCP`。移除 `CONSOLE`；不接受 body/header discriminator（SPEC/API v0.3.1） |
 | Q-009 | Agent 詳情頁已實作「編輯 metadata」與「刪除」兩個 dialog（`PATCH` / `DELETE /v1/agents/{id}`，api-contract 早有定義），但 ui-contract §5 沒有這兩個元件的規格與五態、§5.12 的操作流程也沒有這條路徑。請 @ui-designer 追認或指定改法。**已由使用者於 2026-09-22 直接授權先實作**，見下方偏離紀錄。 | @orchestrator | OPEN | — |
 
