@@ -14,8 +14,10 @@ Zentra lets you upload your own Python agent (LangGraph), freezes it into an imm
 isolated sandbox, and automatically publishes it behind **two front doors: a REST API and an MCP endpoint** —
 generated from a single definition so they can never drift apart.
 
-> **Status: design phase.** The architecture, specifications and agent-team workflow are complete.
-> Implementation starts at [`ZEN-000`](specs/features/ZEN-000/spec.md). No application code yet.
+> **Status: under implementation.** The walking skeleton runs end to end — upload-free builtin agent,
+> OCI image registration, sandboxed execution, REST + MCP and the Run observation console. Nothing has been
+> accepted as `DONE` beyond the console slice; [`coordination/BOARD.md`](coordination/BOARD.md) is the
+> authority on what is verified and what is still open.
 >
 > **Scoped down in [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md):** internal tool, single tenant,
 > trusted code, 8-week MVP. Deployment is **one host running `docker compose`** — no Kubernetes.
@@ -92,16 +94,98 @@ Python 3.12 · FastAPI · Celery (Redis broker) · LangChain + LangGraph · Post
 
 ## Getting started
 
-Implementation hasn't begun. To understand the project:
+To understand the project:
 
 1. [`specs/SPEC.md`](specs/SPEC.md) — what it is and the five commitments
 2. [`docs/architecture/detailed-architecture.md`](docs/architecture/detailed-architecture.md) — how it fits together
 3. [`specs/adr/`](specs/adr/) — why it's built this way rather than some other way
-4. [`specs/features/ZEN-000/spec.md`](specs/features/ZEN-000/spec.md) — the first task
+4. [`coordination/BOARD.md`](coordination/BOARD.md) — what is actually built, what is still open
 
 Local and production are the same `docker compose` stack — there is no separate deployment target. See
 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) for what was cut and why, and the
 [runtime notes](docs/architecture/07-local-dev-sandbox.md) for how sandboxes are actually launched.
+
+## Running and testing locally
+
+### Start the stack
+
+```bash
+docker compose up -d --build                     # postgres · redis · api · worker
+docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+docker compose exec api alembic upgrade head
+```
+
+Three things compose does **not** do for you:
+
+- **The sandbox image.** The worker creates one container per Run from `zentra/agent-runtime:dev`
+  (`SANDBOX_IMAGE`), which is why it is built separately. Rebuild it after any change under
+  `apps/sandbox/runtime/` or `packages/sdk/`, or Runs keep using the old code.
+- **Migrations.** Nothing runs Alembic at startup.
+- **The registry.** ADR-0009's internal registry is specced but not in `compose.yaml` yet, so to publish
+  your own image today, run one yourself: `docker run -d --name zentra-registry -p 5010:5000 registry:2`,
+  then follow [`examples/demo-echo/README.md`](examples/demo-echo/README.md).
+
+Both networks — including the internal-only `zentra-sandbox-net` — are declared in `compose.yaml`, so no
+`docker network create` is needed. `.env` is optional; nothing in the current scope requires a secret.
+
+```bash
+curl -s localhost:8000/healthz                   # {"status":"ok"}
+open http://localhost:8000/console/agents        # Console
+```
+
+The API image carries the console's static files, so **a console change needs
+`docker compose up -d --build api`** before the browser can see it.
+
+### Smoke test: the ZEN-000 acceptance script
+
+```bash
+bash scripts/verify-zen000.sh
+```
+
+One end-to-end pass plus the isolation probes: SSE events, sandbox lifecycle, the four isolation layers, and
+the contract error paths. Expect `通過 27 ／ 失敗 0 ／ 跳過 2`. The two skips are gVisor kernel isolation and
+container escape — this architecture does not provide them, so they are reported as **skipped, never passed**
+([ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md)). Needs the stack up, migrations applied and the
+runtime image built.
+
+### Test suites
+
+The host interpreter has no application dependencies, so tests run either through `uv` or inside the `api`
+image on the compose network:
+
+```bash
+# with uv on the host
+uv sync --extra dev && uv run pytest tests/zen006a -q
+
+# without uv — same suite, inside the api image, on the compose network
+docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
+  -e PYTHONPATH=/srv \
+  -e ZENTRA_TEST_BASE_URL=http://api:8000 \
+  -e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
+  zentra-api:latest \
+  sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
+```
+
+| Suite | Covers | Needs |
+|---|---|---|
+| [`tests/zen000`](tests/zen000) | Run lifecycle, sandbox driver, Internal Gateway, worker recovery, cold-start benchmark | `ZENTRA_TEST_BASE_URL`, `ZENTRA_TEST_DB_URL`; the driver tests need the `docker` CLI |
+| [`tests/zen006a`](tests/zen006a) | Console source guards, live routes, headless-Chrome E2E | the guards need nothing; routes need `ZENTRA_TEST_BASE_URL`; the E2E needs `node` + Chrome |
+| [`tests/zen008`](tests/zen008) | OCI registration, MCP facade, sandbox security, Console E2E | a registry on `:5010`, the `docker` CLI, `node` + Chrome |
+
+**Run anything that touches the database from inside the compose network.** A Postgres running on the host
+takes `127.0.0.1:5432` and masks the container's, so host-side tests silently connect to the wrong database —
+that is what the `ZENTRA_TEST_DB_URL` skips exist to prevent.
+
+Tests that only audit source files need no service and no application dependencies:
+
+```bash
+python3 -m pytest tests/zen006a/test_console_source_contract.py -q
+```
+
+If that one fails on the contract-version assertion, it is working as designed: `api-contract.md` has moved
+and the console has not been re-checked against the new version yet. Fix the console (or confirm nothing
+changed) and update the pin — do not just bump the string. Open findings live in
+[`coordination/BOARD.md`](coordination/BOARD.md).
 
 ---
 
@@ -113,13 +197,15 @@ Local and production are the same `docker compose` stack — there is no separat
 平台把它凍結成不可變版本、在**隔離沙盒**中執行，並自動對外開放 **REST API** 與 **MCP** 兩種接口——
 兩者由同一份 `entrypoints` 定義生成，因此永遠不會不一致。
 
-> **目前狀態：設計階段。** 架構、規格與 AI agent 團隊協作流程已完成。
-> 實作從 [`ZEN-000`](specs/features/ZEN-000/spec.md) 開始，尚無應用程式碼。
+> **目前狀態：實作中。** 貫穿骨架已經跑得通——內建 Agent、OCI image 註冊、沙盒執行、
+> REST + MCP，以及 Run 觀測 Console。除了 Console 切片之外**都還沒被驗收為 `DONE`**，
+> 哪些驗過、哪些還開著，以 [`coordination/BOARD.md`](coordination/BOARD.md) 為準。
 >
 > **已依 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) 降維：** 內部工具、單租戶、信任的程式碼、八週 MVP。
 > 部署是**一台主機跑 `docker compose`**，不用 Kubernetes。
 > 前端再依 [ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md) 改為**原生 HTML + CSS + ES modules，零建置**，
-> 由 API 自己服務 —— **總共五個服務**（含 ADR-0009 新增的內部 Registry）。
+> 由 API 自己服務 —— 目前 compose 是**四個服務**（ADR-0009 的內部 Registry 已裁決但還沒進 compose，
+> 屆時是五個）。
 > 下面五條立場一條沒動，但底下的基礎設施只剩四分之一。
 
 ### 為什麼這樣設計
@@ -142,7 +228,8 @@ Local and production are the same `docker compose` stack — there is no separat
 
 ![Zentra 系統架構](docs/architecture/zentra-architecture.svg)
 
-一台主機、一個 `docker compose`、**五個**長駐服務（postgres · redis · registry · api · worker），
+一台主機、一個 `docker compose`、**四個**長駐服務（postgres · redis · api · worker；
+ADR-0009 的內部 registry 進來後是五個），
 加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
 沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `api` 服務的 **Internal Gateway**——
 由它代持 LLM 金鑰、計量 token、回收事件。
@@ -172,6 +259,66 @@ Console 沒有自己的容器，它是 `api` 服務出去的原生靜態檔，�
 
 完整協議見 [`AGENTS.md`](AGENTS.md)。
 Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)，可先輸入 `$zentra-align ZEN-000` 對齊現況。
+
+### 本機啟動與測試
+
+本機與正式是同一套 compose，沒有第二種部署方式。
+
+```bash
+docker compose up -d --build                     # postgres · redis · api · worker
+docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+docker compose exec api alembic upgrade head
+
+curl -s localhost:8000/healthz                   # {"status":"ok"}
+open http://localhost:8000/console/agents        # Console
+```
+
+compose **不會**幫你做三件事：**沙盒映像**（worker 每個 Run 開一個 `zentra/agent-runtime:dev` 容器，
+改過 `apps/sandbox/runtime/` 或 `packages/sdk/` 就要重 build，否則 Run 還在跑舊的程式碼）、
+**migration**（啟動時不會自動跑）、以及 **registry**（ADR-0009 的內部 Registry 還沒進 `compose.yaml`，
+要發布自己的 image 先自己起一個：`docker run -d --name zentra-registry -p 5010:5000 registry:2`，
+流程見 [`examples/demo-echo/README.md`](examples/demo-echo/README.md)）。
+
+兩個網段（含 internal 的 `zentra-sandbox-net`）都寫在 `compose.yaml` 裡，不用手動 `docker network create`。
+`.env` 是選用的。Console 的靜態檔包在 api 映像裡，所以**改前端要 `docker compose up -d --build api`** 才看得到。
+
+驗收腳本：一次貫穿加上隔離探測，預期 `通過 27 ／ 失敗 0 ／ 跳過 2`。
+那 2 個 skip 是 gVisor 核心隔離與容器逃逸，本架構不提供，因此**永遠是 skipped 而不是 passed**（ADR-0005）。
+
+```bash
+bash scripts/verify-zen000.sh
+```
+
+測試套件：主機的 Python 沒有應用相依，所以走 `uv`，或在 compose 網段內用 `api` 映像跑。
+
+```bash
+uv sync --extra dev && uv run pytest tests/zen006a -q
+
+docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
+  -e PYTHONPATH=/srv \
+  -e ZENTRA_TEST_BASE_URL=http://api:8000 \
+  -e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
+  zentra-api:latest \
+  sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
+```
+
+| 套件 | 範圍 | 前置條件 |
+|---|---|---|
+| [`tests/zen000`](tests/zen000) | Run 生命週期、沙盒 driver、Internal Gateway、worker 復原、冷啟量測 | `ZENTRA_TEST_BASE_URL`、`ZENTRA_TEST_DB_URL`；driver 測試要 `docker` CLI |
+| [`tests/zen006a`](tests/zen006a) | Console 原始碼護欄、實際路由、headless Chrome E2E | 護欄不需要任何服務；路由要 `ZENTRA_TEST_BASE_URL`；E2E 要 `node` 與 Chrome |
+| [`tests/zen008`](tests/zen008) | OCI 註冊、MCP 門面、沙盒安全、Console E2E | `:5010` 的 registry、`docker` CLI、`node` 與 Chrome |
+
+**碰資料庫的測試一律在 compose 網段內跑。** 主機若有自己的 Postgres 會佔住 `127.0.0.1:5432`
+遮蔽容器那顆，從主機跑就會連到錯的資料庫——那些 `ZENTRA_TEST_DB_URL` 的 skip 就是在擋這件事。
+
+只稽核原始碼的測試不需要服務也不需要相依：
+
+```bash
+python3 -m pytest tests/zen006a/test_console_source_contract.py -q
+```
+
+它若在「契約版本」那條斷言上紅，是**護欄正常運作**：`api-contract.md` 版本動了，而 Console 還沒對新版重新核對過。
+請先修 Console（或確認真的沒變）再更新那個版本字串，**不要只把字串改掉**。
 
 ### 從哪裡開始讀
 
