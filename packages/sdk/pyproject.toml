@@ -1,0 +1,31 @@
+# zentra_sdk 自己宣告執行期依賴（ADR-0009 Q-009）。
+#
+# 為什麼在這裡而不是寫進 image 契約：契約規定的是 image 要滿足什麼，
+# 不該逐條列舉 SDK 的傳遞依賴 —— SDK 換了依賴，契約就得跟著改，
+# 而每一份既有的 agent image 都得重讀契約才知道要補裝什麼。
+# SDK 自己宣告，使用者 `pip install zentra-sdk` 就一起帶進來。
+#
+# 沒有宣告的後果實測過：少了 jsonschema，image_runtime 在 import 階段就死，
+# 使用者只會在驗證容器的 traceback 裡看到 ModuleNotFoundError。
+# `zentra-agent` 啟動時的 _check_runtime_dependencies() 是這件事的第二道防線。
+
+[project]
+name = "zentra-sdk"
+version = "0.1.0"
+description = "Zentra Agent SDK —— 使用者在沙盒內寫 agent 時用的介面"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",        # 與 Internal Gateway 的唯一通道
+    "jsonschema>=4.23",   # entrypoint 的 input/output schema 驗證
+    "langgraph>=0.2.50",  # P2：agent 一律是 CompiledStateGraph
+]
+
+[project.scripts]
+zentra-agent = "zentra_sdk.image_runtime:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zentra_sdk"]

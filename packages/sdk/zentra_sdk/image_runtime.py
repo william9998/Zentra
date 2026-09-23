@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import importlib.util
+import inspect
 import os
 import secrets
 import time
@@ -38,6 +40,29 @@ def _timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _check_runtime_dependencies() -> None:
+    """Fail with a readable message when the image is missing an SDK dependency.
+
+    The image contract does not enumerate the SDK's own transitive dependencies
+    (Q-009): the SDK declares them in its ``pyproject.toml`` and checks them
+    here. Without this, a missing ``jsonschema`` surfaces as a bare
+    ``ModuleNotFoundError`` raised at import time -- before any handler is
+    installed -- and the user only ever sees it in the validation container's
+    traceback.
+    """
+
+    missing = [
+        name for name in ("httpx", "jsonschema", "langgraph")
+        if importlib.util.find_spec(name) is None
+    ]
+    if missing:
+        raise RuntimeError(
+            f"the agent image is missing SDK dependencies: {', '.join(missing)}. "
+            f"Install them in the image (pip install {' '.join(missing)}), or base "
+            f"it on zentra/agent-base:1.0, which already has them."
+        )
+
+
 def _load_build() -> tuple[Callable[..., Any], dict[str, Any]]:
     # ADR-0003 defines runtime.entry as ``agent:build``. The v1 image contract
     # fixes that convention so the platform never executes an arbitrary
@@ -47,7 +72,41 @@ def _load_build() -> tuple[Callable[..., Any], dict[str, Any]]:
     marker = getattr(build, "__zentra_agent__", None)
     if not callable(build) or not isinstance(marker, dict):
         raise TypeError("agent:build must be decorated with zentra_sdk.agent")
+    _check_build_arity(build)
     return build, marker
+
+
+def _check_build_arity(build: Callable[..., Any]) -> None:
+    """``build`` takes exactly one positional parameter: the context (Q-008).
+
+    Checked before the call so that the common mistake -- writing ``def build()``
+    -- reports what the contract requires instead of Python's
+    ``build() takes 0 positional arguments but 1 was given``, which does not
+    tell the user what the missing argument is or where it comes from.
+    """
+
+    try:
+        signature = inspect.signature(build)
+    except (TypeError, ValueError):       # builtins and C callables have none
+        return
+
+    positional = [
+        parameter for parameter in signature.parameters.values()
+        if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    accepts_var_positional = any(
+        parameter.kind is parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    if accepts_var_positional:
+        return
+    required = [parameter for parameter in positional if parameter.default is parameter.empty]
+    if len(positional) < 1 or len(required) > 1:
+        raise TypeError(
+            "build must accept exactly one positional argument, the context: "
+            "`def build(ctx: ZentraContext) -> StateGraph`. "
+            f"Got `def build{signature}`."
+        )
 
 
 def _manifest(marker: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -194,6 +253,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="zentra-agent")
     parser.add_argument("mode", choices=("validate", "run"))
     mode = parser.parse_args(argv).mode
+    _check_runtime_dependencies()
     asyncio.run(validate() if mode == "validate" else run())
 
 

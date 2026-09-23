@@ -2,8 +2,8 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.5.1` |
-| 擁有者 | `@ui-designer` |
+| 契約版本 | `v0.5.2` |
+| 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
 
@@ -374,6 +374,12 @@ export function mount(el, props) {
 - `image_ref`：必填 mono 多行欄，placeholder 使用 canonical 範例
   `ghcr.io/acme/research-agent@sha256:<64 hex>`；本地先檢查必須含 `@sha256:` 與 64 位 hex，後端仍是權威。
 - 欄位下固定提示：「請先將 image push 到 VM 可存取的 Registry。私有 Registry credential 由 VM 維運者預先配置，Console 不接收密碼。」
+- **靜態說明區塊**（ZEN-009 / ADR-0009 R2）：表單上方一個 `<details>`，摘要「怎麼把 image 推上來」，
+  展開後是四步流程的**純文字**指令（`docker tag` → `docker push` → 取 digest → 貼進下面的欄位），
+  外加兩句提醒：「**只能在跑 Zentra 的那台主機上執行**」與「`localhost:5000` 是平台內部的 Registry 位址，
+  不是你的筆電」。預設收合。
+  **沒有新元件狀態、沒有檔案輸入、沒有拖放區、沒有進度條、沒有 `XMLHttpRequest`** ——
+  這是靜態文字，不影響上面的五態。指令用 `<pre>`，內容一律 `textContent`。
 - 點「註冊並驗證」先開原生 `<dialog>`，逐行顯示 Agent 名稱、`semver`、完整 `image_ref`，並說明
   「此版本號與 digest 註冊後不可覆寫」。只有 dialog 的確認按鈕送出 JSON `POST /v1/agents/{id}/versions`。
 - 收到 `202` 後鎖定欄位，每 2 秒輪詢版本詳情。`destroy()` 必須 `clearInterval`；終態也要立即停止輪詢。

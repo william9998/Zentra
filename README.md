@@ -118,20 +118,23 @@ Local and production are the same `docker compose` stack — there is no separat
 ### Start the stack
 
 ```bash
-docker compose up -d --build                     # postgres · redis · api · worker
+docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 docker compose exec api alembic upgrade head
 ```
 
-Three things compose does **not** do for you:
+Two things compose does **not** do for you:
 
-- **The sandbox image.** The worker creates one container per Run from `zentra/agent-runtime:dev`
-  (`SANDBOX_IMAGE`), which is why it is built separately. Rebuild it after any change under
+- **The images.** The worker creates one container per Run from `zentra/agent-runtime:dev`
+  (`SANDBOX_IMAGE`), which is why it is built separately — rebuild it after any change under
   `apps/sandbox/runtime/` or `packages/sdk/`, or Runs keep using the old code.
+  `zentra/agent-base:1.0` is the base your own agent images build `FROM`.
 - **Migrations.** Nothing runs Alembic at startup.
-- **The registry.** ADR-0009's internal registry is specced but not in `compose.yaml` yet, so to publish
-  your own image today, run one yourself: `docker run -d --name zentra-registry -p 5010:5000 registry:2`,
-  then follow [`examples/demo-echo/README.md`](examples/demo-echo/README.md).
+
+**On macOS, turn off AirPlay Receiver first** (System Settings → General → AirDrop & Handoff). It
+listens on port 5000 and shadows the registry; the symptom is `curl localhost:5000/v2/` returning 403
+with a `Server: AirTunes/...` header.
 
 Both networks — including the internal-only `zentra-sandbox-net` — are declared in `compose.yaml`, so no
 `docker network create` is needed. `.env` is optional; nothing in the current scope requires a secret.
@@ -212,8 +215,8 @@ changed) and update the pin — do not just bump the string. Open findings live 
 > **已依 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) 降維：** 內部工具、單租戶、信任的程式碼、八週 MVP。
 > 部署是**一台主機跑 `docker compose`**，不用 Kubernetes。
 > 前端再依 [ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md) 改為**原生 HTML + CSS + ES modules，零建置**，
-> 由 API 自己服務 —— 目前 compose 是**四個服務**（ADR-0009 的內部 Registry 已裁決但還沒進 compose，
-> 屆時是五個）。
+> 由 API 自己服務 —— compose 是**五個服務**（[ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md)
+> 的內部 Registry 是第五個）。
 > 下面五條立場一條沒動，但底下的基礎設施只剩四分之一。
 
 ### 為什麼這樣設計
@@ -236,8 +239,8 @@ changed) and update the pin — do not just bump the string. Open findings live 
 
 ![Zentra 系統架構](docs/architecture/zentra-architecture.svg)
 
-一台主機、一個 `docker compose`、**四個**長駐服務（postgres · redis · api · worker；
-ADR-0009 的內部 registry 進來後是五個），
+一台主機、一個 `docker compose`、**五個**長駐服務
+（postgres · redis · registry · api · worker），
 加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
 沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `api` 服務的 **Internal Gateway**——
 由它代持 LLM 金鑰、計量 token、回收事件。
@@ -278,19 +281,23 @@ Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)。
 本機與正式是同一套 compose，沒有第二種部署方式。
 
 ```bash
-docker compose up -d --build                     # postgres · redis · api · worker
+docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 docker compose exec api alembic upgrade head
 
 curl -s localhost:8000/healthz                   # {"status":"ok"}
 open http://localhost:8000/console/agents        # Console
 ```
 
-compose **不會**幫你做三件事：**沙盒映像**（worker 每個 Run 開一個 `zentra/agent-runtime:dev` 容器，
-改過 `apps/sandbox/runtime/` 或 `packages/sdk/` 就要重 build，否則 Run 還在跑舊的程式碼）、
-**migration**（啟動時不會自動跑）、以及 **registry**（ADR-0009 的內部 Registry 還沒進 `compose.yaml`，
-要發布自己的 image 先自己起一個：`docker run -d --name zentra-registry -p 5010:5000 registry:2`，
-流程見 [`examples/demo-echo/README.md`](examples/demo-echo/README.md)）。
+compose **不會**幫你做兩件事：**兩個映像**（worker 每個 Run 開一個 `zentra/agent-runtime:dev` 容器，
+改過 `apps/sandbox/runtime/` 或 `packages/sdk/` 就要重 build，否則 Run 還在跑舊的程式碼；
+`zentra/agent-base:1.0` 則是你自己的 agent image 的基底），
+以及 **migration**（啟動時不會自動跑）。
+
+**macOS 要先關掉 AirPlay 接收器**（系統設定 → 一般 → AirDrop 與 Handoff）。
+它在 port 5000 聽，會蓋掉 registry；症狀是 `curl localhost:5000/v2/` 回 403 且 header 是
+`Server: AirTunes/...`。維運細節見 [`docs/operations.md`](docs/operations.md)。
 
 兩個網段（含 internal 的 `zentra-sandbox-net`）都寫在 `compose.yaml` 裡，不用手動 `docker network create`。
 `.env` 是選用的。Console 的靜態檔包在 api 映像裡，所以**改前端要 `docker compose up -d --build api`** 才看得到。

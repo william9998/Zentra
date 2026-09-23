@@ -607,3 +607,30 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   .form-grid,
   .filters { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 版本註冊頁的發布說明（ui-contract v0.5.2 §5.4）—— 純靜態文字，預設收合 */
+.publish-help {
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.publish-help > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.publish-help-steps {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: pre;
+  border-radius: var(--radius-sm);
+  background: var(--bg-code);
+  color: var(--text-secondary);
+}

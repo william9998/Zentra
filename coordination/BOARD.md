@@ -112,7 +112,7 @@
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @builder | ZEN-000 | — |
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @builder | ZEN-008 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @architect（UI 契約）→ @builder | ZEN-004 + ZEN-008 | — |
-| **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:5000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `SPEC_READY`（第二版） | @builder（主體）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
+| **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:5000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `REVIEW` | @builder（主體，已交付）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
 >
 > ---
@@ -142,6 +142,27 @@
 >
 > **為什麼現在才發現**：這幾條測試先前卡在 `require_registry()` 而被 skip。
 > 主 session 手動起了測試 registry 後才執行到——**skipped 不等於通過**，這是實例。
+
+> **ZEN-009 實作已交付（2026-09-24，主 session）：狀態 `REVIEW`，未裁定 `DONE`。**
+>
+> `compose.yaml` 加了第 5 個服務 `registry`（`registry:2`、只掛 `zentra-net`、
+> `127.0.0.1:5000`、`delete.enabled=false`、volume `registrydata`），
+> `tests/zen009` 由 6 failed / 32 passed 轉為 **38 passed**。
+> 同時交付 `docker/agent-base.Dockerfile`（Q-010）、`packages/sdk/pyproject.toml`（Q-009）、
+> `build()` arity 檢查（Q-008）、`docs/operations.md`、README 四步流程、
+> ui-contract v0.5.2 與 Console 的靜態說明區塊。
+>
+> 全套測試 **233 passed / 3 failed**（原 195 passed），3 個失敗是既有項目，未新增。
+> 冒煙測試 `verify-zen000.sh` 27 通過 / 0 失敗 / 2 跳過。
+>
+> **未驗證的一條**：spec §9「完成的定義」第 4 點（prune 掉本機所有參照後 Run 仍成功）
+> 在這台機器上沒跑到 —— macOS 的 AirPlay Receiver 佔用 port 5000，
+> `curl localhost:5000/v2/` 回 `403 Server: AirTunes/...`，registry 容器本身正常
+> （從 `zentra-net` 內部打是 200）。依 spec §5.1 處置是關掉 AirPlay，**不是**把 port 做成設定項；
+> 已寫進 README 與 `docs/operations.md`。驗收時要先關掉它再跑第 4 點。
+>
+> 實作驗證過的：base image 做出的 agent（使用者 Dockerfile 只有兩行）能 `PUBLISHED` 並執行成功；
+> `def build()` 會被 arity 檢查擋下並回 `BUILD_FAILED`，訊息明示契約要求的簽章。
 
 > **ZEN-008 架構裁決（2026-09-22）**：使用者明確要求 Docker image 型 Agent。
 > ADR-0008 選擇「既有 OCI Registry + canonical digest reference」，不收 image tar、不在 compose 加 Registry；

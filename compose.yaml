@@ -1,4 +1,4 @@
-# Zentra — 本機與正式是同一套（ADR-0005）。四個長駐服務。
+# Zentra — 本機與正式是同一套（ADR-0005）。五個長駐服務。
 # 沙盒不在這裡：它由 Sandbox Manager 經 Docker API 為每個 Run 動態建立，結束即銷毀。
 
 name: zentra
@@ -29,6 +29,35 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
+
+  # 內部 OCI Registry（ADR-0009 / ZEN-009）。使用者在**這台主機上**
+  #   docker tag <img> localhost:5000/<repo>:<semver> && docker push …
+  # 再用既有的 JSON 端點以 digest 註冊版本。平台不接收 image 檔案上傳。
+  #
+  # 沒有任何平台服務會連它：它的 client 只有主機上的 Docker daemon（pull）
+  # 與使用者的 CLI（push），兩者都走 loopback。所以 api / worker 都不 depends_on 它。
+  registry:
+    image: registry:2                      # 上游原版，不要自己 build 或換基底
+    environment:
+      # 寫死 false：連誤刪已發布版本的 manifest 都做不到（P5）。
+      # 清理是維運者用離線程序做的，不是 API 能碰的事。
+      REGISTRY_STORAGE_DELETE_ENABLED: "false"
+    volumes:
+      - registrydata:/var/lib/registry
+    # 只綁 loopback。這不是文件規定，是「只限同機」的執行手段本身 ——
+    # 這個 registry 沒有 TLS、沒有認證，綁 0.0.0.0 等於把它放上網。
+    # 要遠端 push → 新 ADR，且必須先解決 TLS 與認證，順序不可顛倒。
+    #
+    # 為什麼一定要發布 port：執行 pull 的是主機上的 Docker daemon，它不在
+    # zentra-net 上，解析不到服務名 `registry`。localhost 另外免去改
+    # daemon.json 的 insecure-registries（Docker 對 localhost 預設允許 HTTP）。
+    #
+    # ⚠️ macOS：AirPlay Receiver 會佔用 5000，到系統設定關掉它。
+    #    port 刻意不做成設定項 —— 那會需要一個端點讓 Console 知道實際值。
+    ports: ["127.0.0.1:5000:5000"]
+    # 刻意沒有 healthcheck：registry:2 裡沒有 wget/curl，與其為此加工具或換基底
+    # 映像，不如不要養一個假的檢查。
     networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
 
   api:
@@ -98,6 +127,9 @@ networks:
 
 volumes:
   pgdata:
+  # 備份時與 pgdata 同等重要：DB 存的是 digest，image 本體在這裡。
+  # 只備份其中一個，還原後 PUBLISHED 的版本會拉不到 image。
+  registrydata:
 
 secrets:
   # Standard Docker config JSON: {"auths":{"registry":{"auth":"..."}}}.
