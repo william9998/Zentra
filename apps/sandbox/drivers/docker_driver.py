@@ -52,11 +52,63 @@ def _safe_error(exc: BaseException, secrets: tuple[str, ...] = ()) -> str:
     return message
 
 
+_DEFAULT_REGISTRY_HOSTS = frozenset({"docker.io", "index.docker.io"})
+_CANONICAL_DEFAULT_REGISTRY = "docker.io"
+_OFFICIAL_NAMESPACE = "library"
+
+
+def _split_registry(repository: str) -> tuple[str | None, str]:
+    """Split ``repository`` into ``(registry_host, remainder)``.
+
+    SPEC §7.1: the first segment is a registry host when it contains ``.`` or
+    ``:``, or equals ``localhost``. A host segment is authoritative and is
+    never rewritten anywhere in this module.
+    """
+
+    head, separator, rest = repository.partition("/")
+    if separator and ("." in head or ":" in head or head == "localhost"):
+        return head, rest
+    return None, repository
+
+
 def _registry_for(repository: str) -> str:
-    first = repository.split("/", 1)[0]
-    if "." in first or ":" in first or first == "localhost":
-        return first
-    return "https://index.docker.io/v1/"
+    host, _ = _split_registry(repository)
+    if host is None:
+        return "https://index.docker.io/v1/"
+    return host
+
+
+def _normalized_repository(repository: str) -> str:
+    """Fully qualify a repository so that equivalent spellings compare equal.
+
+    Only the default registry is normalized, because only there does Docker
+    rewrite what we registered: ``docker.io/library/alpine`` = ``docker.io/alpine``
+    = ``alpine``. Every other host is returned verbatim -- normalizing
+    ``localhost:5000/x`` into ``x`` would silently point an internal-registry
+    version at a Docker Hub image (SPEC §7.1, ZEN-009 spec §5.6).
+    """
+
+    host, remainder = _split_registry(repository)
+    if host is not None and host not in _DEFAULT_REGISTRY_HOSTS:
+        return repository
+    path = remainder if host is not None else repository
+    if "/" not in path:
+        path = f"{_OFFICIAL_NAMESPACE}/{path}"
+    return f"{_CANONICAL_DEFAULT_REGISTRY}/{path}"
+
+
+def _comparison_key(reference: str) -> str | None:
+    """Normalized ``repository@digest`` key, or ``None`` if not a digest ref.
+
+    This exists purely to compare the registered reference with what the daemon
+    reports. The registered string itself is never rewritten: it is the stored
+    identity of the version (P5).
+    """
+
+    repository, separator, digest = reference.rpartition("@")
+    if not separator or not repository or ":" not in digest:
+        return None
+    return f"{_normalized_repository(repository)}@{digest}"
 
 
 class RegistryCredentialStore:
@@ -179,9 +231,20 @@ class DockerSandboxDriver:
             image.reload()
             attrs = image.attrs
             repo_digests = tuple(attrs.get("RepoDigests") or ())
-            if image_ref not in repo_digests:
+            # Docker strips the default-registry prefix it normalized away, so
+            # compare normalized keys instead of raw strings. Non-default
+            # registries (ghcr.io, localhost:5000) are compared verbatim.
+            expected_key = _comparison_key(image_ref)
+            reported_keys = {
+                key
+                for key in (_comparison_key(str(entry)) for entry in repo_digests)
+                if key is not None
+            }
+            if expected_key is None or expected_key not in reported_keys:
                 raise ImageInspectError(
-                    f"Docker RepoDigests does not contain registered reference {image_ref}"
+                    "Docker RepoDigests does not contain registered reference "
+                    f"{image_ref} (compared as {expected_key or image_ref}, "
+                    f"reported {sorted(reported_keys) or list(repo_digests)})"
                 )
 
             config = attrs.get("Config") or {}

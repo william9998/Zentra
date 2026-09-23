@@ -112,6 +112,34 @@
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 + ZEN-008 | — |
 | **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:5000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `SPEC_READY`（第二版） | @platform-eng（主體）；@qa-verifier 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 + ZEN-008 | — |
+>
+> ---
+>
+> **🔴 隔離缺陷 `ZEN008-ISO-01`（2026-09-23 實測證實，擋 ZEN-008 `DONE`）**
+>
+> 使用者 image 的 Dockerfile 若宣告 `VOLUME`，Docker daemon 會把它**合併成可寫的匿名 volume**，
+> 平台設定的 `read_only: True` 擋不住。實測 `tests/zen008/test_image_volume_escape.py`：
+>
+> ```
+> volume_mounts: [{"Destination": "/escape", "RW": true,
+>                  "Source": "/var/lib/docker/volumes/940efc7ea3ad…/_data"}]
+> sandbox_write: "WROTE"
+> 沙盒銷毀後：volume 仍在宿主機，沙盒寫的 marker c973c99f79704f83995dd009621d1330 仍可讀
+> ```
+>
+> **後果**：使用者提供的 image 能在宿主機留下跨 Run 存活、平台不知道也不會回收的資料，
+> 打破「一次性沙盒、結束即銷毀」。同時 `test_sandbox_security.py::test_workspace_is_the_only_writable_mount` 失敗
+> （可寫掛載不只 `/workspace` tmpfs）。
+>
+> **這是 @platform-eng 在 ZEN-008 交接單自己預測過的風險**（原文：「若 SDK/daemon 把 image VOLUME 合併回來，
+> 可能多出 writable volume；Z8-23 必須 inspect Mounts；**失敗不得放行**，需改用能明確送空 `Config.Volumes` 的低階 API」）。
+> 現在證實失敗，**依其自訂條件不得放行**。
+>
+> 修法方向（其本人提出）：改用能明確送空 `Config.Volumes` 的低階 API，不要依賴 SDK 的預設合併行為。
+> 屬 `apps/sandbox/**`（@platform-eng）。
+>
+> **為什麼現在才發現**：這幾條測試先前卡在 `require_registry()` 而被 skip。
+> 主 session 手動起了測試 registry 後才執行到——**skipped 不等於通過**，這是實例。
 
 > **ZEN-008 架構裁決（2026-09-22）**：使用者明確要求 Docker image 型 Agent。
 > ADR-0008 選擇「既有 OCI Registry + canonical digest reference」，不收 image tar、不在 compose 加 Registry；
