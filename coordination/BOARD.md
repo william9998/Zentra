@@ -47,6 +47,18 @@
 >
 > **ADR-0009 已落地（2026-09-22），ZEN-009 進 `SPEC_READY`。**
 >
+> **第二版裁決（2026-09-23）**：使用者改選「允許同機 `docker push` 到內部 Registry」，理由是
+> AWS（ECR）與 Azure（ACR）都是 registry-based、**沒有一個收 `docker save` tar 上傳**。
+> 架構師據此把 **tar 上傳整條撤回（不是延後）**，ZEN-009 縮成「compose 加一個服務 + 文件」。
+>
+> **架構師標為未實測的關鍵推論「後端增量是零行程式碼」，已由主 session 實測確認（2026-09-23）**：
+> `docker tag` → `docker push localhost:5010/my-own-agent:2.0.0` → 用**既有的** JSON
+> `POST /v1/agents/{id}/versions` 填 `localhost:5010/my-own-agent@sha256:5f177b80485c…`
+> → `BUILDING` → `PUBLISHED`（`runtime_contract: zentra.image/v1`，entrypoints 抽出成功）
+> → `runs:invoke` → `SUCCEEDED`。**全程未改任何一行後端程式碼。**
+> 因此裁決 2 的成本比較成立：直接 push 路徑的增量確實是零。
+> 這不取代 QA 驗收——registry 進 compose 後（`localhost:5000`）仍須重驗一次。
+>
 > **ADR-0009 的關鍵假設已由主 session 實測確認**（架構師在交接單 §誠實回報 標為未實測）：
 > `save → load` 後 `RepoDigests` 為 `[]`；`tag → push` 進內部 Registry 後
 > `RepoDigests` 被填回 `localhost:5010/uploaded/demo@sha256:5f177b80485c…`，
@@ -56,6 +68,17 @@
 > 這不取代 QA 的 §7.1 驗收——QA 仍須在實作完成後以自己的證據驗一次。
 
 > **ZEN-008 現況（2026-09-22，主 session 接手 Codex 未完成的實作）**：
+>
+> **追加缺陷（2026-09-23，主 session 實測）：Docker Hub 的 image 目前完全無法註冊。**
+> `apps/sandbox/drivers/docker_driver.py:181` 以**字面字串**比對註冊的 `image_ref` 與 Docker 的 `RepoDigests`，
+> 但 Docker 會把 `docker.io/` 前綴正規化掉：
+> 註冊 `docker.io/library/alpine@sha256:d9e853…` → pull **成功** → `RepoDigests` 回報
+> `["alpine@sha256:d9e853…"]` → 比對不相等 → `BUILD_FAILED`。
+> 改填短格式 `alpine@sha256:…` 則在 schema 驗證就被擋（`image_ref must contain a canonical lowercase repository`）。
+> 兩條路都死，**Docker Hub（含使用者命名空間 `myuser/*`）一個都註冊不了**；
+> GHCR 與自建 registry 不受影響，因為不會被正規化。
+> 修法方向：比對前把兩邊正規化（`docker.io/library/x` ≡ `docker.io/x` ≡ `x`），而不是字面比對。
+> 屬 `apps/sandbox/**`（@platform-eng）。**這直接擋住最常見的使用情境，建議優先於 ZEN-009。**
 > Codex 完成實作但**在後端交件前用盡額度**，因此沒有 backend-dev 交接單。主 session 接手後：
 >
 > **修正三個真缺陷**（都擋住系統啟動或 migration）：
@@ -87,7 +110,7 @@
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @backend-dev | ZEN-000 | — |
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-008 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 + ZEN-008 | — |
-| **ZEN-009** | **上傳 image 建立版本**：Console 收 tar → worker load/push 進內部 Registry → 取 manifest digest → 接既有 validate 流程 | `SPEC_READY` | @platform-eng + @backend-dev + @ui-designer + @frontend-dev；@qa-verifier 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
+| **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:5000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `SPEC_READY`（第二版） | @platform-eng（主體）；@qa-verifier 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 + ZEN-008 | — |
 
 > **ZEN-008 架構裁決（2026-09-22）**：使用者明確要求 Docker image 型 Agent。

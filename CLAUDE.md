@@ -20,7 +20,8 @@ Agent 框架統一用 **LangChain + LangGraph**，不接受其他框架。
 > **沒有 Kubernetes、沒有 gVisor**。`registry` 是 [ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md) 新增的內部 OCI Registry，只掛 `zentra-net`。
 > 前端是**原生 HTML + CSS + ES modules，零建置**（[ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md)），
 > 沒有 React / Tailwind / npm，Console 由 `api` 直接服務靜態檔。
-> 範圍收斂成一條主線：上傳 → 發布 → 沙盒執行 → REST + MCP → Run 觀測。
+> 範圍收斂成一條主線：**push image** → 註冊 digest → 發布 → 沙盒執行 → REST + MCP → Run 觀測。
+> （平台**不接收 image 檔案上傳**；image 留在 Registry，平台只存 metadata 與 digest。）
 > **五條立場 P1–P5 一條沒鬆**，降的是實作維度。
 > 這張交付條件表變了，整份規格就要重讀。
 

@@ -7,16 +7,27 @@
 
 | 欄位 | 值 |
 |---|---|
-| Spec 版本 | `v0.4.0` |
+| Spec 版本 | `v0.4.1` |
 | 狀態 | `DRAFT` |
-| 最後更新 | 2026-09-22 |
+| 最後更新 | 2026-09-23 |
 | 擁有者 | `@architect` |
 
-> **v0.4.0 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 新增第二條 image 進場路徑。**
-> 使用者可以直接上傳 `docker save` 的 tar，平台 `docker load` → push 進**內部 OCI Registry** →
-> 以 registry 回報的 manifest digest 當版本身份，之後與 digest 註冊路徑**完全相同**。
-> 代價是長駐服務 **4 → 5**（修訂 ADR-0005 的服務清單）。
-> **`version_id` 語意不變、P1–P5 一條沒鬆**，且 P5 的可重現性被強化為不變式。
+> **v0.4.1 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) 撤回 tar 上傳，
+> 改為使用者在平台主機上直接 `docker push`。**
+> 平台**不接收 image 檔案**。使用者在跑 compose 的那台主機上
+> `docker push localhost:5000/<repo>:<tag>`，再用**既有的** JSON 端點以 digest 註冊。
+> 因此**版本進場只有一條路徑**（JSON digest 註冊），image 本體可以在外部或內部 Registry，
+> 平台不分支、不記錄。內部 OCI Registry（第 5 個長駐服務）**保留**，
+> 它的 client 從「平台 worker」變成「主機上的 Docker daemon 與使用者 CLI」。
+> v0.4.0 加入而 v0.4.1 撤回的：multipart 上傳、`LOAD`/`PUSH` stage、`artifact.origin` /
+> `image_origin`、digest 三欄的 nullable 化、`uploads` volume、2 GiB 上限、磁碟餘裕的 `QUOTA_EXCEEDED`。
+> **這些從未實作，所以相對於實際跑著的系統，v0.4.1 是零變更。**
+> **`version_id` 語意不變、P1–P5 一條沒鬆**，P5 的可重現性比 v0.4.0 更強
+> （digest 三欄維持 `NOT NULL`，不需要條件式 CHECK）。
+>
+> **v0.4.0 依 ADR-0009 R1 新增第二條 image 進場路徑（上傳 `docker save` tar）。
+> ⚠️ 已由 v0.4.1 撤回，請勿實作。** 它留下的有效部分只有一項：內部 OCI Registry，
+> 長駐服務 **4 → 5**（修訂 ADR-0005 的服務清單）。
 >
 > **v0.3.0 依 [ADR-0008](./adr/ADR-0008-oci-image-agent-packaging.md) 改變 Agent 交付格式。**
 > 開發者自行 build 並 push OCI image，平台以 immutable digest 註冊、驗證與執行；
@@ -33,7 +44,7 @@
 ## 1. 產品一句話
 
 **Zentra 是一個 Agent 平台**：開發者把自己的 LangGraph Agent build 成 OCI image，
-**push 到 Registry 後以 digest 註冊，或直接把 image tar 上傳給平台**，
+**push 到 Registry（外部的，或平台自己那個內部的）後以 digest 註冊**，
 平台以 immutable digest 凍結成版本、在**隔離沙盒**中執行，並自動對外開放 **REST API** 與 **MCP** 兩種接口。
 
 ### 1.1 交付條件（決定了下面所有取捨）
@@ -45,7 +56,7 @@
 | 程式碼來源 | **只跑自己信得過的程式碼** |
 | 交付目標 | MVP demo |
 | 時程 | 2 個月（8 週） |
-| 部署 | **單機 docker compose**（**5 個服務**，v0.4.0 新增內部 Registry），本機與正式是同一套 |
+| 部署 | **單機 docker compose**（**5 個服務**，v0.4.0 新增內部 Registry），本機與正式是同一套。**發布版本需要在這台主機上有 shell**（v0.4.1，見 §7.1） |
 
 **這張表變了，整份規格就要重讀。** 尤其「信任的程式碼」這條——
 一旦要跑不是自己寫的 Agent，回去讀 [ADR-0001](./adr/ADR-0001-sandbox-isolation.md) 與 [ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md) 的「何時該重新檢討」。
@@ -75,7 +86,7 @@
 
 | 角色 | 情境 | 主要介面 |
 |---|---|---|
-| **Agent 開發者** | 寫 LangGraph、build OCI image，**然後二選一**：push 到 Registry 以 digest 註冊，或在 Console 上傳 `docker save` 的 tar | Docker/OCI CLI + Zentra Console/API/SDK |
+| **Agent 開發者** | 寫 LangGraph、build OCI image、push 到 Registry（外部 Registry，或**在平台主機上** push 到 `localhost:5000`），然後以 digest 註冊 | Docker/OCI CLI + Zentra Console/API/SDK |
 | **外部系統** | 以 REST 或 MCP 呼叫已發布的 Agent | `/v1/...` · `/mcp/agents/{id}` |
 | **維運者（＝同一個人）** | 看 Run 的事件流、失敗原因、token 用量 | Console |
 
@@ -90,7 +101,7 @@ L0 接入 + 控制   api (FastAPI)  REST · MCP · SSE · Console 靜態檔 · I
 L1 派工          worker (Celery, Redis broker)  q.run · q.build
 L2 執行          Sandbox Manager → Sandbox（Docker，一 Run 一盒）
 L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daemon image cache
-                （image 本體的權威來源：註冊路徑＝外部 Registry；上傳路徑＝內部 Registry）
+                （image 本體的權威來源＝`image_ref` 指向的 Registry，外部或內部都可以）
 ```
 
 > **沒有 Console BFF。** Console 是原生 HTML/CSS/JS 靜態檔，由 `api` 服務，
@@ -103,6 +114,12 @@ L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daem
 2. **L2 沙盒不得直連 L3 資料層**——沒有 Postgres 連線、沒有 Redis 連線、**沒有 Registry 連線**，一律經 Internal Gateway。
 3. 沙盒的網路對端**有且只有一個**：`api`。
    **內部 Registry 絕對不接 `zentra-sandbox-net`**；沙盒的 image 是 daemon 給的，沙盒自己不拉 image。
+4. **平台不得代理、轉發、嵌入或連結任何 Registry HTTP 端點**（`/v2/*` 含 `_catalog`）。
+   Registry 的 HTTP API 是**維運介面**，不是產品介面：它不出現在 `api` 的任何路由、
+   Console 的任何 `fetch`、OpenAPI 或 MCP tool schema 裡（[ADR-0009 R2-5](./adr/ADR-0009-internal-registry-image-upload.md)）。
+   理由很具體：`api` 同時掛在 `zentra-net` 與 `zentra-sandbox-net` 上，
+   `api` 上任何「幫你查 registry」的端點都會變成沙盒觸達 Registry 的跳板，直接打穿 P4。
+   **Registry 對沙盒不可達，要靠「沒有任何一條路可以到」保證，不是靠沙盒不知道位址。**
 
 ## 6. 技術選型（已定案，變更需開 ADR）
 
@@ -118,7 +135,7 @@ L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daem
 | 資料庫 | PostgreSQL | 16 | 用 `pgvector/pgvector:pg16` 映像——擴充先備著，MVP 不用 |
 | 快取 / 串流 | Redis | 7 | Celery broker + result + Streams 事件匯流 |
 | Agent artifact | **OCI image digest** | OCI Image Spec | image 本體在外部或內部 Registry；PostgreSQL 只存 metadata；VM 保留 Docker image cache |
-| 內部 Registry | CNCF distribution `registry:2` | 2.8 | 只掛 `zentra-net`、只發布 `127.0.0.1:5000`、**無 TLS / 無認證 / 無自動 GC**（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md)） |
+| 內部 Registry | CNCF distribution `registry:2` | 2.8 | 只掛 `zentra-net`、只發布 `127.0.0.1:5000`、**無 TLS / 無認證 / 無自動 GC**。client 只有**主機上的 Docker daemon 與使用者 CLI**，沒有任何平台服務會連它（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md)） |
 | Image runtime contract | `zentra.image/v1` | | 固定 executable + validate/run mode；平台不執行 `pip install` |
 | 前端 | **原生 HTML + CSS + ES modules** | — | **零建置**：無 bundler、無 TypeScript、無 npm / pnpm（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)） |
 | UI | 原生 CSS custom properties | | 設計 token 見 [`specs/ui-contract.md`](./ui-contract.md)，**本來就是純 CSS 變數** |
@@ -139,14 +156,32 @@ docker compose（長駐，5 個）              Sandbox Manager 動態建立（�
   worker   ← L1
 ```
 
-**內部 Registry（v0.4.0 新增，ADR-0009）**：只掛 `zentra-net`，**只發布 `127.0.0.1:5000:5000`**。
-必須發布 loopback port 的理由是拓撲而非偏好——push/pull 的執行者是**主機上的 Docker daemon**，
-它不在 `zentra-net` 上、解析不到服務名；`localhost` 同時讓 daemon 預設允許明文 HTTP，
-不必改 `daemon.json`。**前提：daemon 與 compose 同一台主機。**
+**內部 Registry（v0.4.0 新增，v0.4.1 改變用途，ADR-0009）**：
+只掛 `zentra-net`，**只發布 `127.0.0.1:5000:5000`，不得綁 `0.0.0.0`**。
+`REGISTRY_STORAGE_DELETE_ENABLED=false`，儲存在 named volume `registrydata:/var/lib/registry`。
+
+- **它的 client 是誰**：主機上的 Docker daemon（pull）與**使用者的 `docker push`**。
+  **沒有任何平台服務會連它**——`api` 與 `worker` 都不連，因此也**不需要** `depends_on: registry`。
+- **為什麼一定要發布 loopback port**：拓撲，不是偏好。push/pull 的執行者是主機上的 daemon，
+  它不在 `zentra-net` 上、解析不到服務名。`localhost` 同時讓 daemon 預設允許明文 HTTP，
+  不必改 `daemon.json` 的 `insecure-registries`。
+- **loopback 綁定同時就是存取控制**：只有該主機上的行程連得到，這就是「只限同機 push」的執行手段。
+  **綁 `0.0.0.0` 需新 ADR，且該 ADR 必須先解決 TLS 與認證**（[ADR-0009 R2-1](./adr/ADR-0009-internal-registry-image-upload.md)）。
+- **前提：Docker daemon 與 compose 同一台主機。** 遠端 `DOCKER_HOST` 會 push 成功、pull 失敗。
 
 **備份範圍（誠實標示）**：`registrydata` volume 與 `pgdata` **同等重要**。
-上傳來源的 `PUBLISHED` 版本，其 image 本體只存在 `registrydata` 裡；刪掉它＝那些版本永久不可執行。
-MVP **不提供自動備份、不做自動 GC**（`delete.enabled=false`，手動 GC 見維運說明）。
+`image_ref` 指向 `localhost:5000` 的 `PUBLISHED` 版本，其 image 本體只存在 `registrydata` 裡；
+刪掉它＝那些版本永久不可執行。MVP **不提供自動備份、不做自動 GC**。
+
+**容量與回收的責任歸屬（v0.4.1）**：使用者直接 push，平台**不在那條路徑上**，
+因此容量與清理是**維運者的責任**，平台不做配額、不做預檢、不對 Registry 內容負責。
+- 未被任何 `agent_versions` 引用的 repository：**平台不刪、不列、不管**（無法分辨垃圾與「五分鐘後要註冊的東西」）。
+- 磁碟滿掉的表現：使用者的 `docker push` 在 client 端失敗，**平台不會顯示任何訊號**。已 `PUBLISHED` 的版本不受影響。
+- 回收是維運程序：`GET /v2/_catalog` 對照 `agent_versions` 中 `PUBLISHED` 的 `image_digest`，
+  停機 → 暫時開啟 delete → `registry garbage-collect` → 關回去。
+- ⚠️ **`registry garbage-collect --delete-untagged` 絕對不准用**：使用者用同一個 tag 推第二次會讓
+  前一個 manifest 變成 untagged，而它可能正是某個 `PUBLISHED` 版本的 `image_digest`。
+  這也是推薦「tag 用 semver」的原因。
 
 **Console 沒有自己的容器**：`api` 用 `StaticFiles` 掛載 `apps/console/`，
 並以五條 `FileResponse` 路由給出乾淨網址（`/console/agents`、`/console/runs/{run_id}` …），
@@ -174,35 +209,50 @@ MVP **不提供自動備份、不做自動 GC**（`delete.enabled=false`，手�
 
 ### 7.1 發布一個 Agent 版本
 
-開發者自行 build image 後，有**兩條進場路徑**，它們在「拿到 canonical digest reference」這一刻匯流，
-**之後完全相同**（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md)）：
+**版本進場只有一條路徑**（v0.4.1，[ADR-0009 R2](./adr/ADR-0009-internal-registry-image-upload.md)）：
+`POST /v1/agents/{id}/versions` + `application/json` + canonical digest reference。
+**平台不接收 image 檔案。** image 本體可以在兩種地方，平台**不分支、不記錄、沒有對應欄位**：
 
-| | 路徑 A：註冊（`origin=REGISTERED`） | 路徑 B：上傳（`origin=UPLOADED`） |
+| image 放哪裡 | 開發者怎麼放進去 | `image_ref` 長相 |
 |---|---|---|
-| 前置 | push 到 VM 能存取的 OCI Registry | 無，手上有 image 就行 |
-| 請求 | `POST .../versions`，JSON + canonical `image_ref` | 同一端點，`multipart/form-data` + `docker save` tar |
-| build 階段 | `PULL → INSPECT → VALIDATE` | `LOAD → PUSH → INSPECT → VALIDATE` |
-| digest 來源 | 呼叫端提供，worker 驗證一致 | 平台 push 進內部 Registry 後由 registry 回報 |
+| 外部 Registry | 自己 push 到 GHCR / 自建 registry（ADR-0008） | `ghcr.io/acme/agent@sha256:…` |
+| **平台內部 Registry** | **在跑平台的那台主機上** `docker push localhost:5000/<repo>:<tag>` | `localhost:5000/<repo>@sha256:…` |
 
-1. 進場：路徑 A 提供 `repository@sha256:<digest>`（tag-only reference 不接受）；
-   路徑 B 上傳 tar，**呼叫端不能指定任何 image reference**
-2. `POST /v1/agents/{id}/versions` 送出 `semver` + （`image_ref` 或 tar）
+內部 Registry 的受支援用法（**只限同機**，遠端 push 需新 ADR 且必須先解決 TLS 與認證）：
+
+```bash
+docker tag my-agent:dev localhost:5000/my-agent:1.0.0   # 推薦 tag 用 semver（見 §6.1 的 GC 陷阱）
+docker push localhost:5000/my-agent:1.0.0                # 最後一行印出 digest: sha256:<64 hex>
+docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/my-agent:1.0.0
+```
+
+1. 進場：提供 `repository@sha256:<digest>`（tag-only reference 不接受）。
+   `repository` 可以含 registry host 與 port，`localhost:5000/my-agent` 合法
+2. `POST /v1/agents/{id}/versions` 送出 `semver` + `image_ref`
 3. `api` 寫 `agent_versions`（`BUILDING`），送 Celery task 進 `q.build`；
-   **PostgreSQL 不保存 image blob**，tar 落在共享 volume 且用完即刪
-4. 路徑 B 先 `LOAD`（交給 daemon，平台行程不解析 tar）→ `PUSH` 進內部 Registry，
-   並以 `RepoDigests` 確認取得 manifest digest；路徑 A 則以平台側 Registry credential pull exact digest。
-   兩者接著 inspect platform/label/runtime contract
+   **PostgreSQL 不保存 image blob**
+4. worker 令 daemon pull exact digest（外部 Registry 用平台側 credential；
+   `localhost:5000` 不帶 credential，因為內部 Registry 沒有認證），
+   接著 inspect platform/label/runtime contract，並以 `RepoDigests` 確認 digest 對得上
 5. 起一次性 validation container：以 uid 65534、唯讀 rootfs、internal 網段執行
    `/opt/zentra/bin/zentra-agent validate`；import 使用者模組、驗證 `build()` 與未 compile `StateGraph`，
    抽出 entrypoints schema，再以短效 validation token POST 回 Internal Gateway
 6. 通過 → 保存完整 digest、manifest、entrypoints 並轉 `PUBLISHED`，配發 REST/MCP/OpenAPI（P3）；
-   失敗 → `FAILED + BUILD_FAILED`（`details.stage` ∈ `LOAD|PUSH|PULL|INSPECT|VALIDATE`）。
+   失敗 → `FAILED + BUILD_FAILED`（`details.stage` ∈ `PULL|INSPECT|VALIDATE`）。
    不論結果都撤銷 token、銷毀 validation container
 
 **P5 的不變式**：沒有可重新 pull 的 canonical digest reference，**不得**成為 `PUBLISHED`。
-`docker save`／`load` 會丟失 registry manifest digest（`RepoDigests` 變空），
-因此上傳路徑必須先 push 才有版本身份——這由 DB CHECK 與 `RepoDigests` 非空檢查共同保證。
-`artifact.origin` 只是描述來源，**任何執行期行為都不得依它分支**。
+`image_ref` / `image_digest` / `version_id` 三欄**任何狀態下都是 `NOT NULL`**，
+再加上 `INSPECT` 階段的 `RepoDigests` 比對，共同保證這件事。
+（v0.4.0 曾為了上傳路徑把三欄 nullable 化並改用條件式 CHECK，v0.4.1 撤回——`NOT NULL` 嚴格更強。）
+
+**`image_ref` 的保存規則（P5，實作必守）**：`agent_versions.image_ref`
+**原封不動保存呼叫端註冊的字串**。registry 前綴正規化（`docker.io/library/x` ≡ `docker.io/x` ≡ `x`）
+只可以發生在**比較時**，不得改寫已保存的值。
+判斷哪一段是 registry host 的規則：repository 第一段含 `.` 或 `:`，或等於 `localhost` → 它就是
+registry host，**必須原樣保留**。因此 `localhost:5000/alpine` **不等於** `alpine`；
+任何把 `localhost:5000/x` 正規化成 `x` 或 `docker.io/x` 的實作都是嚴重 bug
+（[ADR-0009 R2-6](./adr/ADR-0009-internal-registry-image-upload.md)）。
 
 ### 7.2 呼叫 Agent（非同步 Run）
 
@@ -273,7 +323,7 @@ runtime 啟動先做 import 自檢，缺件時報出缺哪個模組。
 | `GET` | `/v1/runs/{run_id}` | 查 Run 狀態 |
 | `GET` | `/v1/runs/{run_id}/events` | SSE 事件串流 |
 | `POST` | `/v1/runs/{run_id}/cancel` | 取消 |
-| `POST` | `/v1/agents/{agent_id}/versions` | 發布新版本：JSON = 註冊 OCI digest；multipart = 上傳 image tar |
+| `POST` | `/v1/agents/{agent_id}/versions` | 發布新版本：**只接 JSON**，以 canonical OCI digest 註冊。平台不接收 image 檔案 |
 
 Run 的 `trigger` 表示**平台接入協定**，不是 UI 身分：所有 `/v1/.../runs` HTTP 呼叫（包含同源 Console）
 都由伺服器記為 `API`；只有 FastMCP 的 `tools/call` 記為 `MCP`。同源、`Referer`、`Origin`、
@@ -317,19 +367,19 @@ TIMEOUT / SANDBOX_ERROR / USER_CODE_ERROR 皆歸入 FAILED，以 error.code 區�
 | 可用性 | **不設目標** | 單機即單點故障。`restart: unless-stopped` + 健康檢查，主機重開 = 停機。**誠實不承諾，而不是承諾做不到的數字** |
 | 資料隔離 | 單租戶。資料表留 `owner_id` 欄位但**不做 RLS** | 多租戶在 MVP 外 |
 | 稽核 | 所有 LLM 呼叫 100% 留存於 `llm_calls` | 沙盒沒有其他出口，這就是全部的外網活動 |
-| image 上傳 | 單檔 **≤ 2 GiB**（可設定）；無斷點續傳、無分塊 | 中斷即整包重來，且必須換新 `semver`（v0.4.0） |
-| 內部 Registry 容量 | 上限＝主機磁碟。**無自動 GC、無配額系統** | 上傳前做磁碟餘裕預檢（`429 QUOTA_EXCEEDED`）；空間不足在 build 階段表現為 `BUILD_FAILED / stage=PUSH` |
+| image 進場 | **平台不接收 image 檔案**，沒有上傳端點、沒有大小上限、沒有續傳問題 | v0.4.1 撤回 v0.4.0 的 tar 上傳；image 經 `docker push` 進 Registry，layer 去重與重試由 Docker 負責 |
+| 內部 Registry 容量 | 上限＝主機磁碟。**無自動 GC、無配額系統，責任在維運者** | 平台不在 push 路徑上，**不做預檢也沒有訊號**：磁碟滿了是使用者的 `docker push` 在 client 端失敗，Console 什麼都不會顯示。已 `PUBLISHED` 的版本不受影響（§6.1） |
 
 ## 11. 範圍界線
 
 ### MVP 內（唯一主線）
 
 ```
-（push OCI image 並註冊 digest ─┬─→）以 digest 發布不可變版本 → 沙盒執行
-（上傳 image tar ──────────────┘）   → 自動 REST + MCP → Run 觀測（SSE）
+push OCI image（外部 Registry 或主機上的 localhost:5000）→ 以 digest 註冊
+  → 發布不可變版本 → 沙盒執行 → 自動 REST + MCP → Run 觀測（SSE）
 ```
 
-具體：OCI image 型 Agent、**兩條 image 進場路徑（外部 digest 註冊 + tar 上傳 → 內部 Registry）**、
+具體：OCI image 型 Agent、**單一進場路徑（JSON digest 註冊）＋ 內部 Registry 讓使用者同機 push**、
 版本發布與 digest 凍結、Celery 派工、Docker 沙盒四層隔離、
 Internal Gateway（LLM 代理 + 事件回收）、REST + MCP 雙門面、Run 觀測、Console 五個畫面（原生 HTML/CSS/JS）、`zentra` CLI。
 
@@ -339,11 +389,14 @@ Internal Gateway（LLM 代理 + 事件回收）、REST + MCP 雙門面、Run 觀
 HITL resume、Agent Flow 視覺化編排、多租戶與 RLS、Alias 流量切換、排程觸發（Beat）、
 計費出帳、CVE / License / image 簽章掃描、Warm Pool、Kubernetes 部署、
 Python bundle/venv 發布、**Dockerfile 上傳與遠端 build service**、
-內部 Registry 的 TLS / 認證 / 自動 GC / 配額 / 自動備份、版本或 image 的刪除功能、
-斷點續傳與分塊上傳。
+內部 Registry 的 TLS / 認證 / 自動 GC / 配額 / 自動備份 / 遠端（非同機）push、
+版本或 image 的刪除功能、**平台接收 image 檔案（`docker save` tar 上傳）**、
+斷點續傳與分塊上傳、Registry 瀏覽 UI 或任何代理 Registry HTTP 端點的平台功能。
 
-> v0.4.0 把「image tar 直傳」與「平台內建 OCI Registry」**移出**本清單（[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 已裁定實作）。
-> 移出的只有這兩項，同段其餘各項一律仍在 MVP 外。
+> v0.4.0 把「image tar 直傳」與「平台內建 OCI Registry」移出本清單；
+> **v0.4.1 把「image tar 直傳」放回 MVP 外**（[ADR-0009 R2](./adr/ADR-0009-internal-registry-image-upload.md) 撤回它），
+> **只有「平台內建 OCI Registry」維持在 MVP 內**。要把 tar 上傳加回來需新 ADR ——
+> 唯一站得住腳的理由是「出現只有瀏覽器、沒有主機 shell 的發布者」。
 
 > **「架構留位」的意思是：介面切乾淨，不是預先建一個沒人用的抽象。**
 > `SandboxDriver`、`ObjectStore`、`entrypoints` 這三個介面是留位；
@@ -362,6 +415,7 @@ Python bundle/venv 發布、**Dockerfile 上傳與遠端 build service**、
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的 tar 上傳路徑**，改為使用者在平台主機上直接 `docker push localhost:5000/<repo>:<tag>` 後以既有 JSON 端點註冊（**只限同機**，不綁 `0.0.0.0`，不加 TLS/認證）。移除 multipart、`LOAD`/`PUSH` stage、`artifact.origin`/`image_origin`、digest 三欄 nullable 化、`uploads` volume、2 GiB 上限、磁碟餘裕的 `QUOTA_EXCEEDED`；digest 三欄恢復 `NOT NULL`。新增：§5 硬規則 4（平台不得代理 Registry HTTP 端點）、§6.1 容量與 GC 責任歸屬與 `--delete-untagged` 禁令、§7.1 `image_ref` 正規化護欄。內部 OCI Registry（5 個長駐服務）**保留**。v0.4.0 的新增從未實作，**相對於實際跑著的系統是零變更**。P1–P5 與 `version_id` 語意不變 | @architect |
 | v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 新增 image tar 上傳路徑與**內部 OCI Registry**（長駐服務 4 → 5，修訂 ADR-0005 的服務清單）；明定兩條路徑的匯流點與「`origin` 不得影響執行期行為」；把 P5 可重現性寫成不變式（`RepoDigests` 非空 + DB CHECK）；裁決 Q-008（`build(ctx)` 簽章）、Q-009（SDK 自行宣告依賴）、Q-010（官方 base image）。`version_id` 語意、Run 狀態機、錯誤 code、沙盒隔離與 P1–P5 均未變 | @architect |
 | v0.3.1 | 2026-09-22 | 裁決 Run `trigger` 為可信的接入協定：REST 與 Console 共用 `/v1`，一律為 `API`；FastMCP handler 為 `MCP`；移除無法可靠判定的 `CONSOLE`。不新增 client 可控 discriminator | @architect |
 | v0.3.0 | 2026-09-22 | 依 [ADR-0008](./adr/ADR-0008-oci-image-agent-packaging.md) 將尚未實作的 Python bundle + per-version venv 發布路徑改為 OCI image digest 註冊；image 本體在既有 Registry，PostgreSQL 只存 metadata；新增 `zentra.image/v1` validate/run 契約。REST/MCP → Celery → 一 Run 一盒 → 銷毀與 P1–P5 不變 | @architect |

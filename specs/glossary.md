@@ -76,4 +76,5 @@
 | **Warm Pool** | 預熱沙盒降低冷啟 | 發布階段先 pull image；Run 使用本機 digest cache，不維護預熱容器 |
 | **HITL / `WAITING_INPUT` / Checkpointer** | 中斷後續跑 | 狀態機已移除 `WAITING_INPUT`。MVP 的 LangGraph 用行程內 `MemorySaver` |
 | **Code Bundle / per-version venv** | `.tar.gz` 上傳後由平台安裝依賴 | ADR-0008 改為開發者自建 OCI image；恢復需新 ADR 與雙路徑驗收 |
-| **平台內建 Registry / image tar 直傳** | 平台接收或託管 image blob | ~~MVP 只註冊既有 Registry 的 digest~~ → **v0.4.0 已納入**：[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 裁定加入內部 Registry（第五個長駐服務），上傳的 tar 由平台 push 後仍以 digest 識別。外部 Registry 註冊仍是正途 |
+| **平台內建 Registry** | 平台託管 image blob | **v0.4.0 已納入**：[ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 裁定加入內部 Registry（第 5 個長駐服務）。**v0.4.1（R2）改變用途**：使用者**在平台主機上**直接 `docker push localhost:5000/<repo>:<tag>`，平台不在 push 路徑上。外部 Registry 註冊仍是正途 |
+| **image tar 直傳** | 平台接收 `docker save` 的 tar | v0.4.0 曾納入，**v0.4.1 撤回**（ADR-0009 R2）。平台**不接收 image 檔案**：沒有 multipart 端點、沒有 `LOAD`/`PUSH` stage、沒有 `artifact.origin`。要加回來需新 ADR，唯一站得住腳的理由是「出現只有瀏覽器、沒有主機 shell 的發布者」 |

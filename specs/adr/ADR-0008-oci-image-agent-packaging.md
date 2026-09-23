@@ -9,7 +9,10 @@
 
 > ⚠️ **本 ADR 對「選項 B：Zentra 自帶 OCI Registry」的否決，已被
 > [ADR-0009](ADR-0009-internal-registry-image-upload.md) 推翻（2026-09-22）。**
-> 平台現在有一個**內部**的 OCI Registry，用來承接「上傳 image tar」這條進場路徑。
+> 平台現在有一個**內部**的 OCI Registry。
+> （ADR-0009 R1 用它承接「上傳 image tar」；**R2 撤回了上傳**，改為使用者在平台主機上直接
+> `docker push localhost:5000/<repo>:<tag>`，再走**本 ADR 既有的** digest 註冊路徑。
+> 也就是說 ADR-0008 的進場形狀在 R2 之後是**唯一**的進場形狀。）
 > 下方「選項 B」的代價評估是**假設要做對外通用 Registry**的定價，ADR-0009 逐條重新定價後改判。
 > **本 ADR 的其餘部分全部有效**：canonical digest 身份、`zentra.image/v1` 契約、
 > PostgreSQL 只存 metadata、外部 Registry 註冊仍是正途、P1–P5 不變。

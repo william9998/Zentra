@@ -38,4 +38,8 @@ v0.1 的編號在降維後重排。**舊交接單或註解提到這些編號時�
 | 多租戶 / RLS / Alias 流量切換 | 單租戶 |
 | Kubernetes / gVisor / Warm Pool / CVE 掃描 | 單機 + 信任的程式碼 |
 | Python bundle + per-version venv 發布 | ZEN-001 尚未實作即由 ADR-0008 的 OCI image 單一路徑取代；恢復需新 ADR 與雙路徑驗收 |
+| image tar 直傳（瀏覽器上傳 `docker save` 檔） | [ADR-0009 R2](../specs/adr/ADR-0009-internal-registry-image-upload.md) **撤回**：要產出 tar 就必須已裝 Docker、已跑過 build，「不熟 Docker 的受益者」不存在；同機 `docker push` 的後端增量為零 |
+| 從遠端筆電 `docker push` 到平台 Registry | 需綁 `0.0.0.0`，一綁就必須先解決 TLS 與認證（牽動 P4）。需新 ADR，且該 ADR 必須先解決憑證，不得「先開再補」 |
+| Console 的 Registry 瀏覽 UI | 平台不代理 Registry 端點（見下一列） |
+| 平台代理／轉發／嵌入 Registry HTTP 端點 | `api` 同時掛 `zentra-net` 與 `zentra-sandbox-net`，代理會讓沙盒有跳板（SPEC §5 分層硬規則 4） |
 | React / Vue / Alpine / htmx / bundler / TypeScript / npm | 前端是原生三件套，零建置（[ADR-0006](../specs/adr/ADR-0006-vanilla-frontend.md)） |
