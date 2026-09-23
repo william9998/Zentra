@@ -1,8 +1,10 @@
 # 任務看板 (Task Board)
 
-> **唯一的任務真相。** 所有 agent 開工前看這裡，收工後更新這裡。
-> 狀態機：`BACKLOG → SPEC_READY → IN_PROGRESS → REVIEW → QA → DONE`（任何階段可轉 `BLOCKED`）
-> 規則：只有 `@architect` 能推進到 `SPEC_READY`；只有 `@qa-verifier` 能推進到 `DONE`。
+> **這裡只記「有多個任務要排順序」的事。** 小改動不用上板，直接做。
+> 狀態機：`BACKLOG → IN_PROGRESS → REVIEW → DONE`（任何階段可轉 `BLOCKED`）。
+> 歷史列還有 `SPEC_READY` / `QA`，那是舊流程的痕跡，不用回填。
+> 三個角色：`@architect`（規格與契約）· `@builder`（全部產品程式碼）· `@reviewer`（驗收與稽核）。
+> 舊的七角色名只出現在歷史紀錄裡，對照見 [`AGENTS.md`](../AGENTS.md)。
 >
 > **對齊 SPEC `v0.3.1`。** OCI image 發布依 ADR-0008 取代尚未實作的 bundle/venv 路徑；
 > 舊編號 ZEN-001～ZEN-011 的歷史對照見 §已作廢。
@@ -105,13 +107,13 @@
 > dev DB 當時是經使用者授權刪除一列測試殘骸才通過）；無 backend-dev 交接單。
 >
 > **@qa-verifier 的驗收在寫裁定前被使用者中止，因此沒有裁定。維持 `IN_PROGRESS`，不得視為通過。**
-| ZEN-002 | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `BACKLOG` | @backend-dev | ZEN-008 | — |
-| ZEN-003 | **沙盒四層隔離硬化**：internal 網段、cap_drop、cgroups、唯讀 + `capabilities()` | `BACKLOG` | @platform-eng | ZEN-000 | — |
-| ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @backend-dev | ZEN-000 | — |
-| ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @backend-dev | ZEN-008 | — |
-| ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @ui-designer → @frontend-dev | ZEN-004 + ZEN-008 | — |
-| **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:5000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `SPEC_READY`（第二版） | @platform-eng（主體）；@qa-verifier 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
-| ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @qa-verifier + 全員 | ZEN-002…006 + ZEN-008 | — |
+| ZEN-002 | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `BACKLOG` | @builder | ZEN-008 | — |
+| ZEN-003 | **沙盒四層隔離硬化**：internal 網段、cap_drop、cgroups、唯讀 + `capabilities()` | `BACKLOG` | @builder | ZEN-000 | — |
+| ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @builder | ZEN-000 | — |
+| ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @builder | ZEN-008 | — |
+| ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @architect（UI 契約）→ @builder | ZEN-004 + ZEN-008 | — |
+| **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:5000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `SPEC_READY`（第二版） | @builder（主體）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
+| ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
 >
 > ---
 >
@@ -244,7 +246,9 @@
 
 ## SPEC-QUESTION（規格提問）
 
-> 規格不清楚時開在這裡，**不要自己決定**。由 `@architect` 裁決後收斂回 `specs/SPEC.md`。
+> **規格不清楚時直接問使用者**，不要自己決定，也不要為了走流程開在這裡。
+> 只有「使用者不在、而且會卡到之後好幾個 session」的問題才記到這張表。
+> 下面的 OPEN 項目是舊流程留下的，要收掉就直接問使用者，裁決後收斂回 `specs/`。
 
 | # | 提問 | 由 | 狀態 | 裁決 |
 |---|---|---|---|---|

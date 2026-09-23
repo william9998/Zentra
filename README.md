@@ -71,22 +71,30 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 | [`specs/`](specs/) | **Single source of truth.** Master spec, API & UI contracts, glossary, ADRs, feature specs |
 | [`docs/architecture/`](docs/architecture/) | Mermaid diagrams and design deep-dives |
 | [`coordination/`](coordination/) | Task board, handoff notes, spec-drift audits |
-| [`.claude/agents/`](.claude/agents/) | Seven role agents — architect, UI, frontend, backend, platform, QA, spec-keeper |
-| [`.claude/commands/`](.claude/commands/) | `/align` `/task` `/handoff` `/verify` `/drift` |
-| [`.codex/agents/`](.codex/agents/) | Seven matching Codex roles, sharing the same project spec |
-| [`.agents/skills/`](.agents/skills/) | Codex workflows: align, task, handoff, verify, drift |
+| [`.claude/agents/`](.claude/agents/) | Three role agents — architect, builder, reviewer |
+| [`.claude/commands/`](.claude/commands/) | `/task` `/verify` `/drift` `/handoff` |
+| [`.codex/agents/`](.codex/agents/) | The same three roles registered for Codex, pointing at the definitions above |
+| [`.agents/skills/`](.agents/skills/) | The same four workflows registered for Codex |
 | [`docs/codex.md`](docs/codex.md) | Codex setup, invocation examples, and collaboration limits |
 
 ## Built by a team of AI agents
 
-This repository supports Claude Code and Codex role agents. Durable decisions and handoffs are recorded in shared files; available agent messaging tools can help coordinate the work:
+This repository is developed by role agents under Claude Code and Codex, both reading the same
+definitions. Three roles, not a bureaucracy:
 
-- **One spec** everyone reads before starting ([`specs/SPEC.md`](specs/SPEC.md))
-- **Contract-first** — frontend and backend both target [`api-contract.md`](specs/api-contract.md) instead of waiting on each other
-- **Handoff notes** and a [task board](coordination/BOARD.md) carry state between roles
-- **A spec-keeper agent** audits the code for drift away from the spec
+- **`architect`** owns the spec, the contracts and the ADRs — called only when a contract has to change
+- **`builder`** writes all the product code: backend, Console and sandbox
+- **`reviewer`** writes the acceptance criteria, runs the tests and audits the code for drift away from the spec
 
-The protocol is written up in [`AGENTS.md`](AGENTS.md).
+The process is tiered on purpose: a small change is made directly, with no subagent and no handoff
+note. Only work that changes [`api-contract.md`](specs/api-contract.md), needs a new ADR, or touches
+the sandbox and credential boundary goes through the full architect → builder → reviewer path.
+
+What holds it together is **contract-first** development — frontend and backend both target
+[`api-contract.md`](specs/api-contract.md) instead of waiting on each other — plus a
+[task board](coordination/BOARD.md) and, for the larger pieces, handoff notes.
+
+The rules are in [`AGENTS.md`](AGENTS.md), which is deliberately short.
 
 ## Stack
 
@@ -249,16 +257,21 @@ Console 沒有自己的容器，它是 `api` 服務出去的原生靜態檔，�
 
 ### 由 AI agent 團隊協作開發
 
-這個 repo 支援 Claude Code 與 Codex 的角色分工。
-可用的 agent 訊息工具協助討論，決策與交接仍寫入共用檔案：
+這個 repo 由 Claude Code 與 Codex 的角色 agent 開發，兩邊讀同一份角色定義。三個角色，不是一套官僚流程：
 
-- **一份共同規格**，所有人開工前必讀（[`specs/SPEC.md`](specs/SPEC.md)）
-- **契約優先**——前後端各自對齊 [`api-contract.md`](specs/api-contract.md)，不用互相等待
-- **交接單**與[任務看板](coordination/BOARD.md)串起角色之間的狀態
-- **spec-keeper agent** 定期稽核程式碼是否偏離規格
+- **`architect`** 擁有規格、契約與 ADR —— 只在契約要改時才叫
+- **`builder`** 寫全部產品程式碼：後端、Console、沙盒
+- **`reviewer`** 寫驗收條件、跑測試、稽核程式碼有沒有偏離規格
 
-完整協議見 [`AGENTS.md`](AGENTS.md)。
-Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)，可先輸入 `$zentra-align ZEN-000` 對齊現況。
+流程是**刻意分級**的：小改動直接做，不派 subagent、不寫交接單。
+只有會改 [`api-contract.md`](specs/api-contract.md)、需要新 ADR、或動到沙盒與憑證邊界的工作，
+才走完整的 architect → builder → reviewer。
+
+把這些串起來的是**契約優先**——前後端各自對齊 [`api-contract.md`](specs/api-contract.md)，不用互相等待——
+加上[任務看板](coordination/BOARD.md)，以及大功能才寫的交接單。
+
+規則寫在 [`AGENTS.md`](AGENTS.md)，刻意保持很短。
+Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)。
 
 ### 本機啟動與測試
 

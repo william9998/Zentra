@@ -13,18 +13,18 @@
       "Bash(uv run pytest:*)",
       "Bash(uv run alembic:*)",
       "Bash(uv run ruff:*)",
-      "Bash(pnpm test:*)",
-      "Bash(pnpm build:*)",
-      "Bash(pnpm lint:*)",
       "Bash(docker compose ps:*)",
-      "Bash(kubectl get:*)",
-      "Bash(kubectl describe:*)"
+      "Bash(uv sync:*)",
+      "Bash(docker compose logs:*)",
+      "Bash(docker images:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(sed -n:*)"
     ],
     "deny": [
       "Read(./**/.env)",
       "Read(./**/.env.*)",
       "Read(./**/secrets/**)",
-      "Bash(kubectl delete:*)",
       "Bash(terraform apply:*)",
       "Bash(terraform destroy:*)"
     ]

@@ -1,28 +1,28 @@
 ---
-description: 驗收 — 執行品質閘門 G1-G6，判定任務能否進 DONE
+description: 驗收 — 跑受影響的測試與必要的隔離驗證，判定能不能收工
 ---
 
-用 `qa-verifier` agent 驗收任務：$ARGUMENTS
+驗收任務：$ARGUMENTS
 
-依 `AGENTS.md` §6 的六道閘門逐項檢查，**每一項都要附證據**：
+小改動自己驗就好；跨區域或動到沙盒/憑證的，派 `reviewer` agent
+（完整清單在 [`.claude/agents/reviewer.md`](../agents/reviewer.md)）。
 
-| 閘門 | 檢查 |
-|---|---|
-| G1 | 符合 SPEC 五條核心立場 P1–P5 |
-| G2 | 實作與 `specs/api-contract.md` 一致（契約測試綠燈） |
-| G3 | 單元測試覆蓋新增邏輯；核心路徑有整合測試 |
-| G4 | 涉及沙盒 / 憑證 / 網路出口者，通過安全驗證清單 |
-| G5 | 有交接單、SPEC 若有變已 bump 版本 |
-| G6 | 沒有未解的 SPEC-QUESTION |
+## 三道關，每一項都要附證據
 
-**多租戶隔離是每次必測**：
-- A 租戶的 token 查 B 租戶的 `run_id` → 必須 404（不是 403，不洩漏存在性）
-- A 租戶的 Agent 查 B 租戶的知識集合 → 必須查無結果
+| # | 檢查 | 怎麼算過 |
+|---|---|---|
+| 1 | 沒有違反 P1–P5 | 沒有 `exec`/`importlib` 載入使用者模組；沙盒 env 只有三個變數；沒有改已發布版本的路徑 |
+| 2 | 實作與 `specs/api-contract.md` 一致 | 受影響的測試綠燈，附指令與輸出。狀態字串與錯誤 code 都來自枚舉常數 |
+| 3 | **只在動到沙盒 / 憑證 / 網路出口時**：隔離驗證 | 跑 `reviewer.md` 的隔離清單，`capabilities()` 回報誠實 |
 
-**若涉及沙盒**，跑完整安全清單（見 `.claude/agents/qa-verifier.md`）。
+**單租戶**（ADR-0005），所以沒有「A 租戶看到 B 租戶」這題。
+取而代之的是 **run token A 能不能存取 run B** —— `/internal/*` 每條路由都要驗，跨 run 必須 `403`。
 
-判定規則：
-- 任何一項未過 → **退回**，寫 `coordination/handoffs/<id>/qa-verifier-to-<原 agent>.md`，附**重現步驟**
+**平常只跑受影響的 suite**（`uv run pytest tests/zen008`），全套回歸留到里程碑。
+
+## 判定
+
+- 任何一項未過 → **退回**，附**重現步驟**（指令 + 輸出），不要只說「有問題」
 - 測試跑不起來 ≠ 通過。環境壞掉就說環境壞掉
 - **絕不因為「看起來應該沒問題」而放行**
-- 通過 → 更新 BOARD 為 `DONE`，並誠實列出**未覆蓋**的部分
+- 通過 → 誠實列出**哪些部分沒覆蓋**

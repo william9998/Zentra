@@ -2,29 +2,24 @@
 description: 規格漂移稽核 — 檢查程式碼是否偏離 SPEC 與契約
 ---
 
-用 `spec-keeper` agent 執行漂移稽核（範圍：$ARGUMENTS，未指定則全專案）。
+用 `reviewer` agent 執行漂移稽核（範圍：$ARGUMENTS，未指定則全專案）。
+完整稽核清單在 [`.claude/agents/reviewer.md`](../agents/reviewer.md) §三。
 
-重點檢查（詳見 `.claude/agents/spec-keeper.md`）：
+快速起手：
 
-**A. 核心立場 P1–P5**（紅旗）
-- P1：`grep -rn "exec(\|eval(\|importlib\|__import__\|subprocess" apps/worker apps/api`
-- P4：沙盒 manifest / env 注入裡有沒有長期憑證
-- P5：有沒有修改已發布 agent version 的路徑
+```bash
+# P1：平台行程內有沒有執行使用者程式碼的痕跡
+grep -rn "exec(\|eval(\|importlib\|__import__\|subprocess" apps/worker apps/api
 
-**B. 契約漂移**（黃旗）
-- `apps/api/schemas/**` vs `specs/api-contract.md` 逐欄位比對
-- 前端型別是否從 codegen 來，還是有人手刻
+# 已移除的規格值還在不在
+grep -rn "WAITING_INPUT\|tool\.call\|tool\.result\|interrupt\|tenant_id\|source_type\|alias" apps tests
 
-**C. 硬編碼的規格**
-- Run 狀態字串、錯誤 code 是否都引用枚舉常數
-- 前端有沒有寫死色碼、間距
+# Run 狀態字串有沒有散落的字面值（應全部引用枚舉常數）
+grep -rn "QUEUED\|SCHEDULING\|RUNNING\|SUCCEEDED\|FAILED\|CANCELLED" apps
+```
 
-**D. 分層違規**
-- 沙盒程式碼直連 DB、路由層寫業務邏輯、跨層 import
+再逐項比對：Pydantic schema vs `api-contract.md` 的欄位名/型別/必填；
+`api.js` 讀的欄位；compose 的網路拓撲（只有 `api` 能接 `zentra-sandbox-net`，只有 `worker` 能掛 `docker.sock`）。
 
-**E. 未決事項**
-- BOARD 上懸而未決的 SPEC-QUESTION
-- 程式碼裡的 `TODO: 待確認`（私自繞過提問流程）
-
-結果寫進 `coordination/DRIFT.md`，**每一則都要指名該由誰處理**。
-只回報，不要動手修。
+結果寫進 `coordination/DRIFT.md`，分紅旗（P1–P5）／黃旗（契約漂移）／藍旗（規格缺漏）。
+**只回報，不要動手修。**
