@@ -113,6 +113,7 @@
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @builder | ZEN-008 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @architect（UI 契約）→ @builder | ZEN-004 + ZEN-008 | — |
 | **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:6000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `REVIEW` | @builder（主體，已交付）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
+| ZEN-011 | **測試 fixture 不清理**：`tests/zen008` 每跑一次留下數十個 agent，累積到 894 筆才被發現。加 teardown 或改用可辨識的前綴 + 套件結束時批次清 | `BACKLOG` | @reviewer | — | 見下方說明 |
 | ZEN-010 | **退休 ZEN-000 內建 fixture**：移除 `builtin-echo` 與 `agent-runtime` 這條特例路徑，讓 Run 只剩「跑 agent 自己的 image」一條 | `BACKLOG` | @builder；@reviewer 驗收 | ZEN-009 驗收完 | 見下方說明 |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
 >
@@ -189,6 +190,19 @@
 > 會蓋掉 compose 的預設值。改名後沒同步 `.env`，沙盒拿到的仍是舊主機名，
 > **Run 會 FAILED 且完全沒有事件**，而隔離測試全部照樣通過 —— 症狀不指向原因。
 > 冒煙測試當時是 21 通過 / 6 失敗，六條全是「沙盒回報不了」。
+
+> **ZEN-011 的由來（2026-09-25，使用者發現 Console 塞滿）**
+>
+> 使用者打開 Console 看到滿滿的 `zen008-*` agent。實測資料庫：
+> **894 個 agent，其中 882 個是 `tests/zen008` 的 fixture**，另有 340 個 run、2541 筆事件。
+> 那個套件每跑一次就建一批當 fixture，**結束後不刪**，十幾輪測試就累積成這樣。
+>
+> 已手動清空（只留內建 fixture，冒煙測試仍 27/0/2），但**會復發** ——
+> 每跑一次 `make test` 就再長幾十個。
+>
+> 修法方向：套件層級的 teardown，或 fixture 名稱統一前綴後在 session 結束時批次刪。
+> 注意**不要刪內建 fixture**（`01930000-0000-7000-8000-000000000001`），
+> 它是冒煙測試與 9 個測試檔的承重結構（見 ZEN-010）。
 
 > **ZEN-010 的由來（2026-09-25，使用者提問後盤點）**
 >
