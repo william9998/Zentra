@@ -113,9 +113,7 @@ Local and production are the same `docker compose` stack — there is no separat
 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) for what was cut and why, and the
 [runtime notes](docs/architecture/07-local-dev-sandbox.md) for how sandboxes are actually launched.
 
-## Running and testing locally
-
-### Start the stack
+## Running the stack
 
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
@@ -151,6 +149,171 @@ open http://localhost:8000/console/agents        # Console
 
 The API image carries the console's static files, so **a console change needs
 `docker compose up -d --build api`** before the browser can see it.
+
+## Ship an agent
+
+The whole loop, end to end. Every command below was run against this stack.
+
+### 1. Write `agent.py`
+
+```python
+from typing import TypedDict
+from langgraph.graph import END, START, StateGraph
+from zentra_sdk import agent
+
+class State(TypedDict, total=False):
+    question: str
+    answer: str
+
+@agent(
+    name="my-agent",
+    version="1.0.0",
+    entrypoints=[{
+        "name": "default",
+        "description": "What this entrypoint does",
+        "input_schema":  {"type": "object", "required": ["question"],
+                          "properties": {"question": {"type": "string"}}},
+        "output_schema": {"type": "object", "required": ["answer"],
+                          "properties": {"answer": {"type": "string"}}},
+    }],
+)
+def build(ctx) -> StateGraph:
+    graph = StateGraph(State)
+
+    async def node(state: State) -> dict:
+        return {"answer": f"got: {state['question']}"}
+
+    graph.add_node("node", node)
+    graph.add_edge(START, "node")
+    graph.add_edge("node", END)
+    return graph
+```
+
+`entrypoints` is the only schema source there is. REST input validation, the MCP `tools/list` response
+and the per-agent OpenAPI document are all generated from it (P3), so changing it means publishing a new
+version.
+
+The module must be importable as `agent` — the filename can differ, the module name cannot
+([ADR-0003](specs/adr/ADR-0003-agent-packaging-dual-interface.md)).
+
+### 2. Write the Dockerfile
+
+```dockerfile
+FROM zentra/agent-base:1.0
+COPY agent.py /opt/zentra/app/agent.py
+```
+
+The base image already carries the SDK, its dependencies, the `io.zentra.image-contract` label and
+uid 65534. Writing the Dockerfile by hand instead is fine — see
+[`examples/demo-echo/Dockerfile`](examples/demo-echo/Dockerfile), which spells out every contract
+requirement — but then the dependencies are yours to get right.
+
+### 3. Build and push
+
+```bash
+docker build -t localhost:6000/my-agent:1.0.0 .
+docker push  localhost:6000/my-agent:1.0.0
+```
+
+The last line of the push output carries the digest you need:
+
+```
+1.0.0: digest: sha256:58b16bb2… size: 2407
+```
+
+That is the **registry manifest digest**. The sha256 `docker build` prints is the local image ID, a
+different identifier that cannot be substituted for it. If you lose the push output:
+
+```bash
+docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
+```
+
+Tag with the semver you are about to register. Nothing enforces it, but it keeps every registered
+manifest reachable by a tag, which matters for the garbage-collection trap in
+[`docs/operations.md`](docs/operations.md).
+
+An external registry (GHCR, Docker Hub, your own) works exactly the same way. The platform does not care
+which one, only that it can pull the digest.
+
+### 4. Create the Agent and register the version
+
+In the Console at `http://localhost:8000/console/agents`, or over the API:
+
+```bash
+AID=$(curl -s -X POST http://localhost:8000/v1/agents   -H 'Content-Type: application/json'   -d '{"name":"my-agent","description":"..."}' | jq -r .agent_id)
+
+curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions"   -H 'Content-Type: application/json'   -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:6000/my-agent@sha256:58b16bb2…\"}"
+```
+
+The response is `BUILDING`. In the background the platform pulls the image by digest, inspects it, and
+runs `zentra-agent validate` **inside a throwaway sandbox** to extract the entrypoint schemas — user code
+is never imported by the platform (P1). Poll until it settles:
+
+```bash
+curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | jq .status
+```
+
+`PUBLISHED` means it is runnable. `FAILED` puts the validation container's full traceback in
+`error.message`; that is the only debugging signal you get, so read it rather than guessing.
+
+Only digests are accepted. A tag is rejected with `VALIDATION_ERROR`, and re-registering a semver that
+already exists returns `409` — published versions are immutable (P5), so a change means a new semver.
+
+### 5. Run it
+
+```bash
+# REST, synchronous, 60s ceiling
+curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs:invoke" \
+  -H 'Content-Type: application/json' \
+  -d '{"entrypoint":"default","input":{"question":"hello"}}'
+
+# Asynchronous, with the event stream
+RID=$(curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs" \
+  -H 'Content-Type: application/json' \
+  -d '{"entrypoint":"default","input":{"question":"hello"}}' | jq -r .run_id)
+curl -sN "http://localhost:8000/v1/runs/$RID/events"
+
+# MCP — same agent, same schema, generated from the same entrypoints
+curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"default","arguments":{"question":"hello"}}}'
+```
+
+The stream runs `QUEUED → SCHEDULING → RUNNING → node.start → node.end → SUCCEEDED`. Each Run gets its own
+sandbox container, which is destroyed when the Run ends and never reused.
+
+### Three ways to get it wrong
+
+All three surface as `BUILD_FAILED` with the traceback in `error.message`:
+
+| Mistake | What happens |
+|---|---|
+| `def build()` | Rejected by an arity check that names the signature the contract wants. `build` takes the context. |
+| Returning a `.compile()`d graph | The platform compiles it itself to inject the event hooks. Compile it yourself and the Run observation page has no `node.start` / `node.end` to show. |
+| A hand-written Dockerfile missing `jsonschema` | A startup check names what is missing. The base image avoids this. |
+
+### What the sandbox deliberately does not have
+
+Do not look for these in your agent — their absence is the point (P4):
+
+- Any API key, LLM credential or registry credential
+- PostgreSQL or Redis
+- Outbound network
+
+The sandbox sits on a network with no route out; its only peer is the platform's Internal Gateway, which
+holds the credentials on its behalf. Calling an LLM goes through `ctx.llm`, which **is not implemented
+yet** (ZEN-002) — so today an agent can only do work that needs no external resource: computation, data
+transformation, graph control flow.
+
+### Publishing a new version
+
+Build, push, register a new semver. The old version keeps running exactly as before; that is what
+immutability buys. Registering over an existing semver is a `409`, and the registry has deletion disabled,
+so a published version cannot be pulled out from under itself.
+
+## Testing
 
 ### Smoke test: the ZEN-000 acceptance script
 
@@ -313,6 +476,166 @@ curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
 
 兩個網段（含 internal 的 `zentra-sandbox-net`）都寫在 `compose.yaml` 裡，不用手動 `docker network create`。
 `.env` 是選用的。Console 的靜態檔包在 api 映像裡，所以**改前端要 `docker compose up -d --build api`** 才看得到。
+
+### 發布一個 Agent
+
+完整流程，每一行都在這套 stack 上實際跑過。
+
+#### 1. 寫 `agent.py`
+
+```python
+from typing import TypedDict
+from langgraph.graph import END, START, StateGraph
+from zentra_sdk import agent
+
+class State(TypedDict, total=False):
+    question: str
+    answer: str
+
+@agent(
+    name="my-agent",
+    version="1.0.0",
+    entrypoints=[{
+        "name": "default",
+        "description": "這個 entrypoint 做什麼",
+        "input_schema":  {"type": "object", "required": ["question"],
+                          "properties": {"question": {"type": "string"}}},
+        "output_schema": {"type": "object", "required": ["answer"],
+                          "properties": {"answer": {"type": "string"}}},
+    }],
+)
+def build(ctx) -> StateGraph:
+    graph = StateGraph(State)
+
+    async def node(state: State) -> dict:
+        return {"answer": f"收到：{state['question']}"}
+
+    graph.add_node("node", node)
+    graph.add_edge(START, "node")
+    graph.add_edge("node", END)
+    return graph
+```
+
+`entrypoints` 是**唯一**的 schema 來源：REST 的輸入驗證、MCP 的 `tools/list`、per-agent 的 OpenAPI
+全部從它生成（P3）。改了它就要發新版本。
+
+模組必須能以 `agent` 這個名字被 import ——
+檔名可以不同，模組名不行（[ADR-0003](specs/adr/ADR-0003-agent-packaging-dual-interface.md)）。
+
+#### 2. 寫 Dockerfile
+
+```dockerfile
+FROM zentra/agent-base:1.0
+COPY agent.py /opt/zentra/app/agent.py
+```
+
+Base image 已經備好 SDK、相依套件、`io.zentra.image-contract` label 與 uid 65534。
+想自己從頭寫也可以，[`examples/demo-echo/Dockerfile`](examples/demo-echo/Dockerfile)
+把契約要求的每一項都攤開寫著 —— 但相依套件就得自己顧。
+
+#### 3. build 並 push
+
+```bash
+docker build -t localhost:6000/my-agent:1.0.0 .
+docker push  localhost:6000/my-agent:1.0.0
+```
+
+push 輸出的最後一行帶著你要的 digest：
+
+```
+1.0.0: digest: sha256:58b16bb2… size: 2407
+```
+
+那是 **registry manifest digest**。`docker build` 印的那串 sha256 是本機 image ID，
+**是不同的識別，不能互相代替**。忘了抄就用：
+
+```bash
+docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
+```
+
+**tag 建議用 semver。** 平台不強制，但這讓每個註冊過的 manifest 都留著一個 tag ——
+理由是 [`docs/operations.md`](docs/operations.md) 裡那個垃圾回收的陷阱。
+
+外部 Registry（GHCR、Docker Hub、企業自架）用法完全一樣。平台不在乎是哪一個，只要拉得到那個 digest。
+
+#### 4. 建立 Agent 並註冊版本
+
+在 Console `http://localhost:8000/console/agents`，或走 API：
+
+```bash
+AID=$(curl -s -X POST http://localhost:8000/v1/agents \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-agent","description":"..."}' | jq -r .agent_id)
+
+curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:6000/my-agent@sha256:58b16bb2…\"}"
+```
+
+回應是 `BUILDING`。平台在背景依 digest 拉 image、inspect，並在**一個一次性沙盒裡**跑
+`zentra-agent validate` 抽出 entrypoint schema —— 使用者程式碼永遠不會被平台 import（P1）。輪詢到終態：
+
+```bash
+curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | jq .status
+```
+
+`PUBLISHED` 就能跑。`FAILED` 會把驗證容器的完整 traceback 放進 `error.message` ——
+**那是你唯一的除錯線索**，要讀它，不要用猜的。
+
+只收 digest：用 tag 會被 `VALIDATION_ERROR` 擋下；同一個 semver 重上回 `409`。
+已發布的版本不可變（P5），要改就發新 semver。
+
+#### 5. 執行
+
+```bash
+# REST 同步，上限 60 秒
+curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs:invoke" \
+  -H 'Content-Type: application/json' \
+  -d '{"entrypoint":"default","input":{"question":"哈囉"}}'
+
+# 非同步 + 事件流
+RID=$(curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs" \
+  -H 'Content-Type: application/json' \
+  -d '{"entrypoint":"default","input":{"question":"哈囉"}}' | jq -r .run_id)
+curl -sN "http://localhost:8000/v1/runs/$RID/events"
+
+# MCP —— 同一個 agent、同一份 schema，都從同一份 entrypoints 生成
+curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"default","arguments":{"question":"哈囉"}}}'
+```
+
+事件流是 `QUEUED → SCHEDULING → RUNNING → node.start → node.end → SUCCEEDED`。
+每個 Run 有自己的沙盒容器，結束即銷毀，絕不重用。
+
+#### 三個會寫錯的地方
+
+三個都會變成 `BUILD_FAILED`，traceback 在 `error.message`：
+
+| 寫法 | 結果 |
+|---|---|
+| `def build()` | 被 arity 檢查擋下，訊息直接說出契約要的簽章。`build` 要收 context。 |
+| 回傳 `.compile()` 過的 graph | 平台要自己 compile 才能注入事件 hook。你先 compile 了，Run 觀測頁就沒有 `node.start` / `node.end` 可看。 |
+| 自己寫 Dockerfile 但漏裝 `jsonschema` | 啟動自檢會說少了什麼。用 base image 就不會發生。 |
+
+#### 沙盒裡刻意沒有的東西
+
+不要在 agent 裡找這些，**沒有它們正是重點**（P4）：
+
+- 任何 API key、LLM 金鑰、registry 憑證
+- PostgreSQL 與 Redis
+- 對外網路
+
+沙盒掛在一個沒有對外路由的網段上，唯一的對端是平台的 Internal Gateway，由它代持憑證。
+呼叫 LLM 要走 `ctx.llm`，而**那個還沒實作**（ZEN-002）——
+所以現在的 agent 只能做不需要外部資源的事：運算、資料轉換、graph 流程控制。
+
+#### 發新版本
+
+build、push、註冊一個新的 semver。舊版本照常運作，這正是不可變換來的東西。
+同一個 semver 重上是 `409`，而 registry 停用了刪除，所以已發布的版本不會從腳下被抽走。
 
 驗收腳本：一次貫穿加上隔離探測，預期 `通過 27 ／ 失敗 0 ／ 跳過 2`。
 那 2 個 skip 是 gVisor 核心隔離與容器逃逸，本架構不提供，因此**永遠是 skipped 而不是 passed**（ADR-0005）。
