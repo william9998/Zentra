@@ -24,12 +24,19 @@ const PAGE = `
         <pre class="mono publish-help-steps"># 1. 打 tag 並推上去（建議 tag 用 semver）
 docker tag my-agent:dev localhost:6000/my-agent:1.0.0
 docker push localhost:6000/my-agent:1.0.0
-#    最後一行會印出： 1.0.0: digest: sha256:&lt;64 hex&gt; size: &lt;n&gt;
 
-# 2. 事後要再查 digest
-docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0</pre>
+# 2. 印出可以直接貼的完整 reference
+docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
+#    → localhost:6000/my-agent@sha256:&lt;64 hex&gt;      ← 貼這個</pre>
         <p class="field-hint">
-          把 <code class="mono">repository@sha256:…</code> 整串貼進下面的欄位。
+          <strong>不要貼 <code class="mono">docker push</code> 的輸出。</strong>
+          它印的是
+          <code class="mono">1.0.0: digest: sha256:… size: …</code>，
+          只有 digest，少了前面的 repository。這個欄位要的是
+          <code class="mono">repository@sha256:…</code> 組合起來的完整字串 ——
+          上面第 2 步會直接印出來，不用自己拼。
+        </p>
+        <p class="field-hint">
           外部 Registry（GHCR、Docker Hub…）一樣可以用，兩者在這裡是同一件事。
         </p>
       </details>

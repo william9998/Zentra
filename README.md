@@ -250,18 +250,17 @@ docker push  localhost:6000/my-agent:1.0.0
 Your agent's directory does not have to live inside this repository. Its only tie to the platform is
 `FROM zentra/agent-base:1.0`, an image already on your machine.
 
-The last line of the push output carries the digest you need:
-
-```
-1.0.0: digest: sha256:58b16bb2… size: 2407
-```
-
-That is the **registry manifest digest**. The sha256 `docker build` prints is the local image ID, a
-different identifier that cannot be substituted for it. If you lose the push output:
+Then ask Docker for the reference to register. **Do not paste the push output** — it prints
+`1.0.0: digest: sha256:… size: …`, which is the digest alone, without the repository in front of it.
+This command prints the whole thing, ready to paste:
 
 ```bash
 docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
+# → localhost:6000/my-agent@sha256:58b16bb2…
 ```
+
+That digest is the **registry manifest digest**. The sha256 `docker build` prints is the local image ID,
+a different identifier that cannot stand in for it.
 
 Tag with the semver you are about to register. Nothing enforces it, but it keeps every registered
 manifest reachable by a tag, which matters for the garbage-collection trap in
@@ -617,18 +616,17 @@ docker push  localhost:6000/my-agent:1.0.0
 你的 agent 目錄**不必放在這個 repo 裡**。它跟平台唯一的關係是
 `FROM zentra/agent-base:1.0`，而那個 image 已經在你本機了。
 
-push 輸出的最後一行帶著你要的 digest：
-
-```
-1.0.0: digest: sha256:58b16bb2… size: 2407
-```
-
-那是 **registry manifest digest**。`docker build` 印的那串 sha256 是本機 image ID，
-**是不同的識別，不能互相代替**。忘了抄就用：
+接著問 Docker 要「可以直接註冊的 reference」。**不要貼 push 的輸出** ——
+它印的是 `1.0.0: digest: sha256:… size: …`，只有 digest，少了前面的 repository。
+這個指令會把完整字串印出來，貼上去就好：
 
 ```bash
 docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
+# → localhost:6000/my-agent@sha256:58b16bb2…
 ```
+
+那串 digest 是 **registry manifest digest**。`docker build` 印的那串 sha256 是本機 image ID，
+**是不同的識別，不能互相代替**。
 
 **tag 建議用 semver。** 平台不強制，但這讓每個註冊過的 manifest 都留著一個 tag ——
 理由是 [`docs/operations.md`](docs/operations.md) 裡那個垃圾回收的陷阱。

@@ -19,15 +19,16 @@ docker build -t localhost:6000/my-agent:1.0.0 .
 docker push  localhost:6000/my-agent:1.0.0
 ```
 
-push 最後一行會印出 digest，抄下來：
+接著印出可以直接註冊的完整 reference：
 
-```
-1.0.0: digest: sha256:40e064517f42… size: 2408
+```bash
+docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
+# → localhost:6000/my-agent@sha256:40e064517f42…
 ```
 
-> 抄的是 **push** 印的那串，不是 `docker build` 印的。兩個都是 sha256 但意義不同，
-> 不能互相代替。忘了就用
-> `docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0`
+> **不要貼 `docker push` 的輸出。** 它印的是 `1.0.0: digest: sha256:… size: …`，
+> 只有 digest，少了前面的 repository —— 貼進去會被擋下來。
+> 也不要用 `docker build` 印的那串 sha256，那是本機 image ID，是另一個識別。
 
 註冊與執行見[根目錄 README 的 Ship an agent](../../README.md#ship-an-agent)。
 
