@@ -1,14 +1,14 @@
 """Token-authenticated Gateway; reachable on port 8000, hidden from OpenAPI."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.db import get_session
-from apps.api.deps import get_redis, require_run_token
+from apps.api.deps import get_redis, require_run_token, require_run_token_only
 from apps.api.models import Run
 from apps.api.schemas import BootstrapResponse, SandboxEvent, SandboxResult, ValidationPayload
-from apps.api.services import events
+from apps.api.services import events, llm
 from apps.api.services.runs import save_result
 from apps.api.services.validation import save_validation
 from apps.api.deps import require_validation_token
@@ -62,3 +62,26 @@ async def ingest_validation(
 ) -> dict:
     await save_validation(session, version.id, body)
     return {"accepted": True}
+
+
+@router.post("/llm/v1/chat/completions")
+async def llm_chat_completions(
+    request: Request,
+    run: Run = Depends(require_run_token_only),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """OpenAI 相容的 LLM 代理（契約 §4，SPEC §7.3）。
+
+    路徑裡刻意**沒有** `run_id` —— 它要與 OpenAI 相容，`ctx.llm()` 才能只是一個
+    設了 `base_url` 的標準 chat model。歸屬由 run token 決定，呼叫者指定不了別人的 run。
+
+    回應原樣轉回沙盒（含供應商的錯誤 body），只拿掉不該外流的 header。
+    """
+    body = await request.json()
+    status, headers, raw = await llm.chat_completions(session, run.id, body, request.headers)
+    return Response(
+        content=raw,
+        status_code=status,
+        headers=headers,
+        media_type=headers.get("content-type", "application/json"),
+    )

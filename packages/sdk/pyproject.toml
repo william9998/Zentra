@@ -18,6 +18,7 @@ dependencies = [
     "httpx>=0.28",        # 與 Internal Gateway 的唯一通道
     "jsonschema>=4.23",   # entrypoint 的 input/output schema 驗證
     "langgraph>=0.2.50",  # P2：agent 一律是 CompiledStateGraph
+    "langchain-openai>=0.2",  # ctx.llm()：指向 Internal Gateway 的 chat model
 ]
 
 [project.scripts]

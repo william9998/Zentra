@@ -52,7 +52,7 @@ def _check_runtime_dependencies() -> None:
     """
 
     missing = [
-        name for name in ("httpx", "jsonschema", "langgraph")
+        name for name in ("httpx", "jsonschema", "langgraph", "langchain_openai")
         if importlib.util.find_spec(name) is None
     ]
     if missing:

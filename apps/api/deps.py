@@ -17,6 +17,10 @@ def get_redis(request: Request) -> Redis:
     return request.app.state.redis
 
 
+def _text(value: str | bytes) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
 async def load_run(run_id: str, session: AsyncSession) -> Run:
     try:
         rid = uuid.UUID(run_id)
@@ -53,6 +57,38 @@ async def require_run_token(
             ErrorCode.PERMISSION_DENIED, "run token does not belong to this run", 403, run_id=run_id
         )
     run = await load_run(run_id, session)
+    if RunStatus(run.status).is_terminal:
+        raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token revoked", 401)
+    return run
+
+
+async def require_run_token_only(
+    authorization: str = Header(default=""),
+    redis: Redis = Depends(get_redis),
+    session: AsyncSession = Depends(get_session),
+) -> Run:
+    """像 `require_run_token`，但 Run 是**單靠 token** 解出來的。
+
+    `/internal/llm/*` 的路徑裡沒有 `run_id`（契約 §4 就是這樣定的：那條路徑要與
+    OpenAI 相容，不能塞我們自己的路徑參數）。所以 token 同時是身分**與**歸屬：
+    它綁定哪個 run，這次呼叫就記在那個 run 上，呼叫者無法指定別人的 run。
+
+    validation token 明確被擋掉 —— 契約 §4：「它不能存取 `/internal/runs/*`
+    或 `/internal/llm/*`」。驗證沙盒沒有任何理由呼叫 LLM。
+    """
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise ZentraError(ErrorCode.UNAUTHENTICATED, "missing run token", 401)
+
+    run_id = await runtoken.resolve(redis, token)
+    if run_id is None:
+        if await validationtoken.resolve(redis, token) is not None:
+            raise ZentraError(
+                ErrorCode.PERMISSION_DENIED, "validation token cannot call the LLM gateway", 403
+            )
+        raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token invalid or expired", 401)
+
+    run = await load_run(_text(run_id), session)
     if RunStatus(run.status).is_terminal:
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token revoked", 401)
     return run

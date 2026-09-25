@@ -2,8 +2,9 @@
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -144,4 +145,37 @@ class RunEvent(Base):
         Index("ix_run_events_run_seq", "run_id", "seq"),
         UniqueConstraint("run_id", "event_id", name="uq_run_events_run_event"),
         Index("uq_run_events_terminal", "run_id", unique=True, postgresql_where=text("terminal")),
+    )
+
+
+class LlmCall(Base):
+    """每一次經 Internal Gateway 的 LLM 呼叫（ZEN-002 / SPEC §7.3）。
+
+    **這張表是 LLM 用量的唯一真相。** 沙盒沒有其他出口，所以它就是全部的外網活動
+    （SPEC §10 稽核要求：「所有 LLM 呼叫 100% 留存於 `llm_calls`」）。
+
+    Run 的 `usage` 由這張表聚合而來，**不採信沙盒自行回報的數字** ——
+    沙盒跑的是使用者程式碼，它報的用量沒有理由被當成帳。
+    """
+
+    __tablename__ = "llm_calls"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(nullable=False, default=0)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
+    latency_ms: Mapped[int | None] = mapped_column()
+    # 供應商回的 HTTP 狀態。失敗的呼叫也要留下來 —— 稽核要看得到「試過但失敗」。
+    status_code: Mapped[int | None] = mapped_column()
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_llm_calls_run_created", "run_id", "created_at"),
     )

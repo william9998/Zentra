@@ -15,6 +15,7 @@ FROM python:3.12-slim
 # 沒有 jsonschema，image_runtime 會在 import 階段就死（Q-009）。
 RUN pip install --no-cache-dir \
     "langgraph>=0.2.50" \
+    "langchain-openai>=0.2" \
     "httpx>=0.28" \
     "jsonschema>=4.23"
 

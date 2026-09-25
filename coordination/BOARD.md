@@ -107,7 +107,7 @@
 > dev DB 當時是經使用者授權刪除一列測試殘骸才通過）；無 backend-dev 交接單。
 >
 > **@qa-verifier 的驗收在寫裁定前被使用者中止，因此沒有裁定。維持 `IN_PROGRESS`，不得視為通過。**
-| ZEN-002 | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `BACKLOG` | @builder | ZEN-008 | — |
+| **ZEN-002** | **SDK v1 + Internal Gateway**：`ctx.llm` / `ctx.logger` / `ctx.emit`，OpenAI 相容 LLM 代理（P4） | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-008 | [範例](../examples/llm-agent/) · 見下方說明 |
 | ZEN-003 | **沙盒四層隔離硬化**：internal 網段、cap_drop、cgroups、唯讀 + `capabilities()` | `BACKLOG` | @builder | ZEN-000 | — |
 | ZEN-004 | **Run API 完整版**：cancel、列表分頁、SSE `Last-Event-ID` 續傳、逾時、冪等 | `BACKLOG` | @builder | ZEN-000 | — |
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @builder | ZEN-008 | — |
@@ -143,6 +143,34 @@
 >
 > **為什麼現在才發現**：這幾條測試先前卡在 `require_registry()` 而被 skip。
 > 主 session 手動起了測試 registry 後才執行到——**skipped 不等於通過**，這是實例。
+
+> **ZEN-002 實作已交付（2026-09-25）：狀態 `REVIEW`，未裁定 `DONE`。**
+>
+> `POST /internal/llm/v1/chat/completions`（OpenAI 相容，契約 §4）、`ctx.llm()`、
+> migration `0005` 的 `llm_calls` 表、`usage` 改為從該表聚合。
+> 範例：[`examples/llm-agent/`](../examples/llm-agent/)。`tests/zen002` 11 passed。
+>
+> **P4 的實測證據**：用一個假供應商（`tests/fakes/fake_openai.py`）驗證，
+> 它**只接受真金鑰**、收到 run token 就回 401。Run 成功 ⇒ Gateway 確實做了金鑰替換。
+> 同時 `docker compose exec worker env | grep LLM` 是空的 —— worker 是注入沙盒 env 的那一個，
+> 它手上根本沒有金鑰，所以不是靠紀律而是靠「沒有」。
+>
+> **usage 不採信沙盒**：`save_result` 改為從 `llm_calls` 聚合。沙盒跑的是使用者程式碼，
+> 它自報的用量沒有理由被當成帳。冪等比對因此只看 `output`/`error`。
+>
+> **實作過程抓到的既有不一致**：沙盒 env 有兩套命名並存 ——
+> OCI 路徑注入 `ZENTRA_GATEWAY_URL`（`drivers/base.py` 的 `for_run`），
+> ZEN-000 舊路徑注入 `ZENTRA_GATEWAY`（`manager.create`）。SDK 目前兩個都接受，
+> 但這是該收斂的漂移，建議併進 ZEN-010。
+>
+> **未做**：`cost_usd` 需要設定 `llm_prices` 才會非零（SPEC §11 把計費出帳列在範圍外）；
+> 串流的 token 事件（SSE `token`）屬 ZEN-004/006；真金鑰的端到端驗證要使用者自己提供 key。
+
+> **ADR-0010 提案中（2026-09-25）：要不要支援 LangGraph 以外的框架**
+>
+> 使用者問能不能用 OpenAI Agents SDK。[ADR-0010](../specs/adr/ADR-0010-agent-framework-lock-in.md)
+> 把三個選項定價完畢，**建議維持 P2**，但決定權在使用者。
+> 關鍵區分：用 OpenAI 的**模型**已經支援（ZEN-002），不支援的是用它的**框架編排**。
 
 > **compose 服務 `api` 已更名為 `app`（2026-09-25，使用者裁示）**
 >

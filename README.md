@@ -69,6 +69,7 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 | Path | What's in it |
 |---|---|
 | [`examples/my-agent/`](examples/my-agent/) | **Start here to write an agent.** A working text-analysis agent — copy the directory, edit `agent.py` |
+| [`examples/llm-agent/`](examples/llm-agent/) | The same thing but calling a model through `ctx.llm()`, with the credential staying on the platform |
 | [`specs/`](specs/) | **Single source of truth.** Master spec, API & UI contracts, glossary, ADRs, feature specs |
 | [`docs/architecture/`](docs/architecture/) | Mermaid diagrams and design deep-dives |
 | [`coordination/`](coordination/) | Task board, handoff notes, spec-drift audits |
@@ -337,9 +338,16 @@ Do not look for these in your agent — their absence is the point (P4):
 - Outbound network
 
 The sandbox sits on a network with no route out; its only peer is the platform's Internal Gateway, which
-holds the credentials on its behalf. Calling an LLM goes through `ctx.llm`, which **is not implemented
-yet** (ZEN-002) — so today an agent can only do work that needs no external resource: computation, data
-transformation, graph control flow.
+holds the credentials on its behalf. Calling a model goes through `ctx.llm()`, which returns an ordinary
+`ChatOpenAI` pointed at the Gateway and authenticated with the Run's token. The provider key lives on the
+`app` service and is swapped in there, so the sandbox never holds it. Every call is recorded in
+`llm_calls`, and a Run's `usage` is computed from that table rather than taken from what the agent reports.
+See [`examples/llm-agent/`](examples/llm-agent/).
+
+You can use OpenAI's **models** this way. You cannot use OpenAI's **Agents SDK** to orchestrate: `build()`
+must return an uncompiled `StateGraph`, and the runtime checks the type (P2). The reasoning and what
+overturning it would cost is priced out in
+[ADR-0010](specs/adr/ADR-0010-agent-framework-lock-in.md).
 
 ### Publishing a new version
 
@@ -698,8 +706,14 @@ curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
 - 對外網路
 
 沙盒掛在一個沒有對外路由的網段上，唯一的對端是平台的 Internal Gateway，由它代持憑證。
-呼叫 LLM 要走 `ctx.llm`，而**那個還沒實作**（ZEN-002）——
-所以現在的 agent 只能做不需要外部資源的事：運算、資料轉換、graph 流程控制。
+呼叫模型走 `ctx.llm()`，它回傳一個普通的 `ChatOpenAI`，只是 `base_url` 指向 Gateway、
+`api_key` 是這次 Run 的 token。供應商金鑰留在 `app` 服務上、由它換上，沙盒從來沒拿到過。
+每一次呼叫都寫進 `llm_calls`，Run 的 `usage` 由那張表算出來，不採信 agent 自己報的數字。
+見 [`examples/llm-agent/`](examples/llm-agent/)。
+
+這樣能用 OpenAI 的**模型**。但**不能**用 OpenAI 的 **Agents SDK** 編排流程：
+`build()` 必須回傳未 compile 的 `StateGraph`，runtime 會實際檢查型別（P2）。
+理由與推翻它的代價評估見 [ADR-0010](specs/adr/ADR-0010-agent-framework-lock-in.md)。
 
 #### 發新版本
 

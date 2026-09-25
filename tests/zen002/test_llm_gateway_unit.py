@@ -1,0 +1,84 @@
+"""ZEN-002：LLM Gateway 的單元測試（不需要服務）。
+
+每條擋的是一個具體的錯，不是「檢查一下設定」：
+
+  L-1  run token 被轉發給供應商      → 內部憑證外流，而且供應商會看到我們的 token
+  L-2  金鑰換不上去                  → 呼叫全部 401，功能等於沒有
+  L-3  usage 從沙盒回報值來          → 使用者程式碼可以自己報 0，帳就錯了
+  L-4  串流時漏記用量                → langchain-openai 預設就走串流，漏了等於全漏
+  L-5  cost 用 float               → 累加會有浮點誤差（契約 §1 明訂用 decimal 字串）
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from apps.api.services import llm
+
+
+def test_run_token_is_never_forwarded_to_the_provider() -> None:
+    """L-1：`authorization` 必須被剝掉，否則沙盒的 run token 會流到外部服務。"""
+    incoming = {
+        "authorization": "Bearer run-token-secret",
+        "content-type": "application/json",
+        "x-api-key": "another-secret",
+        "user-agent": "langchain",
+    }
+    forwarded = llm._forwardable(incoming)
+
+    assert "authorization" not in forwarded, "run token 被轉發給供應商了"
+    assert "x-api-key" not in forwarded
+    assert forwarded["user-agent"] == "langchain", "不相干的 header 不該被剝掉"
+
+
+def test_provider_headers_that_leak_org_info_are_stripped() -> None:
+    """供應商的組織資訊沒必要讓沙盒看到。"""
+    assert "openai-organization" in llm._STRIP_RESPONSE_HEADERS
+    assert "set-cookie" in llm._STRIP_RESPONSE_HEADERS
+
+
+def test_usage_is_read_from_the_provider_response() -> None:
+    """L-3：用量來自供應商的回應，不是沙盒說了算。"""
+    assert llm._usage_from({"usage": {"prompt_tokens": 12, "completion_tokens": 34}}) == (12, 34)
+    assert llm._usage_from({}) == (0, 0), "沒有 usage 欄位要記 0，不能猜"
+
+
+def test_streaming_usage_comes_from_the_last_usage_chunk() -> None:
+    """L-4：langchain-openai 預設走串流，用量在 `[DONE]` 之前那個 chunk。"""
+    raw = (
+        b'data: {"choices":[{"delta":{"content":"hi"}}],"usage":null}\n\n'
+        b'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":9}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    assert llm._usage_from_stream(raw) == (5, 9)
+
+
+def test_streaming_without_usage_records_zero_rather_than_guessing() -> None:
+    """找不到用量就記 0。寧可記少也不要記錯 —— 這張表是稽核用的。"""
+    raw = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    assert llm._usage_from_stream(raw) == (0, 0)
+
+
+def test_cost_is_zero_when_no_price_is_configured() -> None:
+    """SPEC §11 把計費出帳列在範圍外；沒設價格不影響 token 數的正確性。"""
+    assert llm._cost("gpt-4o-mini", 1000, 1000) == Decimal("0")
+
+
+def test_cost_uses_decimal_not_float(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L-5：契約 §1 明訂 `cost_usd` 是 decimal 字串，避免浮點誤差。"""
+    from apps.api import config
+
+    settings = config.get_settings()
+    monkeypatch.setattr(
+        settings, "llm_prices",
+        {"m": {"input": "0.15", "output": "0.60"}}, raising=False,
+    )
+    config.get_settings.cache_clear()
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    monkeypatch.setattr(llm, "get_settings", lambda: settings)
+
+    cost = llm._cost("m", 1_000_000, 1_000_000)
+    assert isinstance(cost, Decimal)
+    assert cost == Decimal("0.750000")

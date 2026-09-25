@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # apps/api/config.py → apps/ → apps/console。容器內是 /srv/apps/console（api.Dockerfile
@@ -27,6 +28,27 @@ class Settings(BaseSettings):
 
     # SPEC §10：Run 最長 15 分鐘硬上限
     run_timeout_seconds: int = 900
+
+    # ── LLM（ZEN-002 / P4）────────────────────────────────────────────
+    # 真金鑰**只**存在這裡，也就是 app 服務的環境變數裡。
+    # 它永遠不進沙盒：沙盒拿到的是綁定單一 run_id 的 run token，
+    # Internal Gateway 收到請求後才換上真金鑰（SPEC §7.3）。
+    # 這幾個明確標 alias：這個 Settings 沒有 env_prefix，預設會去讀 `LLM_API_KEY`
+    # 那種太通用、容易跟主機上別的東西撞名的名字。
+    llm_base_url: str = Field(
+        default="https://api.openai.com/v1", validation_alias="ZENTRA_LLM_BASE_URL")
+    llm_api_key: str = Field(          # 空字串 = 未設定 → 呼叫回 LLM_ERROR
+        default="", validation_alias="ZENTRA_LLM_API_KEY")
+    llm_default_model: str = Field(
+        default="gpt-4o-mini", validation_alias="ZENTRA_LLM_DEFAULT_MODEL")
+    llm_timeout_seconds: float = Field(
+        default=120.0, validation_alias="ZENTRA_LLM_TIMEOUT_SECONDS")
+
+    # 每百萬 token 的美金單價，用來算 `usage.cost_usd`。
+    # 形狀：{"<model>": {"input": "0.15", "output": "0.60"}}
+    # 沒設定的 model → 成本記 "0"。SPEC §11 把「計費出帳」列在範圍外，
+    # 這裡只做計量；留空不影響 token 數的正確性。
+    llm_prices: dict[str, dict[str, str]] = {}
 
     @property
     def sync_database_url(self) -> str:

@@ -85,7 +85,15 @@ services:
       #    否則沙盒會拿到指向舊名字的 gateway，Run 會 FAILED 且沒有任何事件。
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
-    # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。
+      # ── LLM（ZEN-002 / P4）──────────────────────────────────────────
+      # 真金鑰**只**出現在這裡，也就是 app 服務上。
+      # worker 沒有這幾個變數，所以它不可能把金鑰注入沙盒 —— 這不是靠紀律，
+      # 是靠「worker 手上根本沒有」。沙盒拿到的永遠只有 run token。
+      ZENTRA_LLM_BASE_URL: ${ZENTRA_LLM_BASE_URL:-https://api.openai.com/v1}
+      ZENTRA_LLM_API_KEY: ${ZENTRA_LLM_API_KEY:-}
+      ZENTRA_LLM_DEFAULT_MODEL: ${ZENTRA_LLM_DEFAULT_MODEL:-gpt-4o-mini}
+    # .env 是選用的。要用 LLM 就在 .env 放 ZENTRA_LLM_API_KEY —— 放這裡是對的，
+    # 它只會被 app 讀到。**絕對不要**把它加進下面 worker 的 environment。
     env_file:
       - path: .env
         required: false
