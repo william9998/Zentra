@@ -171,6 +171,11 @@ The API image carries the console's static files, so **a console change needs
 
 The whole loop, end to end. Every command below was run against this stack.
 
+Start from a running stack — `make up`, above. The commands here are plain `docker` and `curl` on
+purpose: they are what *you* do to *your* agent, and they are the same whether you drive them by hand, from
+a script, or from CI. `make` only wraps the platform's own chores. The one you will want while working on
+an agent is `make rebuild-api`, after editing anything under `apps/console/`.
+
 ### 1. Write `agent.py`
 
 ```python
@@ -516,6 +521,11 @@ curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
 ### 發布一個 Agent
 
 完整流程，每一行都在這套 stack 上實際跑過。
+
+前提是環境已經起來了 —— 上面的 `make up`。這一節刻意用原始的 `docker` 與 `curl` 指令：
+它們是**你**對**你自己的 agent** 做的事，手動打、寫成腳本、或放進 CI 都是同一組。
+`make` 包的是平台自己的雜事。開發 agent 期間會用到的是 `make rebuild-api` ——
+改過 `apps/console/` 底下的東西之後要跑它。
 
 #### 1. 寫 `agent.py`
 
