@@ -66,7 +66,7 @@ def test_non_canonical_references_are_rejected(image_ref: str) -> None:
 def test_validation_spec_carries_exactly_three_environment_variables() -> None:
     spec = SandboxSpec.for_validation(
         agent_version_id="v1", image_ref=f"acme/agent@{DIGEST}",
-        network="zentra-sandbox-net", gateway_url="http://api:8000/internal",
+        network="zentra-sandbox-net", gateway_url="http://app:8000/internal",
         validation_token="t")
     assert set(spec.env) == {"ZENTRA_GATEWAY_URL", "ZENTRA_AGENT_VERSION_ID",
                              "ZENTRA_VALIDATION_TOKEN"}
@@ -77,7 +77,7 @@ def test_validation_spec_carries_exactly_three_environment_variables() -> None:
 def test_run_spec_carries_exactly_three_environment_variables() -> None:
     spec = SandboxSpec.for_run(
         run_id="r1", image_ref=f"acme/agent@{DIGEST}", network="zentra-sandbox-net",
-        gateway_url="http://api:8000/internal", run_token="t")
+        gateway_url="http://app:8000/internal", run_token="t")
     assert set(spec.env) == {"ZENTRA_GATEWAY_URL", "ZENTRA_RUN_ID", "ZENTRA_RUN_TOKEN"}
     assert spec.mode is SandboxMode.RUN
     assert spec.role == "run"

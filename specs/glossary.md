@@ -32,7 +32,7 @@
 | **SandboxDriver** | 沙盒的建立介面。MVP 只有 `DockerSandboxDriver`。`capabilities()` 必須誠實回報提供哪幾層隔離 |
 | **runner-worker** | Celery worker，負責申請沙盒、回寫狀態。**它不執行使用者程式碼**（P1） |
 | **build-worker** | Celery worker，負責 pull/inspect exact OCI digest、起 validation container，再唯一決定版本終態。**不 import image 內程式碼**（P1） |
-| **Internal Gateway** | `api` 服務上的一組 `/internal/*` 路由，**沙盒唯一的網路對端**。代持 LLM 憑證、收事件、發 input。取代原本的 Tool / LLM / Egress 三個 Proxy |
+| **Internal Gateway** | `app` 服務上的一組 `/internal/*` 路由，**沙盒唯一的網路對端**。代持 LLM 憑證、收事件、發 input。取代原本的 Tool / LLM / Egress 三個 Proxy |
 | **Run Token** | 注入沙盒的憑證。綁定單一 `run_id`，TTL = 該 Run 的 timeout，跑完撤銷。**只能對 Internal Gateway 使用** |
 | **Interface Generator** | 讀 manifest 的 entrypoints，同時產出 REST + MCP schema（P3 的實作） |
 | **Validation Token** | 注入 validation container 的短效憑證。綁定單一 `agent_version_id`、TTL 最長 10 分鐘，完成後撤銷；不是 Registry credential |
@@ -55,7 +55,7 @@
 |---|---|
 | **四層隔離** | L1 網路 / L2 核心 / L3 資源 / L4 檔案（+ L5 SDK 攔截）。定義在 SPEC §6.2 |
 | **L2 核心隔離** | MVP **只有 Docker 原生機制**（cap_drop、non-root、預設 seccomp），**沒有 gVisor**。`capabilities()` 必須如實回報 |
-| **沙盒網段** | `zentra-sandbox-net`，Docker `internal: true`，**無對外路由**。`api` 同時接上它與預設網段，成為唯一橋樑 |
+| **沙盒網段** | `zentra-sandbox-net`，Docker `internal: true`，**無對外路由**。`app` 同時接上它與預設網段，成為唯一橋樑 |
 | **API Key** | 外部系統呼叫 `/v1/*` 用的長期憑證。**只存在平台側，不進沙盒** |
 | **Registry Credential** | worker 拉私有 image 使用的長期憑證。只存在 VM Docker credential store / compose secret；不進 PostgreSQL 或沙盒 |
 

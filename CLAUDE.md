@@ -7,11 +7,11 @@
 
 > **已依 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) 降維（SPEC v0.2.x）。**
 > 交付條件：**內部工具 · 單租戶 · 只跑信任的程式碼 · 八週 MVP**。
-> 部署是**一台主機跑 `docker compose`**，5 個長駐服務（`postgres` · `redis` · `registry` · `api` · `worker`），
+> 部署是**一台主機跑 `docker compose`**，5 個長駐服務（`postgres` · `redis` · `registry` · `app` · `worker`），
 > **沒有 Kubernetes、沒有 gVisor**。`registry` 是 [ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md)
 > 新增的內部 OCI Registry，只掛 `zentra-net`。
 > 前端是**原生 HTML + CSS + ES modules，零建置**（[ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md)），
-> 沒有 React / Tailwind / npm，Console 由 `api` 直接服務靜態檔。
+> 沒有 React / Tailwind / npm，Console 由 `app` 直接服務靜態檔。
 > 範圍是一條主線：**push image** → 註冊 digest → 發布 → 沙盒執行 → REST + MCP → Run 觀測。
 > （平台**不接收 image 檔案上傳**；image 留在 Registry，平台只存 metadata 與 digest。）
 > 這張交付條件表變了，整份規格就要重讀。
@@ -23,7 +23,7 @@
 | **P1** | 使用者程式碼**永遠不在平台行程內執行**。Celery worker 只派工與監看，`exec` 一律在沙盒。 |
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。所有 agent 最終都是一個 `CompiledStateGraph`。 |
 | **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由平台從同一份 `entrypoints` 自動生成。 |
-| **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段無對外路由，唯一對端是 **Internal Gateway**（`api` 的 `/internal/*`）。 |
+| **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段無對外路由，唯一對端是 **Internal Gateway**（`app` 的 `/internal/*`）。 |
 | **P5** | **Agent 版本不可變**。`version_id` = bundle 的 SHA-256，發布後目錄設唯讀，要改就發新版。 |
 
 ## 需要時才讀
@@ -108,7 +108,7 @@ docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
 - **不要**在 `apps/worker/` 或 `apps/api/` 寫任何載入、執行使用者程式碼的邏輯（違反 P1）。
   這包含「只是 import 一下檢查 `build()` 在不在」—— 那也要在一次性沙盒裡做。
 - **不要**把 API key / secret 寫進沙盒的 env 或 manifest（違反 P4）。
-- **不要**讓沙盒直連 postgres 或 redis。沙盒的網路對端有且只有一個：`api`。
+- **不要**讓沙盒直連 postgres 或 redis。沙盒的網路對端有且只有一個：`app`。
 - Run 狀態字串與錯誤 code **一律引用枚舉常數**，照抄 `specs/SPEC.md` §9 與 `specs/api-contract.md`，
   不要自創。特別注意 `WAITING_INPUT` 在 v0.2.0 **已移除**，不要寫也不要斷言。
 - **不要**把 `coordination/BOARD.md` §刻意不做 的東西「順手」加回來（知識庫、Tool Registry、

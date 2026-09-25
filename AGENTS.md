@@ -14,7 +14,7 @@
 | **P1** | 使用者程式碼**永遠不在平台行程內執行**。`exec` 一律在沙盒。 |
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。 |
 | **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由平台從同一份 `entrypoints` 自動生成。 |
-| **P4** | **沙盒內拿不到任何長期憑證**。沙盒的唯一對端是 Internal Gateway（`api` 的 `/internal/*`）。 |
+| **P4** | **沙盒內拿不到任何長期憑證**。沙盒的唯一對端是 Internal Gateway（`app` 的 `/internal/*`）。 |
 | **P5** | **Agent 版本不可變**。發布後要改就發新版。 |
 
 全文在 `specs/SPEC.md` §2。

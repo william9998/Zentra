@@ -36,7 +36,7 @@
 > **v0.2.x 是一次降維改版。** 依 [ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md)：
 > 部署從 Kubernetes 收斂成**單機 docker compose**，分層從 L0–L6 七層降到**四層**，範圍收斂成**一條主線**。
 > 再依 [ADR-0006](./adr/ADR-0006-vanilla-frontend.md)：前端改用**原生 HTML + CSS + JS（零建置）**，
-> `console` 服務取消，由 `api` 直接服務靜態檔 —— 基礎設施從 11 個服務降到 **4 個**。
+> `console` 服務取消，由 `app` 直接服務靜態檔 —— 基礎設施從 11 個服務降到 **4 個**。
 > **五條核心立場 P1–P5 一條都沒鬆** —— 降的是實作維度，不是立場。
 
 ---
@@ -80,7 +80,7 @@
 - **Run**：一次 Agent 執行實例，有 `run_id`、狀態機（§9）、事件流。
 - **Entrypoint**：Agent 對外暴露的一個可呼叫入口。**同一份定義同時生成 REST 與 MCP schema**（P3 的實作）。
 - **Sandbox**：執行 Agent 程式碼的隔離容器，**一 Run 一盒，結束即銷毀，絕不重用**。
-- **Internal Gateway**：`api` 服務上的一組 `/internal/*` 路由，沙盒**唯一**的網路對端。代持 LLM 憑證、收事件、發 input。
+- **Internal Gateway**：`app` 服務上的一組 `/internal/*` 路由，沙盒**唯一**的網路對端。代持 LLM 憑證、收事件、發 input。
 
 ## 4. 使用者與使用情境
 
@@ -104,7 +104,7 @@ L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daem
                 （image 本體的權威來源＝`image_ref` 指向的 Registry，外部或內部都可以）
 ```
 
-> **沒有 Console BFF。** Console 是原生 HTML/CSS/JS 靜態檔，由 `api` 服務，
+> **沒有 Console BFF。** Console 是原生 HTML/CSS/JS 靜態檔，由 `app` 服務，
 > 與 API **同源**，直接消費 `/v1` —— 它是 `api-contract.md` 的第一個真實消費者（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)）。
 
 觀測**不是一層**，是橫切：結構化 JSON 日誌 + `run_events` 表 + `llm_calls` 表。
@@ -112,13 +112,13 @@ L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daem
 **分層硬規則**：
 1. 上層只能呼叫下一層或同層的公開介面。
 2. **L2 沙盒不得直連 L3 資料層**——沒有 Postgres 連線、沒有 Redis 連線、**沒有 Registry 連線**，一律經 Internal Gateway。
-3. 沙盒的網路對端**有且只有一個**：`api`。
+3. 沙盒的網路對端**有且只有一個**：`app`。
    **內部 Registry 絕對不接 `zentra-sandbox-net`**；沙盒的 image 是 daemon 給的，沙盒自己不拉 image。
 4. **平台不得代理、轉發、嵌入或連結任何 Registry HTTP 端點**（`/v2/*` 含 `_catalog`）。
-   Registry 的 HTTP API 是**維運介面**，不是產品介面：它不出現在 `api` 的任何路由、
+   Registry 的 HTTP API 是**維運介面**，不是產品介面：它不出現在 `app` 的任何路由、
    Console 的任何 `fetch`、OpenAPI 或 MCP tool schema 裡（[ADR-0009 R2-5](./adr/ADR-0009-internal-registry-image-upload.md)）。
-   理由很具體：`api` 同時掛在 `zentra-net` 與 `zentra-sandbox-net` 上，
-   `api` 上任何「幫你查 registry」的端點都會變成沙盒觸達 Registry 的跳板，直接打穿 P4。
+   理由很具體：`app` 同時掛在 `zentra-net` 與 `zentra-sandbox-net` 上，
+   `app` 上任何「幫你查 registry」的端點都會變成沙盒觸達 Registry 的跳板，直接打穿 P4。
    **Registry 對沙盒不可達，要靠「沒有任何一條路可以到」保證，不是靠沙盒不知道位址。**
 
 ## 6. 技術選型（已定案，變更需開 ADR）
@@ -161,7 +161,7 @@ docker compose（長駐，5 個）              Sandbox Manager 動態建立（�
 `REGISTRY_STORAGE_DELETE_ENABLED=false`，儲存在 named volume `registrydata:/var/lib/registry`。
 
 - **它的 client 是誰**：主機上的 Docker daemon（pull）與**使用者的 `docker push`**。
-  **沒有任何平台服務會連它**——`api` 與 `worker` 都不連，因此也**不需要** `depends_on: registry`。
+  **沒有任何平台服務會連它**——`app` 與 `worker` 都不連，因此也**不需要** `depends_on: registry`。
 - **為什麼一定要發布 loopback port**：拓撲，不是偏好。push/pull 的執行者是主機上的 daemon，
   它不在 `zentra-net` 上、解析不到服務名。`localhost` 同時讓 daemon 預設允許明文 HTTP，
   不必改 `daemon.json` 的 `insecure-registries`。
@@ -183,7 +183,7 @@ docker compose（長駐，5 個）              Sandbox Manager 動態建立（�
   前一個 manifest 變成 untagged，而它可能正是某個 `PUBLISHED` 版本的 `image_digest`。
   這也是推薦「tag 用 semver」的原因。
 
-**Console 沒有自己的容器**：`api` 用 `StaticFiles` 掛載 `apps/console/`，
+**Console 沒有自己的容器**：`app` 用 `StaticFiles` 掛載 `apps/console/`，
 並以五條 `FileResponse` 路由給出乾淨網址（`/console/agents`、`/console/runs/{run_id}` …），
 `/` 轉址到 `/console/agents`。**沒有前端路由器** —— 深層連結與上一頁由伺服器處理。
 
@@ -194,7 +194,7 @@ docker compose（長駐，5 個）              Sandbox Manager 動態建立（�
 
 | 層 | 措施 | 驗收方式 |
 |---|---|---|
-| **L1 網路** | 沙盒網段 `internal: true`（無對外路由）；唯一對端是 `api` 的 Internal Gateway | 沙盒內 curl `1.1.1.1`、`169.254.169.254`、`postgres:5432` **必須全部失敗** |
+| **L1 網路** | 沙盒網段 `internal: true`（無對外路由）；唯一對端是 `app` 的 Internal Gateway | 沙盒內 curl `1.1.1.1`、`169.254.169.254`、`postgres:5432` **必須全部失敗** |
 | **L2 核心** | `cap_drop ALL`、`no-new-privileges`、non-root `65534:65534`、Docker 預設 seccomp。**無 gVisor** | `mount -t proc`、`unshare`、`ptrace` **必須失敗**；`id` 必須非 root |
 | **L3 資源** | `mem_limit` 2g、`pids_limit` 256、`nano_cpus` 2 core、無 swap、wall-clock timeout、stdout 上限 10MB | fork bomb、記憶體炸彈、無窮迴圈**必須被殺掉且不影響鄰居** |
 | **L4 檔案** | `read_only=True` rootfs；`/app/code`、`/app/venv` 唯讀 bind；`/workspace` tmpfs 512m；**無 hostPath、無 docker.sock** | 寫 `/`、`/app` **必須失敗**；`/workspace` 可寫且隨盒銷毀 |
@@ -229,7 +229,7 @@ docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
 1. 進場：提供 `repository@sha256:<digest>`（tag-only reference 不接受）。
    `repository` 可以含 registry host 與 port，`localhost:6000/my-agent` 合法
 2. `POST /v1/agents/{id}/versions` 送出 `semver` + `image_ref`
-3. `api` 寫 `agent_versions`（`BUILDING`），送 Celery task 進 `q.build`；
+3. `app` 寫 `agent_versions`（`BUILDING`），送 Celery task 進 `q.build`；
    **PostgreSQL 不保存 image blob**
 4. worker 令 daemon pull exact digest（外部 Registry 用平台側 credential；
    `localhost:6000` 不帶 credential，因為內部 Registry 沒有認證），
@@ -256,14 +256,14 @@ registry host，**必須原樣保留**。因此 `localhost:6000/alpine` **不等
 
 ### 7.2 呼叫 Agent（非同步 Run）
 
-1. `POST /v1/agents/{id}/runs` → `api` 驗證 input schema → 寫 `runs`（`QUEUED`）→ 回 `202 { run_id }`
+1. `POST /v1/agents/{id}/runs` → `app` 驗證 input schema → 寫 `runs`（`QUEUED`）→ 回 `202 { run_id }`
 2. 送 Celery task 進 `q.run`
 3. worker 取件（`acks_late=True` + 冪等）→ 向 Sandbox Manager 申請沙盒
    → **worker 本身不執行使用者程式碼（P1）**
 4. Sandbox Manager 從 `agent_versions.image_ref` 取出已發布的完整 digest，建立容器；
    平台覆寫 command 為 `/opt/zentra/bin/zentra-agent run`，注入 `ZENTRA_RUN_TOKEN`、接上沙盒網段
 5. 沙盒內 Agent Runtime：bootstrap → `import build()` → 平台 compile（注入事件 hook）→ 逐節點執行
-6. 每個事件帶重送時不變的 `event_id`，`POST /internal/runs/{run_id}/events` → `api` 以
+6. 每個事件帶重送時不變的 `event_id`，`POST /internal/runs/{run_id}/events` → `app` 以
    `(run_id,event_id)` 冪等寫 `run_events` 表，再 `XADD` Redis Stream；SSE 以 DB `seq` 去重
 7. 呼叫者 `GET /v1/runs/{id}/events`（SSE，支援 `Last-Event-ID` 續傳）或輪詢 `GET /v1/runs/{id}`
 8. 沙盒先經 `POST /internal/runs/{run_id}/result` 回寫 output 或 error；worker 確認沙盒結束後才決定終態，
@@ -272,8 +272,8 @@ registry host，**必須原樣保留**。因此 `localhost:6000/alpine` **不等
 
 ### 7.3 沙盒的 LLM 呼叫（P4 的實作）
 
-沙盒內 `ctx.llm()` 回傳一個 base URL 指向 `http://api:8000/internal/llm/v1` 的 LangChain chat model，
-`api_key` 是 run token。真正的供應商金鑰只存在 `api` 服務的環境變數裡。
+沙盒內 `ctx.llm()` 回傳一個 base URL 指向 `http://app:8000/internal/llm/v1` 的 LangChain chat model，
+`api_key` 是 run token。真正的供應商金鑰只存在 `app` 服務的環境變數裡。
 Internal Gateway 負責：換上真金鑰 → 呼叫供應商 → 計量 token → 寫 `llm_calls` → 回傳。
 
 **沙盒內禁止**自建 LLM client、自行 `requests` 打外網（網段沒有對外路由，會直接失敗）。
@@ -286,7 +286,7 @@ Internal Gateway 負責：換上真金鑰 → 呼叫供應商 → 計量 token �
 
 Image 必須標記 `io.zentra.image-contract=zentra.image/v1`，並提供
 `/opt/zentra/bin/zentra-agent validate|run`。平台以 non-root + read-only rootfs 啟動，
-只提供 `/workspace` tmpfs；容器內不開對外 HTTP port。REST/MCP 是平台 `api` 的門面。
+只提供 `/workspace` tmpfs；容器內不開對外 HTTP port。REST/MCP 是平台 `app` 的門面。
 
 ```python
 from zentra_sdk import ZentraContext, agent
@@ -422,5 +422,5 @@ Python bundle/venv 發布、**Dockerfile 上傳與遠端 build service**、
 | v0.2.2 | 2026-09-21 | 澄清 Run 完成權責：沙盒經 Internal Gateway 回寫結果，worker 確認退出並唯一決定終態、終局 SSE 事件、token 撤銷與沙盒銷毀；事件以 `(run_id,event_id)` 冪等落庫、SSE 以 DB `seq` 去重；不改 P1–P5 或 MVP 範圍 | @architect |
 | v0.1.0 | 2026-09-20 | 初版：確立 P1–P5 五條核心立場、分層、技術選型、對外契約 | @architect |
 | v0.1.1 | 2026-09-20 | 新增 ADR-0004（SandboxDriver 抽象與開發/正式環境分層）；ZEN-000 貫穿骨架排為第一個任務 | @architect |
-| v0.2.1 | 2026-09-20 | **前端降維**（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)）：前端從 Next.js + React + TypeScript + Tailwind 改為**原生 HTML + CSS + ES modules，零建置**；取消 `console` 服務，改由 `api` 以 `StaticFiles` + 五條 `FileResponse` 路由服務，**長駐服務 5 → 4**；移除 Console BFF 這一層，Console 同源直接消費 `/v1`；移除 Vitest 與 pnpm。**P1–P5 不變** | @architect |
+| v0.2.1 | 2026-09-20 | **前端降維**（[ADR-0006](./adr/ADR-0006-vanilla-frontend.md)）：前端從 Next.js + React + TypeScript + Tailwind 改為**原生 HTML + CSS + ES modules，零建置**；取消 `console` 服務，改由 `app` 以 `StaticFiles` + 五條 `FileResponse` 路由服務，**長駐服務 5 → 4**；移除 Console BFF 這一層，Console 同源直接消費 `/v1`；移除 Vitest 與 pnpm。**P1–P5 不變** | @architect |
 | v0.2.0 | 2026-09-20 | **降維改版**（[ADR-0005](./adr/ADR-0005-mvp-single-host-scope.md)）：部署 K8s → 單機 docker compose；基礎設施 11 → 5 個服務（砍 RabbitMQ / OpenSearch / MinIO / ClickHouse / Vault / 三個 Proxy）；分層 L0–L6 → 四層；三個 Proxy 合併為 Internal Gateway；範圍收斂成一條主線（砍平台組裝式、知識庫、Tool Registry、HITL）；沙盒五層 → 四層並明示無 gVisor；狀態機移除 `WAITING_INPUT`；NFR 可用性改為不設目標。**P1–P5 不變** | @architect |

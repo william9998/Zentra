@@ -21,7 +21,7 @@ import pytest
 
 from tests.zen008.conftest import db_url
 
-API_CONTAINER = "zentra-api-1"
+API_CONTAINER = "zentra-app-1"
 BUILTIN_AGENT_ID = "01930000-0000-7000-8000-000000000001"
 BUILTIN_VERSION_ID = "01930000-0000-7000-8000-000000000002"
 

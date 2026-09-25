@@ -76,7 +76,7 @@ import socket
 def p(h,q):
     try: socket.create_connection((h,q),timeout=3); return 'OPEN'
     except Exception: return 'BLOCKED'
-print(p('postgres',5432),p('redis',6379),p('1.1.1.1',53),p('169.254.169.254',80),p('api',8000))")
+print(p('postgres',5432),p('redis',6379),p('1.1.1.1',53),p('169.254.169.254',80),p('app',8000))")
 read -r PG RD NET1 META APIR <<<"$NET"
 chk "沙盒 → postgres 不通" "$PG" "BLOCKED"
 chk "沙盒 → redis 不通"    "$RD" "BLOCKED"

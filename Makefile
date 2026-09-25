@@ -9,13 +9,13 @@
 # 那正是 ZEN-009 的 Z9-A6 在防的事。長駐服務就是五個，不多不少。
 
 .DEFAULT_GOAL := help
-.PHONY: help up down ps logs images base runtime migrate smoke test console rebuild-api
+.PHONY: help up down ps logs images base runtime migrate smoke test console rebuild-app
 
 API      := http://localhost:8000
 REGISTRY := 127.0.0.1:6000
 SUITE    ?= tests/zen000 tests/zen006a tests/zen008 tests/zen009
 
-# 預設排除瀏覽器 E2E：它們要 node + Chrome，而 api 映像裡沒有，
+# 預設排除瀏覽器 E2E：它們要 node + Chrome，而 app 映像裡沒有，
 # 掃進來會變成一整片 error 而不是有用的結果。要跑就 make test IGNORE=
 # （並確認主機有 node 與 Chrome）。
 IGNORE   ?= --ignore=tests/zen008/test_zen008_console_e2e.py \
@@ -57,7 +57,7 @@ runtime:  ## build agent-runtime:dev（只有冒煙測試的內建 fixture 需�
 # ── 資料庫 ────────────────────────────────────────────────────────────
 
 migrate:  ## 把資料庫結構升到最新
-	docker compose exec -T api alembic upgrade head
+	docker compose exec -T app alembic upgrade head
 
 # ── 驗證 ──────────────────────────────────────────────────────────────
 
@@ -69,16 +69,16 @@ test:  ## 跑測試，例：make test SUITE=tests/zen008（預設不含瀏覽器
 		echo '用主機的 uv'; \
 		uv run pytest $(SUITE) $(IGNORE) -q; \
 	else \
-		echo '⚠️  主機沒有 uv —— 改在 api 映像裡跑（compose 網段內）。'; \
+		echo '⚠️  主機沒有 uv —— 改在 app 映像裡跑（compose 網段內）。'; \
 		echo '    映像裡沒有 docker CLI，所以要開沙盒或推 image 的測試會 ERROR，'; \
 		echo '    那是環境限制不是程式壞掉。要完整跑：curl -LsSf https://astral.sh/uv/install.sh | sh'; \
 		echo '    平常建議只跑受影響的：make test SUITE=tests/zen009'; \
 		echo ''; \
 		docker run --rm --network zentra-net -v "$$PWD:/srv" -w /srv \
 			-e PYTHONPATH=/srv \
-			-e ZENTRA_TEST_BASE_URL=http://api:8000 \
+			-e ZENTRA_TEST_BASE_URL=http://app:8000 \
 			-e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
-			zentra-api:latest \
+			zentra-app:latest \
 			sh -c "pip install -q pytest pytest-asyncio anyio 2>/dev/null; pytest $(SUITE) $(IGNORE) -q"; \
 	fi
 
@@ -87,5 +87,5 @@ test:  ## 跑測試，例：make test SUITE=tests/zen008（預設不含瀏覽器
 console:  ## 用瀏覽器打開 Console
 	open $(API)/console/agents
 
-rebuild-api:  ## 改過 apps/console/ 之後要跑這個，瀏覽器才看得到
-	docker compose up -d --build api
+rebuild-app:  ## 改過 apps/console/ 之後要跑這個，瀏覽器才看得到
+	docker compose up -d --build app

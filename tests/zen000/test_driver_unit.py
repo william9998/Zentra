@@ -59,7 +59,7 @@ class FakeClient:
 def _spec() -> SandboxSpec:
     return SandboxSpec(
         run_id=RUN_ID, token="short-lived-token", image="zentra/agent-runtime:dev",
-        network="zentra-sandbox-net", gateway="http://api:8000/internal",
+        network="zentra-sandbox-net", gateway="http://app:8000/internal",
     )
 
 
@@ -74,7 +74,7 @@ def test_create_uses_only_internal_network_and_run_scoped_environment() -> None:
     assert kwargs["name"] == f"zentra-run-{RUN_ID}"
     assert kwargs["environment"] == {
         "ZENTRA_RUN_TOKEN": "short-lived-token",
-        "ZENTRA_GATEWAY": "http://api:8000/internal",
+        "ZENTRA_GATEWAY": "http://app:8000/internal",
         "ZENTRA_RUN_ID": RUN_ID,
     }
     assert kwargs["user"] == "65534:65534"

@@ -45,9 +45,9 @@ ADR-0005 relaxed the *threat model* to trusted code — **it did not relax these
 ![Zentra system architecture](docs/architecture/zentra-architecture.svg)
 
 One host, one `docker compose`, four long-running services — plus a sandbox container created per Run and destroyed
-when it ends. The sandbox sits on a network with **no route out**; its only peer is the `api` service's Internal
+when it ends. The sandbox sits on a network with **no route out**; its only peer is the `app` service's Internal
 Gateway, which holds the LLM key, meters tokens and collects events. The console has no container of its own: it is
-static HTML/CSS/JS served by `api`, calling the same `/v1` API everyone else calls.
+static HTML/CSS/JS served by `app`, calling the same `/v1` API everyone else calls.
 
 ```
 L0  Access + Control   api (FastAPI) — REST · MCP · SSE · Console static files · Registry · Internal Gateway
@@ -68,6 +68,7 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 
 | Path | What's in it |
 |---|---|
+| [`examples/my-agent/`](examples/my-agent/) | **Start here to write an agent.** A working text-analysis agent — copy the directory, edit `agent.py` |
 | [`specs/`](specs/) | **Single source of truth.** Master spec, API & UI contracts, glossary, ADRs, feature specs |
 | [`docs/architecture/`](docs/architecture/) | Mermaid diagrams and design deep-dives |
 | [`coordination/`](coordination/) | Task board, handoff notes, spec-drift audits |
@@ -125,7 +126,7 @@ make help        # every target
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
-docker compose exec api alembic upgrade head
+docker compose exec app alembic upgrade head
 ```
 
 Two things compose does **not** do for you:
@@ -165,11 +166,14 @@ open http://localhost:8000/console/agents        # Console
 ```
 
 The API image carries the console's static files, so **a console change needs
-`docker compose up -d --build api`** before the browser can see it.
+`docker compose up -d --build app`** before the browser can see it.
 
 ## Ship an agent
 
 The whole loop, end to end. Every command below was run against this stack.
+
+The fastest start is the working example in [`examples/my-agent/`](examples/my-agent/) — a text
+analysis agent with real branching, not a hello world. Copy that directory and edit `agent.py`.
 
 Start from a running stack — `make up`, above. The commands here are plain `docker` and `curl` on
 purpose: they are what *you* do to *your* agent, and they are the same whether you drive them by hand, from
@@ -232,10 +236,18 @@ requirement — but then the dependencies are yours to get right.
 
 ### 3. Build and push
 
+**The build context is your agent's own directory, so `cd` into it first.** `.` means "look for the
+Dockerfile and everything it copies right here", and a Dockerfile that only copies `agent.py` needs
+nothing else in scope:
+
 ```bash
+cd examples/my-agent        # or wherever your agent lives
 docker build -t localhost:6000/my-agent:1.0.0 .
 docker push  localhost:6000/my-agent:1.0.0
 ```
+
+Your agent's directory does not have to live inside this repository. Its only tie to the platform is
+`FROM zentra/agent-base:1.0`, an image already on your machine.
 
 The last line of the push output carries the digest you need:
 
@@ -351,7 +363,7 @@ runtime image built.
 
 ### Test suites
 
-The host interpreter has no application dependencies, so tests run either through `uv` or inside the `api`
+The host interpreter has no application dependencies, so tests run either through `uv` or inside the `app`
 image on the compose network:
 
 ```bash
@@ -361,9 +373,9 @@ uv sync --extra dev && uv run pytest tests/zen006a -q
 # without uv — same suite, inside the api image, on the compose network
 docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
   -e PYTHONPATH=/srv \
-  -e ZENTRA_TEST_BASE_URL=http://api:8000 \
+  -e ZENTRA_TEST_BASE_URL=http://app:8000 \
   -e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
-  zentra-api:latest \
+  zentra-app:latest \
   sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
 ```
 
@@ -432,9 +444,9 @@ changed) and update the pin — do not just bump the string. Open findings live 
 一台主機、一個 `docker compose`、**五個**長駐服務
 （postgres · redis · registry · api · worker），
 加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
-沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `api` 服務的 **Internal Gateway**——
+沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `app` 服務的 **Internal Gateway**——
 由它代持 LLM 金鑰、計量 token、回收事件。
-Console 沒有自己的容器，它是 `api` 服務出去的原生靜態檔，打的是跟外部系統同一份 `/v1` API。
+Console 沒有自己的容器，它是 `app` 服務出去的原生靜態檔，打的是跟外部系統同一份 `/v1` API。
 圖中標注各層的技術與關鍵參數（佇列、隔離層級、資源上限）。
 
 ### 兩個技術核心
@@ -480,7 +492,7 @@ make help        # 看所有指令
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
-docker compose exec api alembic upgrade head
+docker compose exec app alembic upgrade head
 
 curl -s localhost:8000/healthz                   # {"status":"ok"}
 open http://localhost:8000/console/agents        # Console
@@ -516,11 +528,14 @@ curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
 維運細節見 [`docs/operations.md`](docs/operations.md)。
 
 兩個網段（含 internal 的 `zentra-sandbox-net`）都寫在 `compose.yaml` 裡，不用手動 `docker network create`。
-`.env` 是選用的。Console 的靜態檔包在 api 映像裡，所以**改前端要 `docker compose up -d --build api`** 才看得到。
+`.env` 是選用的。Console 的靜態檔包在 app 映像裡，所以**改前端要 `docker compose up -d --build app`** 才看得到。
 
 ### 發布一個 Agent
 
 完整流程，每一行都在這套 stack 上實際跑過。
+
+最快的起手式是 [`examples/my-agent/`](examples/my-agent/) 那個**真的會動**的範例 ——
+一個有條件分支的文字分析 Agent，不是 hello world。複製那個目錄，改 `agent.py` 就是你的了。
 
 前提是環境已經起來了 —— 上面的 `make up`。這一節刻意用原始的 `docker` 與 `curl` 指令：
 它們是**你**對**你自己的 agent** 做的事，手動打、寫成腳本、或放進 CI 都是同一組。
@@ -581,10 +596,18 @@ Base image 已經備好 SDK、相依套件、`io.zentra.image-contract` label �
 
 #### 3. build 並 push
 
+**build context 是你的 agent 目錄，所以要先 `cd` 進去。** 最後那個 `.` 的意思是
+「Dockerfile 和它要 COPY 的東西都在這裡找」，而一個只 COPY `agent.py` 的 Dockerfile
+不需要其他東西在範圍內：
+
 ```bash
+cd examples/my-agent        # 或你自己的 agent 目錄
 docker build -t localhost:6000/my-agent:1.0.0 .
 docker push  localhost:6000/my-agent:1.0.0
 ```
+
+你的 agent 目錄**不必放在這個 repo 裡**。它跟平台唯一的關係是
+`FROM zentra/agent-base:1.0`，而那個 image 已經在你本機了。
 
 push 輸出的最後一行帶著你要的 digest：
 
@@ -690,16 +713,16 @@ build、push、註冊一個新的 semver。舊版本照常運作，這正是不�
 bash scripts/verify-zen000.sh
 ```
 
-測試套件：主機的 Python 沒有應用相依，所以走 `uv`，或在 compose 網段內用 `api` 映像跑。
+測試套件：主機的 Python 沒有應用相依，所以走 `uv`，或在 compose 網段內用 `app` 映像跑。
 
 ```bash
 uv sync --extra dev && uv run pytest tests/zen006a -q
 
 docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
   -e PYTHONPATH=/srv \
-  -e ZENTRA_TEST_BASE_URL=http://api:8000 \
+  -e ZENTRA_TEST_BASE_URL=http://app:8000 \
   -e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
-  zentra-api:latest \
+  zentra-app:latest \
   sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
 ```
 

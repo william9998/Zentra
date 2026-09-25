@@ -14,7 +14,7 @@ from apps.sandbox.runtime.builtin_agent import build
 
 
 RUN_ID = "01930000-0000-7000-8000-000000000011"
-GATEWAY = "http://api:8000/internal"
+GATEWAY = "http://app:8000/internal"
 
 
 def test_builtin_build_returns_uncompiled_graph_and_echoes() -> None:

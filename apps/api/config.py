@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # 沙盒（P4：這裡不放任何長期憑證）
     sandbox_image: str = "zentra/agent-runtime:dev"
     sandbox_network: str = "zentra-sandbox-net"
-    sandbox_gateway_url: str = "http://api:8000/internal"
+    sandbox_gateway_url: str = "http://app:8000/internal"
     sandbox_max_concurrent: int = 10
 
     # SPEC §10：Run 最長 15 分鐘硬上限

@@ -36,7 +36,7 @@ services:
   # 再用既有的 JSON 端點以 digest 註冊版本。平台不接收 image 檔案上傳。
   #
   # 沒有任何平台服務會連它：它的 client 只有主機上的 Docker daemon（pull）
-  # 與使用者的 CLI（push），兩者都走 loopback。所以 api / worker 都不 depends_on 它。
+  # 與使用者的 CLI（push），兩者都走 loopback。所以 app / worker 都不 depends_on 它。
   registry:
     image: registry:2                      # 上游原版，不要自己 build 或換基底
     environment:
@@ -64,8 +64,16 @@ services:
     # 映像，不如不要養一個假的檢查。
     networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
 
-  api:
-    build: { context: ., dockerfile: docker/api.Dockerfile }
+  # 整個 HTTP 門面，不只是 REST API —— 這是它叫 app 不叫 api 的原因：
+  #   /v1/*        對外 REST
+  #   /mcp/*       MCP 門面
+  #   /console/*   Console 靜態檔（ADR-0006：沒有獨立的前端容器、沒有 BFF、沒有 CORS）
+  #   /internal/*  Internal Gateway —— 沙盒唯一的對端（P4）
+  #
+  # 原始碼仍在 apps/api/：那個目錄放的是 HTTP 層本身，改叫 apps/app 只會讓
+  # `apps.app.main:app` 更難讀，而且要動每一個 import。目錄名與服務名刻意脫鉤。
+  app:
+    build: { context: ., dockerfile: docker/app.Dockerfile }
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
@@ -73,7 +81,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
-      SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://api:8000/internal}
+      # ⚠️ 本機若有 .env 且設了這一行，它會蓋掉這裡的預設值。服務改名時要一起改，
+      #    否則沙盒會拿到指向舊名字的 gateway，Run 會 FAILED 且沒有任何事件。
+      SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
     # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。
     env_file:
@@ -88,7 +98,7 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
-    # api 是唯一同時接兩個網段的服務 —— 它是沙盒對外的唯一的橋（SPEC §5）
+    # app 是唯一同時接兩個網段的服務 —— 它是沙盒對外的唯一的橋（SPEC §5）
     networks: [zentra-net, zentra-sandbox-net]
 
   worker:
@@ -100,7 +110,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
-      SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://api:8000/internal}
+      SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
       # Path only. Credential bytes are a read-only compose secret below.
       ZENTRA_REGISTRY_AUTH_FILE: /run/secrets/zentra_registry_auth
@@ -111,9 +121,9 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-      api: { condition: service_healthy }
+      app: { condition: service_healthy }
     volumes:
-      # 只有 worker 掛 docker.sock —— 它要動態建沙盒。api 不准掛。
+      # 只有 worker 掛 docker.sock —— 它要動態建沙盒。app 不准掛。
       # ⚠️ 能操作 docker.sock 等同主機 root，這個風險在 v0.2 是常駐的（架構文件 §9）
       - /var/run/docker.sock:/var/run/docker.sock
     secrets:
@@ -127,7 +137,7 @@ networks:
     name: zentra-net
   zentra-sandbox-net:
     name: zentra-sandbox-net
-    internal: true                         # L1：沒有對外路由。唯一對端是 api
+    internal: true                         # L1：沒有對外路由。唯一對端是 app
 
 volumes:
   pgdata:

@@ -87,7 +87,7 @@ def test_registry_data_volume_exists_and_uploads_does_not(compose) -> None:
     )
 
 
-@pytest.mark.parametrize("service", ["api", "worker"])
+@pytest.mark.parametrize("service", ["app", "worker"])
 def test_platform_services_do_not_depend_on_the_registry(compose, service: str) -> None:
     """Z9-A6：**沒有任何平台服務會連 registry**（ADR-0009 R2-5 括號段）。
 
@@ -109,9 +109,9 @@ def test_registry_does_not_mount_the_docker_socket(compose) -> None:
     for mount in registry.get("volumes") or []:
         assert "docker.sock" not in str(mount), f"registry 掛了 docker.sock：{mount!r}"
 
-    api = compose_service(compose, "api")
-    for mount in api.get("volumes") or []:
-        assert "docker.sock" not in str(mount), f"api 掛了 docker.sock（P1/P4 退化）：{mount!r}"
+    app = compose_service(compose, "app")
+    for mount in app.get("volumes") or []:
+        assert "docker.sock" not in str(mount), f"app 掛了 docker.sock（P1/P4 退化）：{mount!r}"
 
 
 def test_no_upload_era_environment_variables_anywhere(compose) -> None:

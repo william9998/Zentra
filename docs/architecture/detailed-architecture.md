@@ -6,22 +6,22 @@
 > [`oci-image-agent-flow.md`](oci-image-agent-flow.md) 與 [ADR-0008](../../specs/adr/ADR-0008-oci-image-agent-packaging.md)。
 > 單機四服務與安全邊界仍依 [ADR-0005](../../specs/adr/ADR-0005-mvp-single-host-scope.md)
 > 與 [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：
-> 單機 docker compose、四層分層、一條主線，Console 是 `api` 服務的原生 HTML/CSS/JS 靜態檔。
+> 單機 docker compose、四層分層、一條主線，Console 是 `app` 服務的原生 HTML/CSS/JS 靜態檔。
 > v0.1 的 K8s 拓撲、三個 Proxy、知識層、Agent Flow、Next.js console 服務已移除，對照表見 §10。
 >
 > ⚠️ **SPEC `v0.4.0`（[ADR-0009](../../specs/adr/ADR-0009-internal-registry-image-upload.md)）新增了第 5 個長駐服務
 > `registry`（內部 OCI Registry）。**
 > 本文中所有「4 個長駐服務」的敘述請讀成 **5 個**（postgres · redis · **registry** · api · worker）。
 > `registry` 只掛 `zentra-net`、只發布 `127.0.0.1:6000`，**絕不接 `zentra-sandbox-net`**，
-> 沙盒的網路對端仍然只有 `api` 一個。本文其餘圖示尚未重畫。
+> 沙盒的網路對端仍然只有 `app` 一個。本文其餘圖示尚未重畫。
 >
 > ⚠️ **SPEC `v0.4.1`（ADR-0009 修訂 R2）改變了 `registry` 的用途**：
 > 「上傳 image tar」**已撤回**，改為使用者**在平台主機上**直接
 > `docker push localhost:6000/<repo>:<tag>`，再用既有的 JSON 端點以 digest 註冊。
-> 因此 `api` 與 `worker` **完全不在 push 路徑上**，也不連 `registry`
+> 因此 `app` 與 `worker` **完全不在 push 路徑上**，也不連 `registry`
 > （registry 的 client 只有主機 daemon 與使用者 CLI）。
 > 另新增一條硬規則：**平台不得代理、轉發、嵌入或連結任何 Registry HTTP 端點**——
-> `api` 同時掛在兩個網段上，那會變成沙盒觸達 Registry 的跳板（P4）。
+> `app` 同時掛在兩個網段上，那會變成沙盒觸達 Registry 的跳板（P4）。
 > 資料流見 [`oci-image-agent-flow.md`](oci-image-agent-flow.md) §內部 Registry。
 
 ## 0. 總覽
@@ -40,8 +40,8 @@
 > 「既有 OCI Registry → VM Docker image cache」，PostgreSQL 只存 digest 與 metadata。
 
 一台主機、一個 `docker compose`、**四個**長駐服務，加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
-沙盒掛在一個沒有對外路由的網段上，唯一的對端是 `api` 服務的 Internal Gateway。
-Console 沒有自己的容器 —— 它是 `api` 服務出去的一包靜態檔。
+沙盒掛在一個沒有對外路由的網段上，唯一的對端是 `app` 服務的 Internal Gateway。
+Console 沒有自己的容器 —— 它是 `app` 服務出去的一包靜態檔。
 
 ---
 
@@ -135,10 +135,10 @@ graph TB
 
 **三條硬規則**（SPEC §5）：
 1. 沙盒**不得**直連 Postgres 或 Redis。
-2. 沙盒的網路對端**有且只有一個**：`api`。
+2. 沙盒的網路對端**有且只有一個**：`app`。
 3. `worker` 全程不 `import` 使用者模組（P1）。
 
-**Console 沒有 BFF**：瀏覽器先跟 `api` 拿 HTML/CSS/JS，再用同源 `fetch` 打 `/v1` ——
+**Console 沒有 BFF**：瀏覽器先跟 `app` 拿 HTML/CSS/JS，再用同源 `fetch` 打 `/v1` ——
 就是外部系統用的那份 API（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）。
 
 ---
@@ -556,7 +556,7 @@ DB 成功但 Redis 發布失敗時用原 `seq` 重送，SSE 以 `seq` 去重排�
 
 ## 9. 部署拓撲（docker compose）
 
-**四個長駐服務。** Console 沒有自己的容器 —— `api` 用 `StaticFiles` 掛載 `apps/console/`，
+**四個長駐服務。** Console 沒有自己的容器 —— `app` 用 `StaticFiles` 掛載 `apps/console/`，
 再以五條 `FileResponse` 路由給出乾淨網址：
 
 | 網址 | 檔案 |
@@ -570,7 +570,7 @@ DB 成功但 Redis 發布失敗時用原 `seq` 重送，SSE 以 `seq` 去重排�
 `/` 轉址到 `/console/agents`，靜態資產掛在 `/console/static/*`。
 **沒有前端路由器** —— 深層連結、上一頁、404 全部由伺服器處理（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）。
 
-`/internal/*` 與公開 API 共用 `api:8000`；主機映射埠也能到達該路由。
+`/internal/*` 與公開 API 共用 `app:8000`；主機映射埠也能到達該路由。
 MVP 以綁定 Run 的短效 token 控制存取，並未實作來源 IP 封鎖；
 「Internal Gateway」指沙盒唯一可用的網路對端與非公開契約，不代表路由在公開 listener 上不可達。
 
@@ -648,7 +648,7 @@ v0.1 的 ADR-0004 把這條列為「僅限本機開發，正式環境絕對禁�
 | L0–L6 七層 | → **四層** L0 接入+控制 / L1 派工 / L2 執行 / L3 資料 | |
 | 14 張架構圖 | → **11 張** | 砍掉的東西不需要圖 |
 | Next.js + React + TypeScript + Tailwind + shadcn/ui | → **原生 HTML + CSS + ES modules，零建置** | [ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)：五個畫面撐不起這套工具鏈 |
-| `console` 容器（第 5 個服務） | → **移除**，由 `api` 的 `StaticFiles` 服務 | 長駐服務 5 → 4 |
+| `console` 容器（第 5 個服務） | → **移除**，由 `app` 的 `StaticFiles` 服務 | 長駐服務 5 → 4 |
 | Console BFF（L0 的一個元件） | → **移除**，Console 同源直接打 `/v1` | 不需要 CORS，且 Console 成為 API 契約的第一個消費者 |
 | TanStack Query + Zustand | → 一個 ~40 行的 `store.js` | 只有 Run 觀測頁需要共享狀態 |
 | Vitest + pnpm + node_modules | → **移除**；Playwright 保留 | 沒有建置步驟就沒有前端建置工具 |

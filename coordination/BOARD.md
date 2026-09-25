@@ -144,6 +144,24 @@
 > **為什麼現在才發現**：這幾條測試先前卡在 `require_registry()` 而被 skip。
 > 主 session 手動起了測試 registry 後才執行到——**skipped 不等於通過**，這是實例。
 
+> **compose 服務 `api` 已更名為 `app`（2026-09-25，使用者裁示）**
+>
+> 理由：那個服務不只是 REST API —— 它同時是 MCP 門面、Console 的 web server（ADR-0006：
+> 沒有獨立前端容器）與 Internal Gateway。叫 `api` 會讓人以為 `/console/*` 在別的地方。
+>
+> **改了什麼**：compose 服務名與 DNS 名稱、映像名（`zentra-api` → `zentra-app`）、
+> `docker/api.Dockerfile` → `docker/app.Dockerfile`、`SANDBOX_GATEWAY_URL` 的預設值、
+> 測試與腳本裡的主機名、SPEC/README/CLAUDE/AGENTS/架構文件的安全論述措辭。
+>
+> **刻意沒改**：原始碼目錄仍是 `apps/api/`。改成 `apps/app/` 會讓 `apps.app.main:app`
+> 更難讀，而且要動每一個 import，風險大、收穫零。目錄名與服務名脫鉤，compose 有註記。
+> ADR 正文也沒改 —— 那些是決策紀錄。
+>
+> **踩到的坑（寫進 compose 註解）**：本機 `.env` 若設了 `SANDBOX_GATEWAY_URL`，
+> 會蓋掉 compose 的預設值。改名後沒同步 `.env`，沙盒拿到的仍是舊主機名，
+> **Run 會 FAILED 且完全沒有事件**，而隔離測試全部照樣通過 —— 症狀不指向原因。
+> 冒煙測試當時是 21 通過 / 6 失敗，六條全是「沙盒回報不了」。
+
 > **ZEN-010 的由來（2026-09-25，使用者提問後盤點）**
 >
 > ZEN-008 之後，每個 Run 跑的是 **agent 自己的 image**（`version.image_ref` 的 digest）。

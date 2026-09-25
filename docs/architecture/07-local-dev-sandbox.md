@@ -42,7 +42,7 @@ docker compose 負責（長駐，4 個）:      Sandbox Manager 負責（動態�
 ```
 
 > **Console 沒有自己的容器**（[ADR-0006](../../specs/adr/ADR-0006-vanilla-frontend.md)）：
-> 它是 `apps/console/` 底下的原生 HTML / CSS / ES modules，由 `api` 用 `StaticFiles` 服務。
+> 它是 `apps/console/` 底下的原生 HTML / CSS / ES modules，由 `app` 用 `StaticFiles` 服務。
 > 沒有建置步驟 —— 改一行 CSS 重新整理就看到。
 
 `worker` 掛載 `docker.sock`，透過 Docker API 動態建立沙盒容器：
@@ -66,14 +66,14 @@ container = docker_client.containers.run(
     user="65534:65534",                                # L2
     environment={                                      # P4
         "ZENTRA_RUN_TOKEN": run_token,                 # TTL = run timeout
-        "ZENTRA_GATEWAY": "http://api:8000/internal",
+        "ZENTRA_GATEWAY": "http://app:8000/internal",
         "ZENTRA_RUN_ID": run_id,
     },
 )
 ```
 
 **注意這裡沒有任何長期憑證**（P4）。沒有 LLM key、沒有 DB 密碼。
-沙盒要呼叫模型，走 `ZENTRA_GATEWAY`，金鑰在 `api` 那一側。
+沙盒要呼叫模型，走 `ZENTRA_GATEWAY`，金鑰在 `app` 那一側。
 
 ---
 
@@ -100,7 +100,7 @@ container = docker_client.containers.run(
 | 待驗 | 怎麼驗 |
 |---|---|
 | 沙盒 → `postgres:5432` / `redis:6379` **必須不通** | `internal: true` 網段隔離了外部路由，但同網段內容器互通。要確認 postgres/redis **沒有**接上沙盒網段 |
-| 沙盒 → `api:8000/internal` **必須通** | `api` 要同時接上兩個網段，這是唯一的橋 |
+| 沙盒 → `app:8000/internal` **必須通** | `app` 要同時接上兩個網段，這是唯一的橋 |
 
 ---
 
@@ -140,7 +140,7 @@ curl -X POST localhost:8000/v1/agents/<id>/runs -d '{"input":{"text":"hi"}}'
 curl -N localhost:8000/v1/runs/<run_id>/events
 ```
 
-開發時要熱重載，可以把 `api` 與 `worker` 從 compose 拿出來跑在主機上：
+開發時要熱重載，可以把 `app` 與 `worker` 從 compose 拿出來跑在主機上：
 
 ```bash
 docker compose up -d postgres redis
@@ -152,7 +152,7 @@ uv run celery -A apps.worker.celery_app worker -Q q.run,q.build -l info
 前端不需要任何額外指令 —— 沒有 dev server、沒有 watch、沒有 `node_modules`。
 `--reload` 只影響 Python；改 `.html` / `.css` / `.js` 直接重新整理瀏覽器。
 
-⚠️ 這時 `api` 跑在主機上，沙盒要打得到它——沙盒網段內的容器連不到主機的 `localhost`。
+⚠️ 這時 `app` 跑在主機上，沙盒要打得到它——沙盒網段內的容器連不到主機的 `localhost`。
 用 `host.docker.internal` 當 `ZENTRA_GATEWAY`，但**那會讓沙盒網段多一條對外路由**，
 所以這個模式**只在開發時用**，`ZENTRA_ENV` 不是 `dev` 時 driver 要拒絕。
 
@@ -164,4 +164,4 @@ v0.1 把這條列為「僅限本機開發」。**v0.2.0 的正式環境就是這
 現在可接受的理由與將來的解法寫在
 [detailed-architecture.md §9](detailed-architecture.md)。
 
-**只有 `worker` 掛 `docker.sock`。`api` 不准掛。**
+**只有 `worker` 掛 `docker.sock`。`app` 不准掛。**
