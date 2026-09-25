@@ -116,6 +116,13 @@ Local and production are the same `docker compose` stack — there is no separat
 ## Running the stack
 
 ```bash
+make up          # everything below, then checks the stack answered
+make help        # every target
+```
+
+`make` is a convenience wrapper with no product behaviour of its own; the commands it runs are these:
+
+```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 docker compose exec api alembic upgrade head
@@ -457,6 +464,13 @@ Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)。
 ### 本機啟動與測試
 
 本機與正式是同一套 compose，沒有第二種部署方式。
+
+```bash
+make up          # 下面那些全部做完，最後確認服務有回應
+make help        # 看所有指令
+```
+
+`make` 只是把指令包起來，沒有任何產品行為。它跑的就是這些：
 
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker

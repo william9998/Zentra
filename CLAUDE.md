@@ -76,8 +76,13 @@ coordination/BOARD.md 任務看板
 ## 常用指令
 
 ```bash
+# 最短路徑：Makefile 把下面這些包起來了（沒有產品行為，只是省得記）
+make up                         # 起服務 + build base image + migration + 健康檢查
+make help                       # 所有指令
+make test SUITE=tests/zen009    # 只跑受影響的 suite
+make smoke                      # verify-zen000.sh
+
 # 完整環境（本機與正式是同一套）
-docker network create --internal zentra-sandbox-net
 docker compose up -d            # postgres + redis + registry + api + worker
                                 # Console → http://localhost:8000/console/agents
 
