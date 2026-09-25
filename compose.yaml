@@ -32,7 +32,7 @@ services:
     networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
 
   # 內部 OCI Registry（ADR-0009 / ZEN-009）。使用者在**這台主機上**
-  #   docker tag <img> localhost:5000/<repo>:<semver> && docker push …
+  #   docker tag <img> localhost:6000/<repo>:<semver> && docker push …
   # 再用既有的 JSON 端點以 digest 註冊版本。平台不接收 image 檔案上傳。
   #
   # 沒有任何平台服務會連它：它的 client 只有主機上的 Docker daemon（pull）
@@ -53,9 +53,13 @@ services:
     # zentra-net 上，解析不到服務名 `registry`。localhost 另外免去改
     # daemon.json 的 insecure-registries（Docker 對 localhost 預設允許 HTTP）。
     #
-    # ⚠️ macOS：AirPlay Receiver 會佔用 5000，到系統設定關掉它。
-    #    port 刻意不做成設定項 —— 那會需要一個端點讓 Console 知道實際值。
-    ports: ["127.0.0.1:5000:5000"]
+    # 主機端是 6000，不是 registry 慣用的 5000：macOS 的 AirPlay Receiver 預設
+    # LISTEN 在 *:5000，會蓋掉這個服務（回 403，Server: AirTunes/...）。
+    # 容器內仍是 5000 —— 換的只有主機端。
+    #
+    # port 仍然寫死，**沒有做成設定項**：做成設定項就需要一個端點讓 Console
+    # 知道實際值，那是為環境細節新增 API 表面（ADR-0009 R3）。
+    ports: ["127.0.0.1:6000:5000"]
     # 刻意沒有 healthcheck：registry:2 裡沒有 wget/curl，與其為此加工具或換基底
     # 映像，不如不要養一個假的檢查。
     networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net

@@ -14,7 +14,8 @@
 > 本文下方的服務清單保留當時的樣貌作為紀錄，**現況以 [SPEC.md](../SPEC.md) §6.1 為準**。
 
 > ⚠️ **服務清單再被 [ADR-0009](ADR-0009-internal-registry-image-upload.md) 修訂（2026-09-22）：4 → 5。**
-> 新增內部 OCI Registry（`registry:2`），只掛 `zentra-net`、只發布 `127.0.0.1:5000`、
+> 新增內部 OCI Registry（`registry:2`），只掛 `zentra-net`、只發布 `127.0.0.1:6000`
+> （主機端；容器內仍是 5000，見 ADR-0009 R3）、
 > 無 TLS／無認證／無自動 GC。
 > **它的用途在 ADR-0009 修訂 R2（2026-09-23）改變**：原本是承接「上傳 image tar」，
 > 現在是讓使用者**在平台主機上**直接 `docker push`。服務數維持 5，平台不在 push 路徑上。

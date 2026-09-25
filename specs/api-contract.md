@@ -32,7 +32,7 @@
 > 同時接 JSON 與 multipart）。**⚠️ 這些新增已由 v0.4.1 全部撤回，請勿實作。**
 >
 > **v0.4.1 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) 撤回 v0.4.0 的全部新增。**
-> 使用者改為**在平台主機上直接 `docker push localhost:5000/<repo>:<tag>`**，
+> 使用者改為**在平台主機上直接 `docker push localhost:6000/<repo>:<tag>`**，
 > 再用**本來就有的** JSON 路徑以 digest 註冊。因此：
 > multipart 形狀、`artifact.origin`、digest 三欄的 `null` 語意、`details.stage` 的 `LOAD`/`PUSH`、
 > `QUOTA_EXCEEDED` 的磁碟語意 **全部移除**。
@@ -278,7 +278,7 @@ image 本體放在哪裡，對這個端點**沒有任何差別**——不分支�
 | image 放哪裡 | 使用者怎麼放進去 | `image_ref` 長相 |
 |---|---|---|
 | 外部 Registry | 自己 push 到 GHCR / 自建 registry | `ghcr.io/acme/agent@sha256:…` |
-| **平台內部 Registry** | **在跑平台的那台主機上** `docker push localhost:5000/<repo>:<tag>` | `localhost:5000/<repo>@sha256:…` |
+| **平台內部 Registry** | **在跑平台的那台主機上** `docker push localhost:6000/<repo>:<tag>` | `localhost:6000/<repo>@sha256:…` |
 
 ```json
 {
@@ -290,7 +290,7 @@ image 本體放在哪裡，對這個端點**沒有任何差別**——不分支�
 | 欄位 | 型別 | 必填 | 說明 |
 |---|---|---|---|
 | `semver` | string | 是 | Agent 內唯一；發布後不可重用 |
-| `image_ref` | string | 是 | canonical OCI digest reference；只接受 `repository@sha256:<64 hex>`，tag-only 為 `422 VALIDATION_ERROR`。`repository` 可以含 registry host 與 port（`localhost:5000/my-agent` 合法） |
+| `image_ref` | string | 是 | canonical OCI digest reference；只接受 `repository@sha256:<64 hex>`，tag-only 為 `422 VALIDATION_ERROR`。`repository` 可以含 registry host 與 port（`localhost:6000/my-agent` 合法） |
 
 未定義的欄位（含 `origin`、registry 位址、任何憑證）→ `422 VALIDATION_ERROR`。
 
@@ -450,7 +450,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
-| v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的全部新增**：移除 multipart 形狀、移除 `artifact.origin`、`version_id`/`artifact.image_ref`/`artifact.digest` 恢復為任何狀態都非 `null`、`details.stage` 值域退回 `PULL|INSPECT|VALIDATE`、`QUOTA_EXCEEDED` 退回只表示併發 Run 上限。改為使用者在平台主機上直接 `docker push localhost:5000/<repo>:<tag>` 後以既有 JSON 路徑註冊。**v0.4.0 的新增從未實作，因此相對於 v0.3.1 本次是零變更** | @architect |
+| v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的全部新增**：移除 multipart 形狀、移除 `artifact.origin`、`version_id`/`artifact.image_ref`/`artifact.digest` 恢復為任何狀態都非 `null`、`details.stage` 值域退回 `PULL|INSPECT|VALIDATE`、`QUOTA_EXCEEDED` 退回只表示併發 Run 上限。改為使用者在平台主機上直接 `docker push localhost:6000/<repo>:<tag>` 後以既有 JSON 路徑註冊。**v0.4.0 的新增從未實作，因此相對於 v0.3.1 本次是零變更** | @architect |
 | v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 讓 `POST /v1/agents/{id}/versions` 同時接受 multipart image tar 上傳；新增 `artifact.origin`（純描述性）；`version_id`/`artifact.image_ref`/`artifact.digest` 在 `UPLOADED` + `BUILDING` 期間可為 `null`；`details.stage` 值域加 `LOAD`/`PUSH`；`QUOTA_EXCEEDED` 說明放寬到含磁碟餘裕。**沒有新增錯誤 code**，`version_id` 語意與 Runs/SSE/MCP 形狀未變 | @architect |
 | v0.3.1 | 2026-09-22 | 將 `trigger` 收斂為 server-known ingress protocol：REST/Console=`API`、MCP=`MCP`；移除 `CONSOLE`，禁止 body/header discriminator。端點與 Run 建立流程未新增 | @architect |
 | v0.3.0 | 2026-09-22 | 依 ADR-0008 將 Agent Version 發布改為 JSON 註冊 canonical OCI digest；新增版本 artifact/source 欄位、Agent list/create 具體 shape 與 validation token/body。Runs、SSE、MCP 對外形狀不變 | @architect |

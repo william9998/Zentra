@@ -47,16 +47,16 @@ def test_registry_is_only_on_the_platform_network(compose) -> None:
 
 
 def test_registry_publishes_loopback_only(compose) -> None:
-    """Z9-A3：只綁 `127.0.0.1:5000`。
+    """Z9-A3：只綁 `127.0.0.1:6000`（主機端 6000，容器內仍是 5000）。
 
-    擋住的錯：為了「從筆電也能 push」改成 `5000:5000`（等同 0.0.0.0）。
+    擋住的錯：為了「從筆電也能 push」改成 `6000:5000`（等同 0.0.0.0）。
     內部 Registry 沒有 TLS、沒有認證 —— loopback 綁定本身就是「只限同機」的執行手段。
     要遠端 push 需新 ADR，且該 ADR 必須先解決 TLS 與認證（ADR-0009 R2-1 硬規則 4）。
     """
     registry = compose_service(compose, "registry")
     ports = registry.get("ports")
-    assert ports == ["127.0.0.1:5000:5000"], (
-        f"registry.ports 必須恰為 ['127.0.0.1:5000:5000']，實際 {ports!r}"
+    assert ports == ["127.0.0.1:6000:5000"], (
+        f"registry.ports 必須恰為 ['127.0.0.1:6000:5000']，實際 {ports!r}"
     )
 
 

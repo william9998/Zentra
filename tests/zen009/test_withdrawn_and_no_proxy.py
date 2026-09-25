@@ -74,7 +74,7 @@ def test_api_never_talks_to_a_registry_over_http() -> None:
     是 P4 的唯一保證方式：**Registry 對沙盒不可達要靠「沒有任何一條路可以到」**，
     不是靠沙盒不知道位址。
     """
-    hits = grep_tree(APPS / "api", r""":5000|/v2/_catalog|registry:5000|localhost:5000""",
+    hits = grep_tree(APPS / "api", r""":5000|/v2/_catalog|registry:5000|localhost:6000""",
                      suffixes=PY)
     assert not hits, (
         "apps/api/** 出現 registry 位址。即使是註解或常數也不行 —— "
@@ -88,13 +88,13 @@ def test_worker_never_talks_to_a_registry_over_http() -> None:
     worker 自己對 registry 發 HTTP，代表有人繞過 daemon 自己實作了 pull，
     那會讓 `RepoDigests` 比對（P5 的可重現性證據）失去意義。
     """
-    hits = grep_tree(APPS / "worker", r""":5000|/v2/_catalog|registry:5000|localhost:5000""",
+    hits = grep_tree(APPS / "worker", r""":5000|/v2/_catalog|registry:5000|localhost:6000""",
                      suffixes=PY)
     assert not hits, "apps/worker/** 出現 registry 位址：\n" + "\n".join(hits)
 
 
 def test_console_only_mentions_the_registry_as_plain_text() -> None:
-    """Z9-D2：`localhost:5000` 在 Console **只能是說明文字**。
+    """Z9-D2：`localhost:6000` 在 Console **只能是說明文字**。
 
     允許：說明區塊裡的指令字串（必須 `textContent` 寫入）。
     不允許：`fetch` / `XMLHttpRequest` 的目標、`href` / `src` 屬性。
@@ -114,7 +114,7 @@ def test_console_only_mentions_the_registry_as_plain_text() -> None:
 
     # 既有慣例是 `root.innerHTML = FRAME`（模組層級的固定常數樣板），那是安全的。
     # 真正的風險是把**變數**插進 innerHTML —— 說明區塊若哪天改成字串插值，
-    # `localhost:5000` 就會變成一條 XSS 路徑。只擋這一種。
+    # `localhost:6000` 就會變成一條 XSS 路徑。只擋這一種。
     unsafe = grep_tree(console, r"""innerHTML\s*=\s*(`[^`]*\$\{|[^A-Z_;\n]*\+|['"][^'"]*['"]\s*\+)""",
                        suffixes=WEB)
     assert not unsafe, (

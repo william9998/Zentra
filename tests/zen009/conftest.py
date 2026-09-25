@@ -8,13 +8,14 @@
 
     「registry 活著」不得以「TCP 連得上」或「HTTP 有回應」判定。
 
-已在驗收機實測：macOS 的 AirPlay Receiver（ControlCenter）會 LISTEN 在 `*:5000`，
+已在驗收機實測：macOS 的 AirPlay Receiver（ControlCenter）LISTEN 在 `*:5000`，
 對 `GET /v2/` 回 `HTTP/1.1 403 Forbidden` + `Server: AirTunes/935.7.1`。
-任何寬鬆探測都會被它騙過，於是：
+**產品 registry 的主機端因此改用 6000**（ADR-0009 R3），但這條探測規則不因此作廢 ——
+任何 port 上都可能有別的東西在回應，於是：
 
   * 正向探測（「registry 在」）必須看到 `Docker-Distribution-Api-Version: registry/2.0`；
   * 反向探測（「非 loopback 連不到」）不得斷言 connection refused ——
-    AirPlay 綁的是 `*`，從 LAN IP 連 5000 一樣會有回應（實測 192.168.0.101 回 403）。
+    綁 `*` 的服務從 LAN IP 連一樣會有回應（AirPlay 實測 192.168.0.101 回 403）。
     正確的反向斷言是「**得不到 Zentra Registry**」。
 """
 
@@ -33,8 +34,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
 
-#: 產品 registry 的固定位址（spec §5.1：port 寫死 5000，不做成設定項）。
-PRODUCT_REGISTRY = os.getenv("ZENTRA_TEST_REGISTRY", "localhost:5000")
+#: 產品 registry 的固定位址（spec §5.1：port 寫死，不做成設定項）。
+#: 主機端 6000、容器內 5000 —— 見 ADR-0009 R3。
+PRODUCT_REGISTRY = os.getenv("ZENTRA_TEST_REGISTRY", "localhost:6000")
 
 #: 驗收自己推進產品 registry 的 repository 前綴。交接單要列出來，讓維運者知道
 #: `registrydata` 裡多了什麼（delete.enabled=false + 無 GC ⇒ 刪不掉）。
@@ -91,12 +93,12 @@ def require_product_registry() -> None:
     if ok:
         return
     server = headers.get("server", "")
-    if "airtunes" in server.lower():
+    if server and "registry" not in server.lower():
         pytest.fail(
-            f"{PRODUCT_REGISTRY} 上回應的是 macOS AirPlay Receiver（Server: {server}），"
-            "不是 Zentra Registry。關掉 System Settings → General → AirDrop & Handoff → "
-            "AirPlay Receiver 再跑（acceptance §0 P-0）。**這是 fail，不是 skip** —— "
-            "它同時表示 compose 的 127.0.0.1:5000 綁不上去。"
+            f"{PRODUCT_REGISTRY} 上有東西在回應，但它不是 Zentra Registry"
+            f"（Server: {server}，status={status}）。有別的服務佔著這個 port —— "
+            "先找出它是誰（`lsof -nP -iTCP:6000 -sTCP:LISTEN`）。"
+            "**這是 fail，不是 skip**：它同時表示 compose 的 127.0.0.1:6000 綁不上去。"
         )
     pytest.skip(
         f"{PRODUCT_REGISTRY} 沒有 OCI Registry（status={status}, "

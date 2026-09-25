@@ -84,7 +84,7 @@ def _normalized_repository(repository: str) -> str:
     Only the default registry is normalized, because only there does Docker
     rewrite what we registered: ``docker.io/library/alpine`` = ``docker.io/alpine``
     = ``alpine``. Every other host is returned verbatim -- normalizing
-    ``localhost:5000/x`` into ``x`` would silently point an internal-registry
+    ``localhost:6000/x`` into ``x`` would silently point an internal-registry
     version at a Docker Hub image (SPEC §7.1, ZEN-009 spec §5.6).
     """
 
@@ -233,7 +233,7 @@ class DockerSandboxDriver:
             repo_digests = tuple(attrs.get("RepoDigests") or ())
             # Docker strips the default-registry prefix it normalized away, so
             # compare normalized keys instead of raw strings. Non-default
-            # registries (ghcr.io, localhost:5000) are compared verbatim.
+            # registries (ghcr.io, localhost:6000) are compared verbatim.
             expected_key = _comparison_key(image_ref)
             reported_keys = {
                 key

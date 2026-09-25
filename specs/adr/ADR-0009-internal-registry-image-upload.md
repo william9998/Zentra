@@ -8,9 +8,9 @@
 
 | | |
 |---|---|
-| 狀態 | **已採納，並於 R2 部分修訂 (Accepted, amended by R2)** |
-| 日期 | R1 2026-09-22 · **R2 2026-09-23** |
-| 決策者 | @architect（R1 依使用者裁示選路 2；**R2 依使用者裁示改為同機直接 `docker push`**） |
+| 狀態 | **已採納，並於 R2 / R3 部分修訂 (Accepted, amended by R2, R3)** |
+| 日期 | R1 2026-09-22 · **R2 2026-09-23** · **R3 2026-09-25** |
+| 決策者 | @architect（R1 依使用者裁示選路 2；**R2 依使用者裁示改為同機直接 `docker push`**；**R3 依使用者裁示把主機端 port 改為 6000**） |
 | 相關 | **推翻 [ADR-0008](ADR-0008-oci-image-agent-packaging.md) 對選項 B 的否決**；修訂 [ADR-0005](ADR-0005-mvp-single-host-scope.md) 的長駐服務數；P1–P5 全部不動 |
 
 > ⚠️ **本 ADR 已被自己的修訂 R2 部分推翻。先讀文末的 §修訂 R2，再讀下面的 R1 原文。**
@@ -27,6 +27,34 @@
 > **R2 新增的**：使用者可以**在跑平台的那台主機上**直接 `docker push localhost:5000/<repo>:<tag>`，
 > 再用**既有的** JSON `POST /v1/agents/{id}/versions` 以 digest 註冊。
 > 下面 R1 原文中凡標 `🔻 R2 撤回` 者一律以 R2 為準，**原文保留是為了留下當時的推理，不是還有效**。
+>
+> ---
+>
+> ### 修訂 R3（2026-09-25）：主機端 port 由 5000 改為 **6000**
+>
+> **改的只有一個數字，決策本身完全不動。** 「只綁 loopback、port 寫死在 compose、
+> 不做成設定項」這三條是 R1 §1 的實質內容，R3 一條都沒鬆。
+>
+> **為什麼改**：macOS 的 AirPlay Receiver（`ControlCenter`）預設 LISTEN 在 `*:5000`，
+> 會蓋掉 registry —— 實測 `curl localhost:5000/v2/` 回 `403` + `Server: AirTunes/935.7.1`。
+> R2 的處置是「教使用者關掉 AirPlay」，但**使用者本來就在用 AirPlay 投影，不願關閉**。
+> 在「關掉一個正在用的系統功能」與「換一個數字」之間，換數字的代價低得多。
+>
+> **範圍**：只有 compose 映射的**主機端**。**容器內仍是 5000**，
+> `zentra-net` 內部的 `registry:5000` 一個字都沒改 —— 那是容器 port，AirPlay 碰不到。
+>
+> **為什麼現在改是免費的**：實測當下 DB 裡**沒有任何 `localhost:5000` 的 `agent_versions`**
+> （既有的都是測試 fixture 的 `:5010` 與外部 registry）。port 會成為 `image_ref` 字串的一部分
+> 存進 DB，**之後再改就是一次資料遷移**：已 `PUBLISHED` 的版本會永久拉不到。
+> 這條寫進 §5.3 的「何時該重新檢討」。
+>
+> **沒有做成設定項**：R1 §1 那條理由原封不動有效 —— 做成設定項就需要一個端點
+> 讓 Console 知道實際值，那是為環境細節新增 API 表面。6000 一樣是寫死的常數。
+>
+> **順帶保留的**：`tests/zen009/conftest.py` 那條「判活只認
+> `Docker-Distribution-Api-Version: registry/2.0`，不看連不連得上」的規則**不因此作廢**。
+> 它原本是為 AirPlay 寫的，但任何 port 都可能被別的服務佔著回應。探測改成
+> 「有回應但不是 registry → fail 並指出佔用者」，不再只認 AirPlay。
 
 ## 背景
 

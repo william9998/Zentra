@@ -15,7 +15,7 @@
 > → 取 manifest digest → 接既有流程。跨五個角色，含 multipart 端點、migration、兩個 build stage、新 UI 模式。
 >
 > **v2（2026-09-23，使用者裁示）**：**撤回 tar 上傳**。使用者改為**在跑平台的那台主機上**
-> 直接 `docker push localhost:5000/<repo>:<tag>`，再用**本來就有的** JSON 端點以 digest 註冊。
+> 直接 `docker push localhost:6000/<repo>:<tag>`，再用**本來就有的** JSON 端點以 digest 註冊。
 >
 > **為什麼**：AWS 與 Azure 都不收 `docker save` tar（ECS / Fargate / App Runner / Lambda →
 > **ECR**；Container Apps / ACI → **ACR**）。它們給使用者的「上傳感」來自**託管一個 Registry**，
@@ -23,7 +23,7 @@
 > [ADR-0009 §修訂 R2](../../adr/ADR-0009-internal-registry-image-upload.md)。
 >
 > **後端增量是零行程式碼**（@architect 讀碼確認）：`parse_image_ref` 已接受
-> `localhost:5000/<repo>@sha256:<64hex>`；`_registry_for()` 已把 `localhost` 當 registry host 處理
+> `localhost:6000/<repo>@sha256:<64hex>`；`_registry_for()` 已把 `localhost` 當 registry host 處理
 > 並以不帶 auth 的方式 pull；`RepoDigests` 的字面比對對非預設 registry 成立。
 > **使用者要的功能，在 `registry` 服務起來之後就已經可用了。**
 > ZEN-009 要做的不是「實作 push」，而是「**把它宣告為受支援的路徑，並寫進 compose、文件與 UI 說明**」。
@@ -39,7 +39,7 @@
 ### 做
 
 - compose 新增第 5 個長駐服務：內部 OCI Registry（`registry:2`），**只掛 `zentra-net`**，
-  **只發布 `127.0.0.1:5000:5000`**，`REGISTRY_STORAGE_DELETE_ENABLED=false`，volume `registrydata`。
+  **只發布 `127.0.0.1:6000:5000`**，`REGISTRY_STORAGE_DELETE_ENABLED=false`，volume `registrydata`。
 - 維運說明：備份範圍（`registrydata` 與 `pgdata` 同等重要）、手動 GC 程序、
   **`--delete-untagged` 禁令**、catalog ↔ DB 對照程序。
 - README / Console 說明：受支援的 `docker tag` → `docker push` → 取 digest → 註冊 四步流程，
@@ -82,13 +82,13 @@
 - [x] `specs/api-contract.md` → **v0.4.1**（已由 @architect 更新）：
   **撤回** v0.4.0 的 multipart 形狀、`artifact.origin`、digest 三欄的 `null` 語意、
   `details.stage` 的 `LOAD`/`PUSH`、`QUOTA_EXCEEDED` 的磁碟語意。
-  明訂 `repository` 可以含 registry host 與 port（`localhost:5000/my-agent` 合法）。
+  明訂 `repository` 可以含 registry host 與 port（`localhost:6000/my-agent` 合法）。
   **v0.4.0 的新增從未實作，所以相對於實際跑著的 v0.3.1 是零變更。**
 - [x] `specs/SPEC.md` → **v0.4.1**（已由 @architect 更新）：§1 §3 §5（新增硬規則 4）§6 §6.1 §7.1 §8.2 §10 §11 §13。
 - [ ] `specs/ui-contract.md` → **@ui-designer bump 到 v0.5.2（patch 級）**。
   **v1 那個 v0.6.0 閘門解除**：現行 §5.4「這是文字表單，**沒有檔案輸入、拖放區、upload progress**」
   **仍然正確，不必改**。只需新增一個**靜態說明區塊**：四步發布流程的指令、
-  「只能在跑 Zentra 的那台主機上執行」、以及 `localhost:5000` 是平台內部位址的一行提醒。
+  「只能在跑 Zentra 的那台主機上執行」、以及 `localhost:6000` 是平台內部位址的一行提醒。
   **沒有新元件狀態、沒有檔案輸入、沒有進度條、沒有 `XMLHttpRequest`。**
   @frontend-dev 因此**不再被 UI 閘門擋住**——這是純靜態文字。
 
@@ -100,7 +100,7 @@
 compose（長駐 5 個）
   postgres  zentra-net
   redis     zentra-net
-  registry  zentra-net                     ← 新增；ports: ["127.0.0.1:5000:5000"]
+  registry  zentra-net                     ← 新增；ports: ["127.0.0.1:6000:5000"]
   api       zentra-net + zentra-sandbox-net
   worker    zentra-net + /var/run/docker.sock
 
@@ -115,34 +115,36 @@ volumes: pgdata, registrydata              ← 沒有 uploads volume（v2 撤回
   拿掉 healthcheck 比養一個假的好。）
 - **為什麼一定要發布 loopback port**：pull 的執行者是主機上的 Docker daemon，
   它不在 `zentra-net` 上，解析不到服務名 `registry`。daemon 唯一能用的名字是主機 loopback。
-  `localhost:5000` 另外免去改 `daemon.json` 的 `insecure-registries`（Docker 對 localhost 預設允許 HTTP）。
+  `localhost:6000` 另外免去改 `daemon.json` 的 `insecure-registries`（Docker 對 localhost 預設允許 HTTP）。
 - **loopback 綁定同時就是「只限同機」的執行手段。** 不是文件規定，是網路事實。
 - 設定項：**沒有新增任何 env**。
   v1 的 `ZENTRA_INTERNAL_REGISTRY` / `ZENTRA_UPLOAD_DIR` / `ZENTRA_MAX_IMAGE_UPLOAD_BYTES` 全部取消——
   平台不再需要知道 registry 位址（它不連它）。
-  host port **固定 5000**，寫在 compose 裡；Console 說明文字可以直接寫 `localhost:5000`。
-  > 已知環境衝突：macOS 的 AirPlay Receiver 會佔用 5000。處置是維運說明教使用者關掉它，
-  > **不是**把 port 做成設定項——做成設定項就需要一個端點讓 Console 知道實際值，
+  host port **固定 5000**，寫在 compose 裡；Console 說明文字可以直接寫 `localhost:6000`。
+  > **主機端是 6000，不是 registry 慣用的 5000**（ADR-0009 R3）：macOS 的 AirPlay Receiver
+  > LISTEN 在 `*:5000`，會蓋掉這個服務。使用者不願關閉 AirPlay 投影，因此改用 6000。
+  > **容器內仍是 5000**，換的只有 compose 映射的左側；`zentra-net` 內的 `registry:5000` 不受影響。
+  > port 仍然寫死，**沒有做成設定項**——做成設定項就需要一個端點讓 Console 知道實際值，
   > 那是為一個環境細節新增 API 表面。若日後證明衝突很常見，再評估一個 `GET /v1/meta`。
 
 ### 5.2 受支援的發布流程（寫進 README、維運說明、Console 說明區塊）
 
 ```bash
 # 1. 在跑 Zentra 的那台主機上（不是遠端筆電）
-docker tag my-agent:dev localhost:5000/my-agent:1.0.0
-docker push localhost:5000/my-agent:1.0.0
+docker tag my-agent:dev localhost:6000/my-agent:1.0.0
+docker push localhost:6000/my-agent:1.0.0
 #    push 最後一行： 1.0.0: digest: sha256:<64 hex> size: <n>
 
 # 2. 事後要再查 digest
-docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/my-agent:1.0.0
+docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
 
 # 3. 註冊（Console 的版本註冊頁貼同一個字串）
 curl -X POST http://localhost:8000/v1/agents/<agent_id>/versions \
   -H 'Content-Type: application/json' \
-  -d '{"semver":"1.0.0","image_ref":"localhost:5000/my-agent@sha256:<64 hex>"}'
+  -d '{"semver":"1.0.0","image_ref":"localhost:6000/my-agent@sha256:<64 hex>"}'
 ```
 
-- **推薦 tag 用 semver**（`localhost:5000/<name>:<semver>`）。不強制，平台也無法強制。
+- **推薦 tag 用 semver**（`localhost:6000/<name>:<semver>`）。不強制，平台也無法強制。
   理由是 §5.3 的 `--delete-untagged` 陷阱：讓每個被註冊過的 manifest 都留著一個 tag。
 - 外部 Registry 註冊**仍是正途**，不降級、不隱藏。兩者在 API 上是同一件事。
 
@@ -175,7 +177,7 @@ curl -X POST http://localhost:8000/v1/agents/<agent_id>/versions \
 
 **裁決：不做任何遮蔽。** 理由：
 
-- 能連到 `127.0.0.1:5000` 的就是能在該主機執行程式的人，而在單機單租戶下，
+- 能連到 `127.0.0.1:6000` 的就是能在該主機執行程式的人，而在單機單租戶下，
   那群人**同時也是能碰 `docker.sock`（等同主機 root）的人**。對主機 root 隱藏 catalog 是表演。
 - 要遮蔽就得在 Registry 前面加反向代理或 auth middleware ——**多一個要跑、要設定、要測的元件**，
   防禦一個不存在的威脅。這正是 ADR-0005 要砍掉的那種東西。
@@ -196,7 +198,7 @@ curl -X POST http://localhost:8000/v1/agents/<agent_id>/versions \
 v1 用它區分「註冊」與「上傳」。v2 只剩一種機制，欄位會永遠是同一個值 ——
 **在 API 回應裡放一個恆定值，等於邀請客戶端對它分支**，而 v1 自己就禁止分支。
 改定義成「外部 vs 內部 Registry」也不行：那是**從 `image_ref` 衍生**的值（看第一段是不是
-`localhost:5000`），衍生值存進 DB 總有一天會和來源不一致。
+`localhost:6000`），衍生值存進 DB 總有一天會和來源不一致。
 要顯示徽章，Console 自己從 `image_ref` 判斷即可 —— 那是呈現，不是契約。
 
 連帶：`agent_versions` **不需要任何 migration**；`image_ref` / `image_digest` / `version_id`
@@ -215,8 +217,8 @@ image 一個都註冊不了。**修正本身屬 @platform-eng 的獨立任務，
 2. **只有預設 registry 會被正規化。** 判斷規則照抄 `docker_driver.py` 既有的 `_registry_for()`：
    repository 第一段含 `.` 或 `:`，或等於 `localhost` → 那一段是 **registry host，必須原樣保留**。
 3. 因此 `docker.io/library/alpine` ≡ `docker.io/alpine` ≡ `alpine`，
-   但 `localhost:5000/alpine` **不等於**上面任何一個。
-   **任何把 `localhost:5000/x` 正規化成 `x` 或 `docker.io/x` 的實作都是嚴重 bug**：
+   但 `localhost:6000/alpine` **不等於**上面任何一個。
+   **任何把 `localhost:6000/x` 正規化成 `x` 或 `docker.io/x` 的實作都是嚴重 bug**：
    內部 Registry 的版本會比對到錯的 image。QA 必須有一條測試釘死這個否定案例。
 4. 若修正順帶放寬 `parse_image_ref`（目前要求 repository 含 `/`），放寬後仍必須拒絕
    tag-only reference 與非 64 hex 的 digest。
@@ -266,7 +268,7 @@ image 一個都註冊不了。**修正本身屬 @platform-eng 的獨立任務，
 
 ### 7.1 P5 可重現性（**最重要，缺這條不算通過**）
 
-- **prune 後仍能按 digest 重新 pull**：`docker push localhost:5000/<repo>:<semver>` → 以 digest 註冊
+- **prune 後仍能按 digest 重新 pull**：`docker push localhost:6000/<repo>:<semver>` → 以 digest 註冊
   → `PUBLISHED` → 以 `docker image rm` 移除該 image 的**所有**本機參照（tag 與 digest ref）
   → 確認 `docker image inspect` 找不到 → 觸發一次 Run → **Run 成功**，且事後
   `docker image inspect` 的 `RepoDigests` 含有與 DB `image_digest` **完全相同**的 digest。
@@ -282,8 +284,8 @@ image 一個都註冊不了。**修正本身屬 @platform-eng 的獨立任務，
 ### 7.2 隔離與憑證邊界
 
 - `registry` 容器的 networks **不含** `zentra-sandbox-net`（靜態檢查 compose + 執行期 `docker inspect`）。
-- 沙盒內解析／連線 `registry`、`registry:5000`、`localhost:5000`、`127.0.0.1:5000` **全部失敗**。
-- `registry` 的 port binding 只有 `127.0.0.1:5000`，**沒有 `0.0.0.0`**
+- 沙盒內解析／連線 `registry`、`registry:5000`、`localhost:6000`、`127.0.0.1:6000` **全部失敗**。
+- `registry` 的 port binding 只有 `127.0.0.1:6000`，**沒有 `0.0.0.0`**
   （`docker inspect` 的 `HostIp` 必須是 `127.0.0.1`；從另一台機器或主機非 loopback IP 連 5000 必須失敗）。
 - **`api` 沒有任何代理 Registry 的路由**：全文檢索 `apps/api/**` 與 `apps/console/**`，
   不得出現對 `:5000` 或 `/v2/` 的請求；`GET /openapi.json` 不得出現任何 registry 路徑。
@@ -302,19 +304,19 @@ image 一個都註冊不了。**修正本身屬 @platform-eng 的獨立任務，
 
 ### 7.4 同機 push 路徑本身
 
-- 正常流程：`examples/demo-echo` build → tag → push `localhost:5000` → 註冊 digest
+- 正常流程：`examples/demo-echo` build → tag → push `localhost:6000` → 註冊 digest
   → `PUBLISHED` → REST 與 MCP 都能呼叫。
 - **不帶認證**即可 push 與 pull（確認我們沒有偷偷引入憑證）。
 - **不需要改 `daemon.json`**：在乾淨環境下不加 `insecure-registries` 直接 push 成功。
 - 註冊一個 registry 裡**不存在**的 digest → `BUILD_FAILED / stage=PULL`，訊息可行動。
-- 兩種存放地點等價：同一個 image 一次放外部 registry、一次放 `localhost:5000`，
+- 兩種存放地點等價：同一個 image 一次放外部 registry、一次放 `localhost:6000`，
   兩者 entrypoints schema 相同、Run 行為相同，DB 的差異**只有 `image_ref` 字串本身**。
 - ZEN-008 既有測試全數重跑，**不得退化**。
   內部 Registry 就位後，那 137 個 registry-dependent skipped 應有機會解封 —— 請評估併驗。
 
 ### 7.5 `image_ref` 正規化護欄（§5.6）
 
-- **否定案例（最重要）**：`localhost:5000/alpine` **不得**被正規化成 `alpine` 或 `docker.io/alpine`。
+- **否定案例（最重要）**：`localhost:6000/alpine` **不得**被正規化成 `alpine` 或 `docker.io/alpine`。
 - 正面案例：`docker.io/library/alpine` ≡ `docker.io/alpine` ≡ `alpine`
   （這條在 @platform-eng 修好 Docker Hub 缺陷之後才會通過；在那之前標 **`skipped` 並註明原因，
   不得標 `passed`**）。
@@ -336,9 +338,10 @@ image 一個都註冊不了。**修正本身屬 @platform-eng 的獨立任務，
 | 無 GC、無配額、平台看不到 push | 磁碟緩慢成長，滿了時**平台沒有任何訊號** | `delete.enabled=false` 防誤刪 + 手動 GC 程序；責任歸屬明寫在 SPEC §6.1 與 §10 |
 | 平台不知道 Registry 裡有什麼 | 出現平台未知的 repository | 接受。回收靠 catalog↔DB 對照的維運程序，不做成產品功能 |
 | 有人為了方便改綁 `0.0.0.0` | 內部 Registry 無 TLS 無認證直接上網 | compose 寫死 `127.0.0.1`；QA §7.2 驗 binding；**改綁需新 ADR 且必須先解決 TLS 與認證** |
-| 遠端 `DOCKER_HOST` 部署 | `localhost:5000` 指向錯的機器，push 成功但 pull 失敗 | 文件明示「daemon 與 compose 同機」是前提；QA 不需覆蓋遠端 daemon |
-| macOS 的 AirPlay 佔用 port 5000 | 起不來 | 維運說明教使用者關掉 AirPlay Receiver；**不把 port 做成設定項**（見 §5.1） |
-| `localhost:5000` 出現在使用者看得到的 `image_ref` | 誤以為可以從別台機器 `docker pull` | Console 說明區塊一行提醒；@ui-designer 在 v0.5.2 處理 |
+| 遠端 `DOCKER_HOST` 部署 | `localhost:6000` 指向錯的機器，push 成功但 pull 失敗 | 文件明示「daemon 與 compose 同機」是前提；QA 不需覆蓋遠端 daemon |
+| 主機端 port 被別的服務佔用 | 起不來，且該服務可能回 200 騙過寬鬆探測 | 已因 macOS AirPlay 由 5000 改為 6000（R3）。判活只認 `Docker-Distribution-Api-Version` header；**仍不把 port 做成設定項**（見 §5.1） |
+| 日後又要換 port | 已註冊的 `image_ref` 含舊 port，那些版本拉不到 | 換之前先確認 DB 裡沒有該 port 的 `PUBLISHED` 版本；有的話是一次資料遷移 |
+| `localhost:6000` 出現在使用者看得到的 `image_ref` | 誤以為可以從別台機器 `docker pull` | Console 說明區塊一行提醒；@ui-designer 在 v0.5.2 處理 |
 | Docker Hub image 目前完全無法註冊（ZEN-008 既有缺陷） | 最常見的使用情境是壞的 | **不在 ZEN-009 範圍**，屬 @platform-eng 的獨立任務；ZEN-009 只釘死修正必須遵守的護欄（§5.6） |
 
 **未決 SPEC-QUESTION：無。** Q-008 / Q-009 / Q-010 已於 ADR-0009 §7 裁決（R2 維持）。
@@ -348,7 +351,7 @@ Q-002～Q-007 與 Q-009(UI) 屬 ui-contract，歸 @ui-designer，不阻擋本任
 
 一個從未接觸過任何外部 Registry 的環境裡：
 
-1. 使用者在**平台主機上** `docker tag` + `docker push localhost:5000/<repo>:<semver>`，
+1. 使用者在**平台主機上** `docker tag` + `docker push localhost:6000/<repo>:<semver>`，
    不需要認證、不需要改 `daemon.json`，push 成功並拿到 digest。
 2. 用既有的 JSON 端點以該 digest 註冊 → `PULL → INSPECT → VALIDATE` → `PUBLISHED`。
 3. REST 與 MCP 都能呼叫該版本，Run 正常完成、事件可查、終態後容器不存在。

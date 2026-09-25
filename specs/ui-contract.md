@@ -376,7 +376,7 @@ export function mount(el, props) {
 - 欄位下固定提示：「請先將 image push 到 VM 可存取的 Registry。私有 Registry credential 由 VM 維運者預先配置，Console 不接收密碼。」
 - **靜態說明區塊**（ZEN-009 / ADR-0009 R2）：表單上方一個 `<details>`，摘要「怎麼把 image 推上來」，
   展開後是四步流程的**純文字**指令（`docker tag` → `docker push` → 取 digest → 貼進下面的欄位），
-  外加兩句提醒：「**只能在跑 Zentra 的那台主機上執行**」與「`localhost:5000` 是平台內部的 Registry 位址，
+  外加兩句提醒：「**只能在跑 Zentra 的那台主機上執行**」與「`localhost:6000` 是平台內部的 Registry 位址，
   不是你的筆電」。預設收合。
   **沒有新元件狀態、沒有檔案輸入、沒有拖放區、沒有進度條、沒有 `XMLHttpRequest`** ——
   這是靜態文字，不影響上面的五態。指令用 `<pre>`，內容一律 `textContent`。

@@ -23,7 +23,7 @@
 
 | # | 前置 | 為什麼寫在這裡 |
 |---|---|---|
-| P-0 | **macOS 的 AirPlay Receiver 必須先關掉**（System Settings → General → AirDrop & Handoff → AirPlay Receiver → Off） | **已在驗收機實測**：`ControlCenter` 正在 `LISTEN *:5000`（IPv4 + IPv6），`GET http://127.0.0.1:5000/v2/` 回 `HTTP/1.1 403 Forbidden` + `Server: AirTunes/935.7.1`。它綁的是 `*`，所以 compose 的 `127.0.0.1:5000:5000` **會 bind 失敗**。spec §5.1 已裁定「處置是教使用者關掉它，不是把 port 做成設定項」 |
+| P-0 | **主機端 port 6000 必須沒有別的服務佔用**（`lsof -nP -iTCP:6000 -sTCP:LISTEN` 只能是空的或 `com.docker`） | 原訂 5000 在驗收機上被 macOS AirPlay Receiver（`ControlCenter`，`LISTEN *:5000`）佔用，回 `403` + `Server: AirTunes/935.7.1`。使用者不願關閉 AirPlay，**主機端已改為 6000**（ADR-0009 R3）；容器內仍是 5000。這條前置保留，因為任何 port 都可能被佔 |
 | P-1 | 四個既有服務 + 新的 `registry` 服務都在跑；`ZENTRA_TEST_BASE_URL=http://127.0.0.1:8000` | 活服務測試的前提 |
 | P-2 | 主機原生 Postgres 佔用 `127.0.0.1:5432`。要對容器 DB 下 SQL 需開 `alpine/socat` 代理橋到 `15432`/`16379`，**跑完刪掉代理容器** | `information_schema` 與 `image_ref` 原值比對需要真 DB |
 | P-3 | 手動起的 `zentra-qa-registry`（`:5010`）在 ZEN-009 的 registry 上線後才可清掉；清掉前先確認 §10 的 ZEN-008 重跑策略已定案 | 見 §10 |
@@ -31,15 +31,15 @@
 ### ⚠️ P-0 衍生的測試設計硬規則（**寫錯這裡等於整組安全斷言失效**）
 
 1. **「registry 活著」的探測不得只看 TCP 連得上或 HTTP 有回應。**
-   AirPlay 會在 `5000` 回 `403`，任何「連得上就算」的探測都會被騙過。
+   佔著 port 的服務會回應（AirPlay 在 5000 回 `403`），任何「連得上就算」的探測都會被騙過。
    唯一可接受的判定是：`GET /v2/` 回 `200` **且** 回應 header 含
    `Docker-Distribution-Api-Version: registry/2.0`。
 2. **§5.3「非 loopback 位址連不到 5000」不得斷言「connection refused」。**
-   在有 AirPlay 的機器上 `curl http://<LAN IP>:5000/v2/` **會成功回 403**（已實測 `192.168.0.101`）。
+   綁 `*` 的服務從 LAN IP 連一樣會回應（AirPlay 在 5000 已實測 `192.168.0.101` 回 403）。
    正確斷言是：**從非 loopback 位址得不到 Zentra Registry**，
    即「沒有 `Docker-Distribution-Api-Version` header」且「`/v2/_catalog` 不回 registry JSON」。
    同時必須以 `docker inspect` 斷言 `HostIp == "127.0.0.1"` —— 兩條一起才成立。
-3. 若 P-0 沒做，測試必須**明確 fail 並指出 AirPlay**，不准 skip 帶過。
+3. 若 P-0 沒過，測試必須**明確 fail 並指出佔用者是誰**，不准 skip 帶過。
 
 ---
 
@@ -48,9 +48,9 @@
 | 層級 | 本任務要證明的事 | 不可代替 |
 |---|---|---|
 | 靜態 | `compose.yaml` 的 registry 服務形狀；`apps/**` 與 `specs/**` 沒有撤回項殘留；維運說明含禁令 | 靜態通過**不代表**執行期成立，§5 必須另外執行期驗 |
-| 單元 | `parse_image_ref` / `_registry_for` 對 `localhost:5000/...` 的正負案例 | 不碰 live 服務，快，必須全綠 |
+| 單元 | `parse_image_ref` / `_registry_for` 對 `localhost:6000/...` 的正負案例 | 不碰 live 服務，快，必須全綠 |
 | 契約 | `POST /v1/agents/{id}/versions` 的回應逐欄位吻合 v0.4.1；`/openapi.json` 無 registry 路徑 | 對活服務跑，不用 in-process TestClient |
-| 整合 | build → tag → push `localhost:5000` → 註冊 → `PULL/INSPECT/VALIDATE` → `PUBLISHED` → REST + MCP Run | 真 Docker daemon、真 registry、真 Celery。**mock 不算證據** |
+| 整合 | build → tag → push `localhost:6000` → 註冊 → `PULL/INSPECT/VALIDATE` → `PUBLISHED` → REST + MCP Run | 真 Docker daemon、真 registry、真 Celery。**mock 不算證據** |
 | 安全 | port binding、沙盒連不到 registry（含 IP 直連與 host gateway）、沙盒 env、`api` 無代理路由 | 必須在**真的跑著的沙盒容器內**執行探針 |
 
 ---
@@ -74,13 +74,13 @@
 |---|---|---|---|
 | `Z9-A1` | `compose.yaml` 有第 5 個長駐服務 `registry`，`image: registry:2` | MUST | 以 YAML parse（不是 grep）斷言 `services.registry.image` |
 | `Z9-A2` | `services.registry.networks` **恰等於 `["zentra-net"]`**，不含 `zentra-sandbox-net` | MUST | YAML parse + 執行期 `docker inspect zentra-registry-1` 的 `NetworkSettings.Networks` keys 恰為 `{zentra-net}` |
-| `Z9-A3` | `services.registry.ports` 恰為 `["127.0.0.1:5000:5000"]`；執行期 `docker inspect` 的 `HostConfig.PortBindings["5000/tcp"][0].HostIp == "127.0.0.1"`，且**沒有任何 binding 的 HostIp 是 `0.0.0.0` 或 `::`** | MUST | YAML parse + `docker inspect` |
+| `Z9-A3` | `services.registry.ports` 恰為 `["127.0.0.1:6000:5000"]`；執行期 `docker inspect` 的 `HostConfig.PortBindings["5000/tcp"][0].HostIp == "127.0.0.1"`，且**沒有任何 binding 的 HostIp 是 `0.0.0.0` 或 `::`** | MUST | YAML parse + `docker inspect` |
 | `Z9-A4` | `REGISTRY_STORAGE_DELETE_ENABLED` 設為字串 `"false"`；執行期容器 env 同值 | MUST | YAML parse + `docker inspect` 的 `Config.Env` |
 | `Z9-A5` | volume `registrydata` 存在並掛在 `/var/lib/registry`；**`volumes:` 區塊沒有 `uploads`** | MUST | YAML parse |
 | `Z9-A6` | `api` / `worker` **沒有** `depends_on: registry`（平台不連 registry，加了就是在宣告一個不存在的依賴） | MUST | YAML parse |
 | `Z9-A7` | `registry` 服務**沒有掛 docker.sock**；`api` 仍然沒有掛 docker.sock（未退化） | MUST | YAML parse |
 | `Z9-A8` | 若保留 healthcheck，它必須真的會失敗當 registry 壞掉（用 `registry:2` 裡真的存在的指令）；做不到就**不要 healthcheck**（spec §5.1 明文允許拿掉） | SHOULD | 停掉 registry 行程後觀察 health 狀態轉 `unhealthy`；或確認沒有 healthcheck |
-| `Z9-A9` | `GET http://127.0.0.1:5000/v2/` 回 `200` 且 header 含 `Docker-Distribution-Api-Version: registry/2.0`（**這是唯一可接受的 registry 存活判定**，見 §0） | MUST | live HTTP |
+| `Z9-A9` | `GET http://127.0.0.1:6000/v2/` 回 `200` 且 header 含 `Docker-Distribution-Api-Version: registry/2.0`（**這是唯一可接受的 registry 存活判定**，見 §0） | MUST | live HTTP |
 
 ---
 
@@ -91,18 +91,18 @@
 
 | # | 條件 | 等級 | 驗證方式 |
 |---|---|---|---|
-| `Z9-B1` | **同機 push 主線**：`docker build` → `docker tag localhost:5000/zentra-zen009-accept/demo-echo:1.0.0` → `docker push` 成功，最後一行印出 `digest: sha256:<64 hex>` | MUST | 終端輸出存進報告 |
-| `Z9-B2` | **不需要認證**：push 與 pull 全程沒有 `docker login`；主機 `~/.docker/config.json` 的 `auths` 沒有 `localhost:5000` 這一項（證明沒有偷偷引入憑證） | MUST | 指令輸出 + 讀 config |
-| `Z9-B3` | **不需要改 `daemon.json`**：`insecure-registries` 不含 `localhost:5000`（或該檔根本不存在），push 仍成功 | MUST | 讀 daemon 設定 + push 輸出 |
+| `Z9-B1` | **同機 push 主線**：`docker build` → `docker tag localhost:6000/zentra-zen009-accept/demo-echo:1.0.0` → `docker push` 成功，最後一行印出 `digest: sha256:<64 hex>` | MUST | 終端輸出存進報告 |
+| `Z9-B2` | **不需要認證**：push 與 pull 全程沒有 `docker login`；主機 `~/.docker/config.json` 的 `auths` 沒有 `localhost:6000` 這一項（證明沒有偷偷引入憑證） | MUST | 指令輸出 + 讀 config |
+| `Z9-B3` | **不需要改 `daemon.json`**：`insecure-registries` 不含 `localhost:6000`（或該檔根本不存在），push 仍成功 | MUST | 讀 daemon 設定 + push 輸出 |
 | `Z9-B4` | 以該 digest 註冊 → `202` → 輪詢至 `PUBLISHED`；回應的 `version_id` = manifest digest 前 12 碼，`source_type = OCI_IMAGE`，`artifact.runtime_contract = zentra.image/v1`，`entrypoints` 非空 | MUST | live HTTP |
 | `Z9-B5` | **三方 digest 一致**：`docker push` 印出的 digest ==  `HEAD /v2/zentra-zen009-accept/demo-echo/manifests/1.0.0` 的 `Docker-Content-Digest` == DB `agent_versions.image_digest` == API 回應的 `artifact.digest` | MUST | 三個獨立來源比對，逐字相同 |
-| `Z9-B6` | **`image_ref` 未被改寫**：DB 的 `agent_versions.image_ref` 與 API 回應的 `artifact.image_ref` **逐字元等於**註冊時送出的字串（含 `localhost:5000/` 前綴） | MUST | SQL + live HTTP 對送出字串做 `==` |
+| `Z9-B6` | **`image_ref` 未被改寫**：DB 的 `agent_versions.image_ref` 與 API 回應的 `artifact.image_ref` **逐字元等於**註冊時送出的字串（含 `localhost:6000/` 前綴） | MUST | SQL + live HTTP 對送出字串做 `==` |
 | `Z9-B7` | **三欄 `NOT NULL`**：`information_schema.columns` 中 `agent_versions` 的 `image_ref` / `image_digest` / `version_id` 的 `is_nullable = 'NO'`；且 API 回應在 `BUILDING` / `PUBLISHED` / `FAILED` 三種狀態下這三個值都不是 `null` | MUST | SQL + live HTTP |
 | `Z9-B8` | **prune 後仍能按 digest 重新 pull**（架構師點名，缺這條不算通過）：移除該 image 的**所有**本機參照（tag 與 `<repo>@sha256:` digest ref）→ `docker image inspect` 找不到 → 觸發一次 Run → **Run `SUCCEEDED`** → 事後 `docker image inspect` 的 `RepoDigests` 含有與 DB `image_digest` **完全相同**的 digest | MUST | **終端輸出當證據，不接受口頭宣稱** |
 | `Z9-B9` | **tag 覆寫不影響舊版本**：對 `:1.0.0` push 第二個內容不同的 image（digest 不同）→ 舊 `PUBLISHED` 版本仍能 Run 且輸出仍是舊 image 的行為；舊 manifest 仍可用 `GET /v2/<repo>/manifests/<舊 digest>` 取得 | MUST | live HTTP + Run 結果比對 |
 | `Z9-B10` | **REST 與 MCP 都能呼叫**：`POST /v1/agents/{id}/runs:invoke` 與 `POST /mcp/agents/{id}`（Streamable HTTP，`tools/call`）都成功，輸出結構相同 | MUST | live HTTP |
 | `Z9-B11` | **Run 終態後沙盒不存在**：帶 `zentra.run_id=<id>` label 的容器在有界時間內 inspect 不到 | MUST | `docker ps -a --filter label=` |
-| `Z9-B12` | **內外部 registry 等價**：同一份 image 一次放 `localhost:5000`、一次放外部 registry，兩個版本的 `entrypoints` schema 逐欄位相同、Run 結果相同，DB 的差異**只有 `image_ref` 字串本身**（`image_digest` 若 manifest 相同亦應相同；不同則要能解釋） | MUST | 兩版本 DB 列 diff |
+| `Z9-B12` | **內外部 registry 等價**：同一份 image 一次放 `localhost:6000`、一次放外部 registry，兩個版本的 `entrypoints` schema 逐欄位相同、Run 結果相同，DB 的差異**只有 `image_ref` 字串本身**（`image_digest` 若 manifest 相同亦應相同；不同則要能解釋） | MUST | 兩版本 DB 列 diff |
 | `Z9-B13` | 註冊一個 registry 裡**不存在**的 digest → 終態 `FAILED`，`error.code = BUILD_FAILED`，`details.stage = PULL`，message 可行動（指出 pull 不到該 digest，不是裸堆疊） | MUST | live HTTP |
 
 ---
@@ -115,11 +115,11 @@
 |---|---|---|---|
 | `Z9-C1` | 沙盒內連 `registry:5000`（服務名）→ 失敗 | MUST | 沙盒內 `socket.create_connection`，斷言 BLOCKED |
 | `Z9-C2` | **沙盒內以 registry 容器在 `zentra-net` 上的 IP 直連 `<ip>:5000` → 失敗**。（名稱解析失敗不算隔離 —— 這條才是真正的斷言，照 ZEN-008 `test_sandbox_cannot_reach_the_data_layer_by_ip_either` 的做法） | MUST | 先 `docker inspect zentra-registry-1` 取 IP，再在沙盒內連 |
-| `Z9-C3` | 沙盒內連主機 loopback `127.0.0.1:5000` 與 `localhost:5000` → 失敗（這兩條是沙盒自己的 loopback，**單獨成立不算證據**，必須與 C2、C4 一起看） | MUST | 沙盒內探針 |
+| `Z9-C3` | 沙盒內連主機 loopback `127.0.0.1:6000` 與 `localhost:6000` → 失敗（這兩條是沙盒自己的 loopback，**單獨成立不算證據**，必須與 C2、C4 一起看） | MUST | 沙盒內探針 |
 | `Z9-C4` | **沙盒內連 host gateway 的 `:5000` → 失敗**：取 docker bridge gateway IP 與 `host.docker.internal`，兩者都要 BLOCKED。（registry 發布在主機 port 上，這是最現實的一條逃逸路徑） | MUST | 沙盒內探針 |
 | `Z9-C5` | **反向斷言**：同一個沙盒內連 `api` 的 `/internal/runs/<run>/bootstrap` → `200`。漏了這條，上面四條「都連不到」可能只是容器沒有網路 | MUST | 沙盒內 `urllib.request` |
 | `Z9-C6` | 沙盒容器的 `NetworkSettings.Networks` 恰為 `{zentra-sandbox-net}`；`zentra-sandbox-net` 的 `Internal` 仍為 `true`（未退化） | MUST | `docker inspect` + `docker network inspect` |
-| `Z9-C7` | 沙盒 env 的 `ZENTRA_*` **恰為契約的三個**，且整個 env blob 不含 `5000`、`registry`、`localhost:5000`、任何憑證字樣 | MUST | 沙盒內 `os.environ` + `docker inspect` 的 `Config.Env` 雙向檢查 |
+| `Z9-C7` | 沙盒 env 的 `ZENTRA_*` **恰為契約的三個**，且整個 env blob 不含 `5000`、`registry`、`localhost:6000`、任何憑證字樣 | MUST | 沙盒內 `os.environ` + `docker inspect` 的 `Config.Env` 雙向檢查 |
 | `Z9-C8` | validation 容器（`q.build` 的 VALIDATE 階段）同樣不含任何 Registry 位址或憑證 | MUST | validation 容器 inspect |
 | `Z9-C9` | `api` 未掛 docker.sock；`registry` 未掛 docker.sock；只有 `worker` 掛（未退化） | MUST | YAML parse + `docker inspect` 的 `Mounts` |
 | `Z9-C10` | PostgreSQL 內沒有 image blob、沒有 Registry 憑證：`agent_versions` 無 `bytea`/大型 blob 欄位，全表資料不含 `password` / `identitytoken` / `registrytoken` / `auth` 字樣 | MUST | SQL |
@@ -134,8 +134,8 @@
 
 | # | 條件 | 等級 | 驗證方式 |
 |---|---|---|---|
-| `Z9-D1` | 全文檢索 `apps/api/**`：不得出現對 registry 的 HTTP 呼叫。禁止樣式：`:5000`、`/v2/_catalog`、`/v2/` 作為 request path、`registry:5000`、`localhost:5000` 出現在任何 URL 組裝或 http client 呼叫裡 | MUST | 靜態檢索 + 人工判讀命中（註解與文件字串要分辨出來，**但不得因為「只是註解」就放過 URL 常數**） |
-| `Z9-D2` | 全文檢索 `apps/console/**`：任何 `fetch` / `XMLHttpRequest` / `<a href>` / `<img src>` 的目標都不得是 registry。`localhost:5000` **只允許以純文字出現在說明區塊**，且必須是 `textContent` 寫入，不得出現在可點擊的屬性裡 | MUST | 靜態檢索 + 瀏覽器實跑攔截網路請求，確認 `:5000` 請求數 = 0 |
+| `Z9-D1` | 全文檢索 `apps/api/**`：不得出現對 registry 的 HTTP 呼叫。禁止樣式：`:5000`、`/v2/_catalog`、`/v2/` 作為 request path、`registry:5000`、`localhost:6000` 出現在任何 URL 組裝或 http client 呼叫裡 | MUST | 靜態檢索 + 人工判讀命中（註解與文件字串要分辨出來，**但不得因為「只是註解」就放過 URL 常數**） |
+| `Z9-D2` | 全文檢索 `apps/console/**`：任何 `fetch` / `XMLHttpRequest` / `<a href>` / `<img src>` 的目標都不得是 registry。`localhost:6000` **只允許以純文字出現在說明區塊**，且必須是 `textContent` 寫入，不得出現在可點擊的屬性裡 | MUST | 靜態檢索 + 瀏覽器實跑攔截網路請求，確認 `:5000` 請求數 = 0 |
 | `Z9-D3` | `GET /openapi.json`：path 集合不含任何 `/v2`、`registry`、`catalog` 字樣；整份 JSON 不含 `:5000` | MUST | live HTTP |
 | `Z9-D4` | MCP `tools/list` 的 tool schema 不含任何 registry 相關 tool | MUST | live MCP |
 | `Z9-D5` | `apps/worker/**` 不得有連 registry 的程式碼（pull 由主機 daemon 做，不是 worker 自己發 HTTP） | MUST | 靜態檢索 |
@@ -164,11 +164,11 @@
 
 | # | 條件 | 等級 | 驗證方式 |
 |---|---|---|---|
-| `Z9-F1` | **否定案例（最重要）**：`localhost:5000/alpine` **不得**被正規化成 `alpine` 或 `docker.io/alpine` 或 `docker.io/library/alpine`。任何實作只要讓這三者比對成功，就是嚴重 bug | MUST | 單元：對正規化/比對函式直接斷言不相等 |
-| `Z9-F2` | `_registry_for("localhost:5000/x")` 必須回 `localhost:5000`（第一段含 `:` → 是 registry host，原樣保留）；`_registry_for("localhost/x")` 回 `localhost` | MUST | 單元 |
-| `Z9-F3` | **正規化只能是「比較時」的操作**：註冊 `localhost:5000/<repo>@sha256:…` 後，DB 的 `image_ref` 與 API 回應逐字元等於送出值（與 `Z9-B6` 同一條不變式，從兩個角度釘） | MUST | SQL + live HTTP |
+| `Z9-F1` | **否定案例（最重要）**：`localhost:6000/alpine` **不得**被正規化成 `alpine` 或 `docker.io/alpine` 或 `docker.io/library/alpine`。任何實作只要讓這三者比對成功，就是嚴重 bug | MUST | 單元：對正規化/比對函式直接斷言不相等 |
+| `Z9-F2` | `_registry_for("localhost:6000/x")` 必須回 `localhost:6000`（第一段含 `:` → 是 registry host，原樣保留）；`_registry_for("localhost/x")` 回 `localhost` | MUST | 單元 |
+| `Z9-F3` | **正規化只能是「比較時」的操作**：註冊 `localhost:6000/<repo>@sha256:…` 後，DB 的 `image_ref` 與 API 回應逐字元等於送出值（與 `Z9-B6` 同一條不變式，從兩個角度釘） | MUST | SQL + live HTTP |
 | `Z9-F4` | 正面案例：`docker.io/library/alpine` ≡ `docker.io/alpine` ≡ `alpine`。**在 @platform-eng 修好 Docker Hub 缺陷之前標 `skipped` 並註明原因，不得標 `passed`** | MUST（可 skip，需註明） | 單元 + 整合 |
-| `Z9-F5` | 放寬後仍必須拒絕：tag-only reference（`localhost:5000/x:1.0.0`）、非 64 hex digest、非 `sha256:` 前綴、同時帶 tag 與 digest → 一律 `422 VALIDATION_ERROR`，DB 無版本列 | MUST | 單元 + live HTTP |
+| `Z9-F5` | 放寬後仍必須拒絕：tag-only reference（`localhost:6000/x:1.0.0`）、非 64 hex digest、非 `sha256:` 前綴、同時帶 tag 與 digest → 一律 `422 VALIDATION_ERROR`，DB 無版本列 | MUST | 單元 + live HTTP |
 | `Z9-F6` | **正規化必須是獨立於憑證查找的函式**：憑證 key（`_registry_for`，回 Docker 的 auth key）與比較用正規化（`_normalized_repository` / `_comparison_key`）是兩件事，不得混用。`_registry_for("alpine")` 回 `https://index.docker.io/v1/` 而 `_registry_for("docker.io/library/alpine")` 回 `docker.io` 是**憑證 key 的既有慣例**，不是比較用的值 | SHOULD | 單元 |
 
 > **本輪發現（2026-09-23，寫驗收條件時看到的）**：工作區裡有一份**尚未 commit** 的
@@ -191,9 +191,9 @@
 | `Z9-G3` | 維運說明含手動 GC 程序（停機 → 暫時開 delete → `registry garbage-collect` → 關回去）與 catalog ↔ DB 對照程序 | MUST | 文件檢索 |
 | `Z9-G4` | 維運說明含「容量是維運者的責任；磁碟滿了平台沒有任何訊號」 | MUST | 文件檢索 |
 | `Z9-G5` | 維運說明含四步發布流程與 **「只能在跑 Zentra 的那台主機上執行」** | MUST | 文件檢索 |
-| `Z9-G6` | 維運說明含 macOS AirPlay Receiver 佔用 5000 的處置（§0 P-0 已實測會擋住啟動） | MUST | 文件檢索 |
+| `Z9-G6` | 維運說明說明「主機端為何是 6000 而非 5000」、容器內仍是 5000、以及判活只認 `Docker-Distribution-Api-Version` header | MUST | 文件檢索 |
 | `Z9-G7` | **腳本護欄**：repo 內不得存在任何會執行 `garbage-collect --delete-untagged` 的腳本／Makefile／compose command | MUST | 全 repo 檢索，零命中 |
-| `Z9-G8` | Console 說明區塊：四步指令、「只能在平台主機上執行」、「`localhost:5000` 是平台內部位址，不是別台機器 pull 得到的位址」、外部 vs 內部 registry 一行說明；**全部以 `textContent` 寫入**（無 `innerHTML`） | MUST | 靜態檢索 + 瀏覽器 DOM 檢查 |
+| `Z9-G8` | Console 說明區塊：四步指令、「只能在平台主機上執行」、「`localhost:6000` 是平台內部位址，不是別台機器 pull 得到的位址」、外部 vs 內部 registry 一行說明；**全部以 `textContent` 寫入**（無 `innerHTML`） | MUST | 靜態檢索 + 瀏覽器 DOM 檢查 |
 
 ---
 
@@ -248,12 +248,12 @@ compose 起來的容器叫 `zentra-registry-1`，名字對不上 → **112 條�
 
 1. `require_registry()` 改成 **HTTP 探測**：`GET $ZENTRA_TEST_REGISTRY/v2/` 回 `200`
    **且** header 含 `Docker-Distribution-Api-Version: registry/2.0`。
-   **不可以只看連得上** —— §0 已實測 macOS AirPlay 在 5000 回 403，會騙過任何寬鬆探測。
+   **不可以只看連得上** —— §0 已實測 macOS AirPlay 在 5000 回 403，會騙過任何寬鬆探測。同理適用 6000。
 2. 執行時設 `ZENTRA_TEST_REGISTRY`（`images.REGISTRY` 已支援這個 env，預設 `localhost:5010`）。
 
 ### 11.3 建議（**不要把 ZEN-008 的 fixture 推進產品 registry**）
 
-**結論：併「跑」，不併「判」；而且 ZEN-008 繼續用可丟棄的測試 registry，不要指向 `localhost:5000`。**
+**結論：併「跑」，不併「判」；而且 ZEN-008 繼續用可丟棄的測試 registry，不要指向 `localhost:6000`。**
 
 不指向產品 registry 的三個理由：
 
@@ -275,7 +275,7 @@ compose 起來的容器叫 `zentra-registry-1`，名字對不上 → **112 條�
 - ZEN-008 繼續用一個**可丟棄**的 registry 容器（現有的 `zentra-qa-registry:5010` 就可以，
   或 compose registry 上線後另起一個 `:5010`），只把 `require_registry()` 換成 §11.2 的 HTTP 探測。
   這樣 112 條立刻可跑，且零污染。
-- ZEN-009 自己的 §4 主線**必須**打產品 registry（`localhost:5000`），
+- ZEN-009 自己的 §4 主線**必須**打產品 registry（`localhost:6000`），
   但只用 `zentra-zen009-accept/*` 這一組 repository 名，並在交接單明列
   「驗收在 `registrydata` 留下了哪幾個 repository」，交給維運者決定要不要走 GC 程序。
 - **同一輪跑、分開裁定**：環境（Docker、socat、base_url、registry）搭一次兩邊共用，
@@ -294,7 +294,7 @@ compose 起來的容器叫 `zentra-registry-1`，名字對不上 → **112 條�
 |---|---|
 | L2 核心隔離 / gVisor / 沙盒與平台的實體隔離 | ADR-0005 明定不在 MVP。**這不是缺陷，是已知取捨。** 四層 Docker 隔離通過 ≠ 防得住核心層逃逸 |
 | 遠端 `DOCKER_HOST` 部署下的行為 | spec §8 明列不在 MVP 範圍（會 push 成功、pull 失敗） |
-| 從**第二台實體機器**連 `127.0.0.1:5000` | 驗收機只有一台。以「本機非 loopback IP + `docker inspect` HostIp」兩條合併替代，並在報告註明是替代證據 |
+| 從**第二台實體機器**連 `127.0.0.1:6000` | 驗收機只有一台。以「本機非 loopback IP + `docker inspect` HostIp」兩條合併替代，並在報告註明是替代證據 |
 | Registry 磁碟滿掉的行為 | 需要把卷灌滿，代價高於價值；ADR-0009 已裁定「平台不會有任何訊號」是**設計**而非缺陷 |
 | Registry 的 TLS / 認證 | 明確不做（ADR-0009 R2-1 硬規則 3）。**若有人提議開 `0.0.0.0` 或加遠端 push，QA 要擋下來並開 `SPEC-QUESTION`** |
 | 內部 Registry 的併發 push / 負載 | 單機單使用者，`docker push` 是 CLI 行為，不在平台路徑上 |
@@ -304,12 +304,12 @@ compose 起來的容器叫 `zentra-registry-1`，名字對不上 → **112 條�
 ## 13. 重跑方式
 
 ```bash
-# 0) 前置：關掉 macOS AirPlay Receiver（否則 registry 起不來，見 §0 P-0）
+# 0) 前置：確認主機端 6000 沒有別的服務佔用（見 §0 P-0）
 lsof -nP -iTCP:5000 -sTCP:LISTEN          # 必須是空的，或只有 com.docker
 
 # 1) 起服務
 docker compose up -d
-curl -sI http://127.0.0.1:5000/v2/ | grep -i docker-distribution-api-version   # 必須有這行
+curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version   # 必須有這行
 
 # 2) DB 斷言需要 socat 代理（主機原生 Postgres 佔住 5432），跑完刪掉
 docker run -d --name zentra-qa-pg-proxy --network zentra-net -p 127.0.0.1:15432:15432 \
@@ -319,7 +319,7 @@ docker run -d --name zentra-qa-pg-proxy --network zentra-net -p 127.0.0.1:15432:
 PYTHONPATH=. \
 ZENTRA_TEST_BASE_URL=http://127.0.0.1:8000 \
 ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@127.0.0.1:15432/zentra \
-ZENTRA_TEST_REGISTRY=localhost:5000 \
+ZENTRA_TEST_REGISTRY=localhost:6000 \
   /private/tmp/zentra-backend-venv/bin/pytest tests/zen009 -v -rs
 
 # 4) ZEN-008 回歸（不得退化）——注意指向**可丟棄**的 registry，理由見 §11.3

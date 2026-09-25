@@ -12,12 +12,12 @@
 > ⚠️ **SPEC `v0.4.0`（[ADR-0009](../../specs/adr/ADR-0009-internal-registry-image-upload.md)）新增了第 5 個長駐服務
 > `registry`（內部 OCI Registry）。**
 > 本文中所有「4 個長駐服務」的敘述請讀成 **5 個**（postgres · redis · **registry** · api · worker）。
-> `registry` 只掛 `zentra-net`、只發布 `127.0.0.1:5000`，**絕不接 `zentra-sandbox-net`**，
+> `registry` 只掛 `zentra-net`、只發布 `127.0.0.1:6000`，**絕不接 `zentra-sandbox-net`**，
 > 沙盒的網路對端仍然只有 `api` 一個。本文其餘圖示尚未重畫。
 >
 > ⚠️ **SPEC `v0.4.1`（ADR-0009 修訂 R2）改變了 `registry` 的用途**：
 > 「上傳 image tar」**已撤回**，改為使用者**在平台主機上**直接
-> `docker push localhost:5000/<repo>:<tag>`，再用既有的 JSON 端點以 digest 註冊。
+> `docker push localhost:6000/<repo>:<tag>`，再用既有的 JSON 端點以 digest 註冊。
 > 因此 `api` 與 `worker` **完全不在 push 路徑上**，也不連 `registry`
 > （registry 的 client 只有主機 daemon 與使用者 CLI）。
 > 另新增一條硬規則：**平台不得代理、轉發、嵌入或連結任何 Registry HTTP 端點**——

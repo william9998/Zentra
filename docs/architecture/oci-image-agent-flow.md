@@ -40,15 +40,15 @@ flowchart LR
     subgraph HOST["跑 compose 的那台主機（唯一可以 push 的地方）"]
         DEV["使用者 CLI
 docker tag / docker push"] -->|"docker push
-localhost:5000/<repo>:<semver>"| D["Docker daemon"]
+localhost:6000/<repo>:<semver>"| D["Docker daemon"]
         D -->|"HTTP，無 TLS 無認證
-127.0.0.1:5000"| REG[("內部 Registry
+127.0.0.1:6000"| REG[("內部 Registry
 registry:2
 zentra-net only
 delete.enabled=false")]
         REG -->|"manifest digest"| DEV
     end
-    DEV -->|"POST semver + localhost:5000/<repo>@sha256:…
+    DEV -->|"POST semver + localhost:6000/<repo>@sha256:…
 （既有 JSON 端點，零改動）"| API["Zentra api"]
     API --> PG[("PostgreSQL
 image_ref / image_digest / version_id
@@ -66,7 +66,7 @@ manifest + entrypoints"| API
 
 1. **平台不在 push 路徑上。** `docker push` 發生在使用者 CLI 與主機 daemon 之間，
    `api` 與 `worker` 看不到它。因此容量、清理、備份是**維運者的責任**，平台不做預檢也沒有訊號。
-2. **loopback 綁定就是存取控制。** `127.0.0.1:5000` 表示只有該主機上的行程連得到 ——
+2. **loopback 綁定就是存取控制。** `127.0.0.1:6000` 表示只有該主機上的行程連得到 ——
    「只限同機 push」不是文件規定，是網路事實。**綁 `0.0.0.0` 需新 ADR，且必須先解決 TLS 與認證。**
 3. **沒有任何平台服務會連 registry。** client 只有主機 daemon 與使用者 CLI。
    `api` / `worker` 不需要 `depends_on: registry`。

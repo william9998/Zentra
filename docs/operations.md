@@ -16,23 +16,34 @@
 
 | | |
 |---|---|
-| 綁定 | `127.0.0.1:5000` —— **只限同機**，這不是文件規定，是網路事實 |
+| 綁定 | `127.0.0.1:6000` —— **只限同機**，這不是文件規定，是網路事實 |
 | TLS / 認證 | **沒有**。在只限同機的前提下它們買不到任何東西 |
 | 刪除 | `REGISTRY_STORAGE_DELETE_ENABLED=false` 寫死，**連誤刪都做不到** |
 | 資料 | named volume `registrydata` → `/var/lib/registry` |
 | 誰會連它 | 只有主機的 Docker daemon（pull）與使用者的 CLI（push）。**沒有任何平台服務會連它** |
 
-### macOS：port 5000 會被 AirPlay 佔走
+### 為什麼主機端是 6000，不是 registry 慣用的 5000
 
-`ControlCenter` 的 AirPlay Receiver 預設在 `*:5000` 聽，會蓋掉 registry。症狀是
-`curl localhost:5000/v2/` 回 `403` 且 header 是 `Server: AirTunes/...`：
+macOS 的 AirPlay Receiver（`ControlCenter`）預設 LISTEN 在 `*:5000`，會蓋掉 registry ——
+症狀是 `curl localhost:5000/v2/` 回 `403` 且 header 是 `Server: AirTunes/...`。
+使用者不想關掉 AirPlay 投影，所以主機端改用 6000（ADR-0009 R3）。
 
+**容器內仍然是 5000。** 換的只有 compose 的映射左側，
+`zentra-net` 內部的 `registry:5000` 不受影響。
+
+**port 仍然寫死，沒有做成設定項。** 做成設定項就需要一個端點讓 Console 知道實際值，
+那是為一個環境細節新增 API 表面。要再換一次就是再改一次常數 —— 但**換之前先看 §2**：
+port 會變成已註冊 `image_ref` 的一部分存進 DB，換掉之後那些版本就拉不到了。
+
+### 判斷 registry 活著的唯一方法
+
+**不可以只看「連得上」。** 別的服務也可能在那個 port 回應（AirPlay 就會回 403）。
+唯一可接受的判定是這個 header：
+
+```bash
+curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
+# Docker-Distribution-Api-Version: registry/2.0
 ```
-系統設定 → 一般 → AirDrop 與 Handoff → AirPlay 接收器 → 關閉
-```
-
-**port 刻意不做成設定項。** 做成設定項就需要一個端點讓 Console 知道實際值，
-那是為一個環境細節新增 API 表面。
 
 ---
 
@@ -72,7 +83,7 @@ docker run --rm -v zentra_pgdata:/data -v "$PWD:/out" alpine \
 
 ```bash
 # 1. 列出 registry 裡有什麼
-curl -s http://localhost:5000/v2/_catalog | jq -r '.repositories[]'
+curl -s http://localhost:6000/v2/_catalog | jq -r '.repositories[]'
 
 # 2. 列出 DB 裡還在用的 digest
 docker compose exec -T postgres psql -U zentra -d zentra -At -c \
@@ -121,8 +132,8 @@ docker compose up -d registry
 
 | 情況 | 為什麼 |
 |---|---|
-| 要從遠端主機 push | TLS 與認證從「不成立」變成前置條件，**必須先解決才能開 `0.0.0.0`**，順序不可顛倒。而且 `localhost:5000` 這個已寫進 DB 的名字會失效，是一次痛苦的遷移 |
+| 要從遠端主機 push | TLS 與認證從「不成立」變成前置條件，**必須先解決才能開 `0.0.0.0`**，順序不可顛倒。而且 `localhost:6000` 這個已寫進 DB 的名字會失效，是一次痛苦的遷移 |
 | 出現第二個租戶 | 無認證的 Registry 沒有租戶隔離，任何能碰主機的人都能覆寫任何 tag |
 | 要跑不可信的 image | 沒有簽章、沒有掃描、`docker.sock` 等同 root。回去讀 [ADR-0001](../specs/adr/ADR-0001-sandbox-isolation.md) |
 | 垃圾成長到受不了 | **先做「版本刪除」這個產品功能，再做 GC。** 順序不可顛倒 |
-| 使用者開始用遠端 `DOCKER_HOST` | `localhost:5000` 會指向錯的機器，push 成功、pull 失敗。那已經不是單機部署了 |
+| 使用者開始用遠端 `DOCKER_HOST` | `localhost:6000` 會指向錯的機器，push 成功、pull 失敗。那已經不是單機部署了 |

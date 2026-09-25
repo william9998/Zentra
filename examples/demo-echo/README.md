@@ -24,23 +24,23 @@ image 不可變、不重傳，發布後也不會因為有人動了 tag 而換掉
 
 ## 跑一次
 
-### 1. 準備一個 registry
+### 1. registry 已經在 compose 裡了
 
-正式環境用你自己的（Docker Hub、GHCR、企業 registry）。本機試用起一個就好：
+`docker compose up -d` 會帶起內部 Registry，位址 `localhost:6000`（ZEN-009 / ADR-0009）。
+不用自己起，也不用處理憑證 —— Docker 對 `localhost` 開頭的 registry 預設允許不走 TLS。
 
-```bash
-docker run -d --name zentra-registry -p 5010:5000 registry:2
-```
+外部 Registry（Docker Hub、GHCR、企業 registry）**一樣可以用**，在 API 上是同一件事。
 
-`localhost` 開頭的 registry Docker 預設允許不走 TLS，所以本機不用處理憑證。
+> 主機端是 **6000** 不是 5000，因為 macOS 的 AirPlay Receiver 佔著 `*:5000`。
+> 容器內仍是 5000，換的只有主機端。
 
 ### 2. build 並 push
 
 **build context 是 repo 根目錄**（Dockerfile 要複製 `packages/sdk`）：
 
 ```bash
-docker build -f examples/demo-echo/Dockerfile -t localhost:5010/demo-echo:1.0.0 .
-docker push localhost:5010/demo-echo:1.0.0
+docker build -f examples/demo-echo/Dockerfile -t localhost:6000/demo-echo:1.0.0 .
+docker push localhost:6000/demo-echo:1.0.0
 ```
 
 push 的輸出會給你 digest，長這樣：
@@ -54,7 +54,7 @@ push 的輸出會給你 digest，長這樣：
 ### 3. 建立 Agent 並註冊版本
 
 Console：`http://localhost:8000/console/agents` → 建立 Agent → 註冊新版本，
-填 semver 與 `localhost:5010/demo-echo@sha256:...`。
+填 semver 與 `localhost:6000/demo-echo@sha256:...`。
 
 或用 API：
 
@@ -65,7 +65,7 @@ AID=$(curl -s -X POST http://localhost:8000/v1/agents \
 
 curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" \
   -H 'Content-Type: application/json' \
-  -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:5010/demo-echo@sha256:...\"}"
+  -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:6000/demo-echo@sha256:...\"}"
 ```
 
 回應是 `BUILDING`。平台會非同步 pull image、在**一個隔離的一次性沙盒**裡跑
@@ -143,6 +143,20 @@ ModuleNotFoundError: No module named 'jsonschema'
 node 的開始/結束事件就是這樣來的。你 compile 過了，Run 觀測頁就沒有事件可看。
 
 ---
+
+## 更短的寫法：從 base image 開始
+
+這個目錄的 `Dockerfile` 把契約要求的每一項都攤開寫，是為了讓你看到平台到底要什麼。
+實際要寫自己的 Agent 時，用官方 base image 就好 —— 它已經備好 SDK、依賴、label、uid：
+
+```dockerfile
+FROM zentra/agent-base:1.0
+COPY agent.py /opt/zentra/app/agent.py
+```
+
+```bash
+docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .   # 一次就好
+```
 
 ## 這個 image 裡有什麼
 

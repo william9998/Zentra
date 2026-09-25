@@ -132,9 +132,14 @@ Two things compose does **not** do for you:
   `zentra/agent-base:1.0` is the base your own agent images build `FROM`.
 - **Migrations.** Nothing runs Alembic at startup.
 
-**On macOS, turn off AirPlay Receiver first** (System Settings → General → AirDrop & Handoff). It
-listens on port 5000 and shadows the registry; the symptom is `curl localhost:5000/v2/` returning 403
-with a `Server: AirTunes/...` header.
+The registry publishes on **host port 6000**, not the 5000 registries usually take: macOS runs AirPlay
+Receiver on `*:5000`, which shadows it. Inside the container it is still 5000 — only the host side moved
+([ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md) R3). Check it with the header, not just
+reachability, since anything else on that port would also answer:
+
+```bash
+curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
+```
 
 Both networks — including the internal-only `zentra-sandbox-net` — are declared in `compose.yaml`, so no
 `docker network create` is needed. `.env` is optional; nothing in the current scope requires a secret.
@@ -295,9 +300,16 @@ compose **不會**幫你做兩件事：**兩個映像**（worker 每個 Run 開�
 `zentra/agent-base:1.0` 則是你自己的 agent image 的基底），
 以及 **migration**（啟動時不會自動跑）。
 
-**macOS 要先關掉 AirPlay 接收器**（系統設定 → 一般 → AirDrop 與 Handoff）。
-它在 port 5000 聽，會蓋掉 registry；症狀是 `curl localhost:5000/v2/` 回 403 且 header 是
-`Server: AirTunes/...`。維運細節見 [`docs/operations.md`](docs/operations.md)。
+Registry 發布在**主機 port 6000**，不是 registry 慣用的 5000：macOS 的 AirPlay Receiver
+在 `*:5000` 聽，會蓋掉它。容器內仍是 5000，換的只有主機端
+（[ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md) R3）。
+確認要看 header 而不是「連得上」——別的服務也會回應：
+
+```bash
+curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
+```
+
+維運細節見 [`docs/operations.md`](docs/operations.md)。
 
 兩個網段（含 internal 的 `zentra-sandbox-net`）都寫在 `compose.yaml` 裡，不用手動 `docker network create`。
 `.env` 是選用的。Console 的靜態檔包在 api 映像裡，所以**改前端要 `docker compose up -d --build api`** 才看得到。
