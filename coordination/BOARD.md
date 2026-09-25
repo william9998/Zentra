@@ -113,6 +113,7 @@
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @builder | ZEN-008 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @architect（UI 契約）→ @builder | ZEN-004 + ZEN-008 | — |
 | **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:6000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `REVIEW` | @builder（主體，已交付）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
+| ZEN-010 | **退休 ZEN-000 內建 fixture**：移除 `builtin-echo` 與 `agent-runtime` 這條特例路徑，讓 Run 只剩「跑 agent 自己的 image」一條 | `BACKLOG` | @builder；@reviewer 驗收 | ZEN-009 驗收完 | 見下方說明 |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
 >
 > ---
@@ -142,6 +143,29 @@
 >
 > **為什麼現在才發現**：這幾條測試先前卡在 `require_registry()` 而被 skip。
 > 主 session 手動起了測試 registry 後才執行到——**skipped 不等於通過**，這是實例。
+
+> **ZEN-010 的由來（2026-09-25，使用者提問後盤點）**
+>
+> ZEN-008 之後，每個 Run 跑的是 **agent 自己的 image**（`version.image_ref` 的 digest）。
+> `zentra/agent-runtime:dev` 只剩下一個用途：服務 ZEN-000 seed 進 DB 的 `builtin-echo` fixture。
+> [`apps/worker/tasks/run.py:251`](../apps/worker/tasks/run.py) 那個 `if` 是唯一的分歧點。
+>
+> **不是刪幾行就好，所以獨立成任務**。實測依賴：
+>
+> | 依賴 | 數量 |
+> |---|---|
+> | `scripts/verify-zen000.sh` | 整支跑的就是它（`AGENT=01930000-…`）。移除後要改寫成 build/push/註冊一個真 agent |
+> | 測試檔 | 9 個檔、37 處引用（`tests/zen000` 6、`tests/zen006a` 2、`tests/zen008` 1） |
+> | migration | fixture 由 `0004` seed，要寫 `0005` 刪掉那兩列 |
+> | compose | `SANDBOX_IMAGE` env 與 `docker/agent-runtime.Dockerfile` |
+>
+> **前置**：ZEN-000 目前仍是 `REVIEW`，ZEN-009 也還沒驗收。在這兩件事定案前不要動，
+> 否則會把還在被引用的驗收證據抽掉。
+>
+> 改寫後的冒煙測試**會更誠實**（測的是真實路徑而非特例），代價是從一分鐘的 curl 腳本
+> 變成需要 build image 與 registry 在線。
+>
+> 已在 README 標明「那行 build 只有要跑冒煙測試才需要」，使用者不會再被它絆到。
 
 > **ZEN-009 實作已交付（2026-09-24，主 session）：狀態 `REVIEW`，未裁定 `DONE`。**
 >

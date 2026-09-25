@@ -87,11 +87,12 @@ uv run celery -A apps.worker.celery_app worker -Q q.run,q.build -l info
 uv run alembic upgrade head
 uv run pytest                   # 平常只跑受影響的 suite：uv run pytest tests/zen008
 
-# 沙盒映像（共用一份，不是 per-agent build）
-docker build -t zentra/agent-runtime:1.0 -f docker/agent-runtime.Dockerfile .
-
 # Agent base image（使用者的 agent image 以此為基底，ADR-0009）
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
+
+# ZEN-000 內建 fixture 的映像。每個 Run 跑的是 agent 自己的 image，不是這個；
+# 它只服務 builtin-echo，也就是 verify-zen000.sh 跑的對象。tag 必須是 :dev（compose 的 SANDBOX_IMAGE）。
+docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
 
 # 前端：沒有指令。沒有 dev server、沒有建置、沒有 node_modules。
 # 改 apps/console/**.html|.css|.js → 重新整理瀏覽器。

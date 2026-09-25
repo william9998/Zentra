@@ -117,18 +117,28 @@ Local and production are the same `docker compose` stack — there is no separat
 
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
-docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 docker compose exec api alembic upgrade head
 ```
 
 Two things compose does **not** do for you:
 
-- **The images.** The worker creates one container per Run from `zentra/agent-runtime:dev`
-  (`SANDBOX_IMAGE`), which is why it is built separately — rebuild it after any change under
-  `apps/sandbox/runtime/` or `packages/sdk/`, or Runs keep using the old code.
-  `zentra/agent-base:1.0` is the base your own agent images build `FROM`.
+- **The base image.** `zentra/agent-base:1.0` is what your own agent images build `FROM`. It belongs to
+  no compose service — nothing runs it — so compose has no place to build it from. Rebuild it after a
+  change under `packages/sdk/`; images already published are unaffected, since their contents are frozen.
 - **Migrations.** Nothing runs Alembic at startup.
+
+A **Run uses the agent's own image**, pulled by the digest registered for that version. There is no
+shared runtime container in that path. The one exception is the built-in `builtin-echo` fixture left over
+from ZEN-000, which still runs from `zentra/agent-runtime:dev` (`SANDBOX_IMAGE`) and is what the smoke
+test below exercises. Build it only if you intend to run that script:
+
+```bash
+docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+```
+
+Retiring that fixture is [tracked on the board](coordination/BOARD.md); it is load-bearing for the smoke
+test and nine test files, so it is a task of its own rather than a deletion.
 
 The registry publishes on **host port 6000**, not the 5000 registries usually take: macOS runs AirPlay
 Receiver on `*:5000`, which shadows it. Inside the container it is still 5000 — only the host side moved
@@ -450,7 +460,6 @@ Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)。
 
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
-docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 docker compose exec api alembic upgrade head
 
@@ -458,10 +467,23 @@ curl -s localhost:8000/healthz                   # {"status":"ok"}
 open http://localhost:8000/console/agents        # Console
 ```
 
-compose **不會**幫你做兩件事：**兩個映像**（worker 每個 Run 開一個 `zentra/agent-runtime:dev` 容器，
-改過 `apps/sandbox/runtime/` 或 `packages/sdk/` 就要重 build，否則 Run 還在跑舊的程式碼；
-`zentra/agent-base:1.0` 則是你自己的 agent image 的基底），
-以及 **migration**（啟動時不會自動跑）。
+compose **不會**幫你做兩件事：
+
+- **Base image。** `zentra/agent-base:1.0` 是你自己的 agent image 的 `FROM`。
+  它不屬於任何 compose 服務（沒有東西會「跑」它），所以 compose 沒有地方可以 build 它。
+  改過 `packages/sdk/` 就重 build 一次；已經發布的 image 不受影響，它們的內容早就凍住了。
+- **migration。** 啟動時不會自動跑。
+
+**每個 Run 用的是 agent 自己的 image**，依該版本註冊的 digest 拉下來，這條路徑上沒有共用的 runtime 容器。
+唯一的例外是 ZEN-000 留下的內建 fixture `builtin-echo`，它仍然跑 `zentra/agent-runtime:dev`
+（`SANDBOX_IMAGE`），也就是下面那支冒煙測試跑的對象。**只有要跑那支腳本才需要 build 它**：
+
+```bash
+docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+```
+
+退休這個 fixture 已[記在 BOARD](coordination/BOARD.md)：它是冒煙測試與 9 個測試檔的承重結構，
+是一個獨立任務，不是刪幾行就好。
 
 Registry 發布在**主機 port 6000**，不是 registry 慣用的 5000：macOS 的 AirPlay Receiver
 在 `*:5000` 聽，會蓋掉它。容器內仍是 5000，換的只有主機端
