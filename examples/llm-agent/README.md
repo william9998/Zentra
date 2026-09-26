@@ -34,6 +34,28 @@ ZENTRA_LLM_DEFAULT_MODEL=gpt-4o-mini              # 預設值
 
 **不要**把它加進 `compose.yaml` 裡 `worker` 的 `environment`。那會讓金鑰有機會進沙盒。
 
+### 或者：這個 Agent 用自己的金鑰
+
+不想全部 Agent 共用一把的話，可以幫單一 Agent 註冊專屬憑證（ZEN-012）：
+
+```bash
+curl -X PUT "http://localhost:8000/v1/agents/$AID/llm-credential" \
+  -H 'Content-Type: application/json' \
+  -d '{"api_key":"sk-...","base_url":"https://api.openai.com/v1","default_model":"gpt-4o-mini"}'
+```
+
+**憑證綁 Agent 不綁版本**：發新版不用重填，更新則該 Agent 所有版本立刻一起變。
+Gateway 的順序是「Agent 自己的 → 平台預設」。
+
+金鑰**寫得進去讀不出來** —— `GET` 只回尾四碼：
+
+```json
+{"configured": true, "last_four": "WXYZ", "base_url": "...", "updated_at": "..."}
+```
+
+平台要先設定 `ZENTRA_SECRET_KEY`（靜態加密用），否則會拒絕儲存而不是存明文。
+與 P5 的互動見 [ADR-0011](../../specs/adr/ADR-0011-per-agent-llm-credentials.md)。
+
 沒設金鑰的話，呼叫會回一個說得清楚的錯：
 
 ```json

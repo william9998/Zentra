@@ -18,6 +18,7 @@ dependencies = [
     "httpx>=0.28",
     "fastmcp>=2.14.0",
     "jsonschema>=4.23",
+    "cryptography>=43",   # per-agent LLM 憑證的靜態加密（ZEN-012）
 ]
 
 [project.optional-dependencies]

@@ -109,10 +109,18 @@ async def update_agent(session: AsyncSession, agent: Agent, body: UpdateAgentReq
 
 
 async def delete_agent(session: AsyncSession, agent: Agent) -> None:
+    """軟刪除 Agent，但**硬刪它的 LLM 憑證**。
+
+    軟刪是為了保留 metadata 的稽核軌跡，不是為了讓機密留著。
+    被刪掉的 Agent 沒有任何理由還握著一把能用的金鑰。
+    """
+    from apps.api.services import agent_credentials
+
     now = datetime.now(UTC)
     agent.deleted_at = now
     agent.updated_at = now
     await session.commit()
+    await agent_credentials.delete_credential(session, agent.id)
 
 
 async def list_agents(

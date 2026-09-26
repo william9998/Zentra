@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(
         default=120.0, validation_alias="ZENTRA_LLM_TIMEOUT_SECONDS")
 
+    # 靜態加密用的金鑰（ZEN-012）。使用者交給平台保管的 LLM 金鑰用它加密後才進 DB。
+    # 產生方式：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    #
+    # **沒設定就不准存任何憑證** —— 服務會拒絕寫入並說明原因，而不是把明文寫進資料庫。
+    # 換掉這把金鑰會讓既有的憑證全部解不開（那是設計如此：它就是那些憑證的鎖）。
+    secret_key: str = Field(default="", validation_alias="ZENTRA_SECRET_KEY")
+
     # 每百萬 token 的美金單價，用來算 `usage.cost_usd`。
     # 形狀：{"<model>": {"input": "0.15", "output": "0.60"}}
     # 沒設定的 model → 成本記 "0"。SPEC §11 把「計費出帳」列在範圍外，

@@ -247,3 +247,31 @@ class SandboxResult(BaseModel):
         if self.error is not None:
             ErrorCode(self.error.get("code"))
         return self
+
+
+class SetAgentLlmCredentialRequest(BaseModel):
+    """註冊或覆寫一個 Agent 的 LLM 憑證（ZEN-012）。
+
+    **覆寫會立刻對該 Agent 的所有版本生效** —— 憑證綁 Agent 不綁版本（ADR-0011）。
+    """
+
+    api_key: str = Field(min_length=8, max_length=512,
+                         description="供應商金鑰。寫進去就讀不出來了。")
+    base_url: str | None = Field(
+        default=None, max_length=2048,
+        description="OpenAI 相容端點。省略則用平台預設。金鑰與端點通常是一組的。",
+    )
+    default_model: str | None = Field(
+        default=None, max_length=128,
+        description="這個 Agent 沒指定 model 時用哪個。省略則用平台預設。",
+    )
+
+
+class AgentLlmCredentialResponse(BaseModel):
+    """**永遠不含金鑰**，連密文都沒有。`last_four` 是唯一的線索。"""
+
+    configured: bool
+    last_four: str | None = None
+    base_url: str | None = None
+    default_model: str | None = None
+    updated_at: datetime | None = None

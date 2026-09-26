@@ -172,10 +172,42 @@ class LlmCall(Base):
     # 供應商回的 HTTP 狀態。失敗的呼叫也要留下來 —— 稽核要看得到「試過但失敗」。
     status_code: Mapped[int | None] = mapped_column()
     error: Mapped[str | None] = mapped_column(Text)
+    #: 這次用的是 Agent 自己的金鑰還是平台預設的。憑證可變、版本不可變（P5），
+    #: 所以要留得下「那一次到底用了誰的金鑰」。
+    credential_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PLATFORM", server_default=text("'PLATFORM'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     __table_args__ = (
         Index("ix_llm_calls_run_created", "run_id", "created_at"),
+    )
+
+
+class AgentLlmCredential(Base):
+    """一個 Agent 的 LLM 憑證（ZEN-012）。
+
+    **綁 Agent 不綁版本。** 發新版本不用重填，改金鑰則該 Agent 的所有版本一起變 ——
+    這是刻意的需求，代價與 P5 的互動記在 [ADR-0011]。
+
+    **密文只出得去一個地方**：Internal Gateway 換金鑰的那一行。
+    沒有任何端點讀得出明文，`last_four` 是 UI 唯一看得到的線索。
+    """
+
+    __tablename__ = "agent_llm_credentials"
+
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+    )
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    last_four: Mapped[str] = mapped_column(String(8), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(Text)
+    default_model: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

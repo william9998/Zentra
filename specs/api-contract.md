@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.4.1` |
+| 契約版本 | `v0.5.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -226,9 +226,50 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 | `POST` | `/v1/agents/{id}/versions` | **註冊 OCI image digest 並發布**（見下） |
 | `GET` | `/v1/agents/{id}/versions/{semver}` | 版本詳情，含 `entrypoints` 與 build 錯誤 |
 | `GET` | `/v1/agents/{id}/openapi.json` | 該 Agent 的 OpenAPI 3.1 schema（P3） |
+| `PUT` | `/v1/agents/{id}/llm-credential` | 註冊／覆寫這個 Agent 的 LLM 憑證（見 §2.1） |
+| `GET` | `/v1/agents/{id}/llm-credential` | 憑證的 metadata。**永遠不含金鑰** |
+| `DELETE` | `/v1/agents/{id}/llm-credential` | 移除憑證，退回用平台預設金鑰 |
 
 > `PUT /v1/agents/{id}/aliases/{alias}`（流量切換）於 v0.2.0 移除。
 > 呼叫時不指定 `version` 即用最新 `PUBLISHED` 版本。
+
+### 2.1 Agent 的 LLM 憑證（v0.5.0 新增，ZEN-012）
+
+**憑證綁 Agent，不綁版本。** 路徑上沒有 `{semver}`，這是刻意的：
+發新版本不用重填，改金鑰則該 Agent 的**所有版本立刻一起變**。
+與 P5 的互動見 [ADR-0011](./adr/ADR-0011-per-agent-llm-credentials.md)。
+
+```jsonc
+// PUT /v1/agents/{id}/llm-credential
+{
+  "api_key": "sk-…",                     // 必填，8–512 字元。寫進去就讀不出來
+  "base_url": "https://api.openai.com/v1", // 選填。金鑰與端點通常是一組的
+  "default_model": "gpt-4o-mini"          // 選填
+}
+```
+
+回應（`PUT` 與 `GET` 同形狀）：
+
+```jsonc
+{
+  "configured": true,
+  "last_four": "WXYZ",     // 金鑰尾四碼，UI 唯一看得到的線索；不足四碼時是等長遮罩
+  "base_url": "https://api.openai.com/v1",
+  "default_model": "gpt-4o-mini",
+  "updated_at": "2026-09-26T06:04:39.123896Z"
+}
+```
+
+未設定時 `configured: false`，其餘欄位為 `null`。
+
+**硬規則**：
+
+1. **沒有任何端點回傳金鑰明文或密文。** 這不是「目前沒做」，是契約禁止。
+2. 平台未設定 `ZENTRA_SECRET_KEY` 時，`PUT` 回 `422 VALIDATION_ERROR` ——
+   **不接受憑證**，而不是退回明文儲存。
+3. 刪除 Agent（軟刪）會**硬刪**其憑證。
+4. Gateway 的金鑰選擇順序：Agent 自己的 → 平台預設。
+   每一列 `llm_calls` 記錄 `credential_source`（`AGENT` | `PLATFORM`）。
 
 ### Agent metadata
 
@@ -450,6 +491,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.5.0 | 2026-09-26 | **新增 per-agent LLM 憑證**（ZEN-012）：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential` 三條端點與 §2.1。憑證綁 Agent 不綁版本；回應永不含金鑰。Runs／SSE／MCP 形狀未變，無新增錯誤 code | @architect |
 | v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的全部新增**：移除 multipart 形狀、移除 `artifact.origin`、`version_id`/`artifact.image_ref`/`artifact.digest` 恢復為任何狀態都非 `null`、`details.stage` 值域退回 `PULL|INSPECT|VALIDATE`、`QUOTA_EXCEEDED` 退回只表示併發 Run 上限。改為使用者在平台主機上直接 `docker push localhost:6000/<repo>:<tag>` 後以既有 JSON 路徑註冊。**v0.4.0 的新增從未實作，因此相對於 v0.3.1 本次是零變更** | @architect |
 | v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 讓 `POST /v1/agents/{id}/versions` 同時接受 multipart image tar 上傳；新增 `artifact.origin`（純描述性）；`version_id`/`artifact.image_ref`/`artifact.digest` 在 `UPLOADED` + `BUILDING` 期間可為 `null`；`details.stage` 值域加 `LOAD`/`PUSH`；`QUOTA_EXCEEDED` 說明放寬到含磁碟餘裕。**沒有新增錯誤 code**，`version_id` 語意與 Runs/SSE/MCP 形狀未變 | @architect |
 | v0.3.1 | 2026-09-22 | 將 `trigger` 收斂為 server-known ingress protocol：REST/Console=`API`、MCP=`MCP`；移除 `CONSOLE`，禁止 body/header discriminator。端點與 Run 建立流程未新增 | @architect |

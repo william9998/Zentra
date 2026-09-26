@@ -92,6 +92,11 @@ services:
       ZENTRA_LLM_BASE_URL: ${ZENTRA_LLM_BASE_URL:-https://api.openai.com/v1}
       ZENTRA_LLM_API_KEY: ${ZENTRA_LLM_API_KEY:-}
       ZENTRA_LLM_DEFAULT_MODEL: ${ZENTRA_LLM_DEFAULT_MODEL:-gpt-4o-mini}
+      # per-agent 憑證的靜態加密金鑰（ZEN-012）。沒設定 → 平台拒絕儲存任何憑證，
+      # 而不是退回明文。產生：
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # ⚠️ 換掉它，既有的 agent 憑證全部解不開 —— 它就是那些憑證的鎖。
+      ZENTRA_SECRET_KEY: ${ZENTRA_SECRET_KEY:-}
     # .env 是選用的。要用 LLM 就在 .env 放 ZENTRA_LLM_API_KEY —— 放這裡是對的，
     # 它只會被 app 讀到。**絕對不要**把它加進下面 worker 的 environment。
     env_file:

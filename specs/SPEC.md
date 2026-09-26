@@ -276,6 +276,12 @@ registry host，**必須原樣保留**。因此 `localhost:6000/alpine` **不等
 `api_key` 是 run token。真正的供應商金鑰只存在 `app` 服務的環境變數裡。
 Internal Gateway 負責：換上真金鑰 → 呼叫供應商 → 計量 token → 寫 `llm_calls` → 回傳。
 
+**金鑰的選擇順序**（[ADR-0011](./adr/ADR-0011-per-agent-llm-credentials.md)）：
+該 Agent 自己註冊的憑證 → 平台預設。Agent 的憑證**綁 Agent 不綁版本**：
+發新版不用重填，更新則所有版本立刻一起變。憑證以 Fernet 加密後存 `agent_llm_credentials`，
+平台未設定 `ZENTRA_SECRET_KEY` 時**拒絕儲存**而非退回明文。
+沒有任何端點讀得出金鑰；`llm_calls.credential_source` 記錄每次用的是誰的金鑰。
+
 **沙盒內禁止**自建 LLM client、自行 `requests` 打外網（網段沒有對外路由，會直接失敗）。
 
 ## 8. 對外契約（Contract）

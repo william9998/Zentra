@@ -32,6 +32,7 @@ from apps.api.config import get_settings
 from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError
 from apps.api.models import LlmCall
+from apps.api.services import agent_credentials
 
 #: 絕不轉發給供應商的 header。`authorization` 是最重要的一條 ——
 #: 沙盒送來的是 run token，把它轉出去等於拿內部憑證去問外部服務。
@@ -84,6 +85,7 @@ async def _record(
     latency_ms: int | None = None,
     status_code: int | None = None,
     error: str | None = None,
+    credential_source: str = "PLATFORM",
 ) -> None:
     """寫一列 `llm_calls`。**失敗的呼叫也要寫** —— 稽核要看得到試過但失敗。"""
     session.add(LlmCall(
@@ -96,6 +98,7 @@ async def _record(
         latency_ms=latency_ms,
         status_code=status_code,
         error=None if error is None else error[:2000],
+        credential_source=credential_source,
     ))
     await session.commit()
 
@@ -134,33 +137,50 @@ def _forwardable(headers: Any) -> dict[str, str]:
 async def chat_completions(
     session: AsyncSession,
     run_id: uuid.UUID,
+    agent_id: uuid.UUID,
     body: dict[str, Any],
     headers: Any,
 ) -> tuple[int, dict[str, str], bytes]:
     """代理一次 `POST /chat/completions`，回 `(status, headers, body)`。
 
+    金鑰的選擇順序（ZEN-012）：**Agent 自己註冊的優先，沒有才用平台預設的。**
+    Agent 的憑證綁在 `agent_id` 上，所以該 Agent 的每個版本都吃同一把；
+    換掉它，所有版本立刻一起換（ADR-0011）。
+
     串流（`stream: true`）也走這條：我們強制加上 `stream_options.include_usage`，
     這樣供應商會在最後一個 chunk 附上用量，計量才不會因為串流而漏掉。
     """
     settings = get_settings()
-    model = str(body.get("model") or settings.llm_default_model)
+
+    # 明文在這裡取得，只往下游走一步（換 header），不進 log、不進回應。
+    owned = await agent_credentials.resolve(session, agent_id)
+    api_key = owned.api_key if owned else settings.llm_api_key
+    base_url = (owned.base_url if owned and owned.base_url else settings.llm_base_url)
+    fallback_model = (
+        owned.default_model if owned and owned.default_model else settings.llm_default_model
+    )
+    source = owned.source if owned else "PLATFORM"
+
+    model = str(body.get("model") or fallback_model)
     body = {**body, "model": model}
     streaming = bool(body.get("stream"))
     if streaming:
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
 
-    if not settings.llm_api_key:
+    if not api_key:
         # 沒設金鑰不是「沙盒做錯事」，但沙盒需要一個能看懂的錯誤。
-        await _record(session, run_id, model=model, error="LLM_API_KEY is not configured")
+        await _record(session, run_id, model=model, credential_source=source,
+                      error="no LLM credential is configured")
         raise ZentraError(
             ErrorCode.LLM_ERROR,
-            "the platform has no LLM credential configured; set ZENTRA_LLM_API_KEY on the app service",
+            "no LLM credential is configured: register one for this agent "
+            "(PUT /v1/agents/{id}/llm-credential) or set ZENTRA_LLM_API_KEY on the app service",
             502, run_id=str(run_id), details={"retryable": False},
         )
 
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url = base_url.rstrip("/") + "/chat/completions"
     outbound = _forwardable(headers) | {
-        "authorization": f"Bearer {settings.llm_api_key}",   # ← 真金鑰只在這一行出現
+        "authorization": f"Bearer {api_key}",   # ← 真金鑰只在這一行出現
         "content-type": "application/json",
     }
 
@@ -172,7 +192,7 @@ async def chat_completions(
     except httpx.HTTPError as exc:
         elapsed = int((time.monotonic() - started) * 1000)
         await _record(session, run_id, model=model, latency_ms=elapsed,
-                      error=f"{type(exc).__name__}: {exc}")
+                      credential_source=source, error=f"{type(exc).__name__}: {exc}")
         raise ZentraError(
             ErrorCode.LLM_ERROR, f"LLM provider unreachable: {type(exc).__name__}",
             502, run_id=str(run_id), details={"retryable": True},
@@ -193,7 +213,7 @@ async def chat_completions(
 
     await _record(session, run_id, model=model, input_tokens=input_tokens,
                   output_tokens=output_tokens, latency_ms=elapsed,
-                  status_code=response.status_code, error=error)
+                  status_code=response.status_code, error=error, credential_source=source)
 
     safe_headers = {
         key: value for key, value in response.headers.items()

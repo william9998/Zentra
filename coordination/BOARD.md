@@ -113,6 +113,7 @@
 | ZEN-005 | **Interface Generator**：一份 entrypoints → OpenAPI + MCP tool schema（P3） | `BACKLOG` | @builder | ZEN-008 | — |
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @architect（UI 契約）→ @builder | ZEN-004 + ZEN-008 | — |
 | **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:6000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `REVIEW` | @builder（主體，已交付）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
+| **ZEN-012** | **per-agent LLM 憑證**：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential`、Fernet 靜態加密、Gateway 依 Agent 選金鑰 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | [ADR-0011](../specs/adr/ADR-0011-per-agent-llm-credentials.md) · 見下方 |
 | ZEN-011 | **測試 fixture 不清理**：`tests/zen008` 每跑一次留下數十個 agent，累積到 894 筆才被發現。加 teardown 或改用可辨識的前綴 + 套件結束時批次清 | `BACKLOG` | @reviewer | — | 見下方說明 |
 | ZEN-010 | **退休 ZEN-000 內建 fixture**：移除 `builtin-echo` 與 `agent-runtime` 這條特例路徑，讓 Run 只剩「跑 agent 自己的 image」一條 | `BACKLOG` | @builder；@reviewer 驗收 | ZEN-009 驗收完 | 見下方說明 |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
@@ -190,6 +191,31 @@
 > 會蓋掉 compose 的預設值。改名後沒同步 `.env`，沙盒拿到的仍是舊主機名，
 > **Run 會 FAILED 且完全沒有事件**，而隔離測試全部照樣通過 —— 症狀不指向原因。
 > 冒煙測試當時是 21 通過 / 6 失敗，六條全是「沙盒回報不了」。
+
+> **ZEN-012 實作已交付（2026-09-26）：狀態 `REVIEW`，未裁定 `DONE`。**
+>
+> migration `0006`（`agent_llm_credentials` + `llm_calls.credential_source`）、
+> `apps/api/services/secrets.py`（Fernet）、`agent_credentials.py`、三條端點、
+> Gateway 改為「Agent 的 → 平台的」。api-contract → **v0.5.0**。
+> `tests/zen012` 13 passed，全套 257 passed。
+>
+> **使用者指定的三條行為都實測過**：
+> 1. 新版本自動繼承憑證（發 `2.0.0` 沒重填，直接 `SUCCEEDED`）
+> 2. 一次 `PUT` 換金鑰 → `1.0.0` 與 `2.0.0` **同時**從 `FAILED` 變回 `SUCCEEDED`
+> 3. `PUT`/`GET`/`DELETE` 三條端點都在
+>
+> 驗證方法：假供應商設成**只認 agent 自己那把金鑰**（平台預設是另一把），
+> Run 成功就是「Gateway 用對了金鑰」的證據；`llm_calls.credential_source` 記到 `AGENT`。
+> DB 實查確認存的是 Fernet 密文，明文不在資料庫任何地方。
+>
+> **與 P5 的張力已在 ADR-0011 寫明並接受**：同一個 `agent@1.0.0` 昨天今天可能不同，
+> 因為憑證可變。判準是「image 是開發者交付物，憑證是維運設定」。
+> 已知代價：`credential_source` 分得出「Agent 的 vs 平台的」，**分不出「Agent 的哪一把」**——
+> 完整可重現需要憑證版本史，ADR 列為延後。
+>
+> **未做**：`ZENTRA_SECRET_KEY` 是全平台一把（多租戶時要重新設計）；
+> 沒有憑證版本史；換金鑰沒有灰度也沒有回滾（這是使用者要的行為，但操作上要知道）；
+> Console 還沒有設定憑證的畫面，目前只能走 API。
 
 > **ZEN-011 的由來（2026-09-25，使用者發現 Console 塞滿）**
 >

@@ -78,7 +78,9 @@ async def llm_chat_completions(
     回應原樣轉回沙盒（含供應商的錯誤 body），只拿掉不該外流的 header。
     """
     body = await request.json()
-    status, headers, raw = await llm.chat_completions(session, run.id, body, request.headers)
+    status, headers, raw = await llm.chat_completions(
+        session, run.id, run.agent_id, body, request.headers
+    )
     return Response(
         content=raw,
         status_code=status,
