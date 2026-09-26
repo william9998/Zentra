@@ -142,6 +142,7 @@ const jsonBody = (method, body) => ({
 
 const jsonPost = (body) => jsonBody('POST', body);
 const jsonPatch = (body) => jsonBody('PATCH', body);
+const jsonPut = (body) => jsonBody('PUT', body);
 
 // ---- 正規化：契約欄位名到此為止 ----
 
@@ -361,6 +362,43 @@ export async function updateAgent(agentId, changes) {
 /** DELETE /v1/agents/{id} —— 軟刪除，回 204（沒有 body）。 */
 export async function deleteAgent(agentId) {
   await req('/agents/' + encodeURIComponent(agentId), { method: 'DELETE' });
+}
+
+/** LLM 憑證的 metadata。**契約保證這裡不會有金鑰**，只有尾四碼（api-contract §2.1）。 */
+function viewLlmCredential(raw) {
+  if (!raw || typeof raw !== 'object') return { configured: false };
+  return {
+    configured: Boolean(raw.configured),
+    lastFour: raw.last_four || null,
+    baseUrl: raw.base_url || null,
+    defaultModel: raw.default_model || null,
+    updatedAt: toDate(raw.updated_at),
+  };
+}
+
+/** GET /v1/agents/{id}/llm-credential —— 只回 metadata，讀不到金鑰。 */
+export async function getAgentLlmCredential(agentId) {
+  const path = '/agents/' + encodeURIComponent(agentId) + '/llm-credential';
+  return viewLlmCredential(await req(path));
+}
+
+/**
+ * PUT /v1/agents/{id}/llm-credential —— 註冊或覆寫。
+ *
+ * **覆寫立刻對該 Agent 的所有版本生效**（ADR-0011）。憑證綁 Agent 不綁版本，
+ * 所以路徑裡沒有 semver。
+ */
+export async function setAgentLlmCredential(agentId, values) {
+  const body = { api_key: values.apiKey };
+  if (values.baseUrl) body.base_url = values.baseUrl;
+  if (values.defaultModel) body.default_model = values.defaultModel;
+  const path = '/agents/' + encodeURIComponent(agentId) + '/llm-credential';
+  return viewLlmCredential(await req(path, jsonPut(body)));
+}
+
+/** DELETE /v1/agents/{id}/llm-credential —— 移除後退回用平台預設金鑰。 */
+export async function deleteAgentLlmCredential(agentId) {
+  await req('/agents/' + encodeURIComponent(agentId) + '/llm-credential', { method: 'DELETE' });
 }
 
 export async function listAgentVersions(agentId) {

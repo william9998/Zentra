@@ -634,3 +634,26 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   background: var(--bg-code);
   color: var(--text-secondary);
 }
+
+/* LLM 憑證卡（ui-contract §5.6 / ZEN-012） */
+.credential-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.credential-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 「選填」標記。用 token 的字級與次要色，不寫死值。 */
+.field-optional {
+  margin-left: var(--space-2);
+  font-size: var(--text-2xs);
+  font-weight: normal;
+  color: var(--text-secondary);
+}

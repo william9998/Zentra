@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.5.2` |
+| 契約版本 | `v0.5.3` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -402,6 +402,38 @@ export function mount(el, props) {
 | Partial / Streaming | `BUILDING` 輪詢態；保留 `202` 已知 metadata，超過 3 秒顯示驗證工作內容與已耗時 |
 | Success | `PUBLISHED` 摘要與前往詳情 CTA；輪詢已停止 |
 
+### 5.6 `llm-credential-card.js` — 這個 Agent 的 LLM 憑證（v0.5.3 新增，ZEN-012）
+
+位於 Agent 詳情頁的一張 card。**不在版本列表裡** —— 憑證綁 Agent 不綁版本
+（[ADR-0011](./adr/ADR-0011-per-agent-llm-credentials.md)），畫面必須說出這件事，
+那是使用者最容易誤會的地方。
+
+- 卡片上方一句話說明「憑證屬於這個 Agent，不屬於某個版本；更換則所有版本立刻一起變」。
+- 摘要列：未設定時說「會用平台預設的金鑰」；已設定時顯示狀態圓點、**尾四碼**、
+  `base_url`、`default_model` 與更新時間。**全部 `textContent`**。
+- `api_key`：`type="password"`，必填，少於 8 字元時 primary CTA 維持 disabled。
+  欄位說明要寫「寫進去之後就讀不出來」。**送出成功後立刻清空欄位**，不留在 DOM 裡。
+- `base_url` / `default_model`：選填，label 帶 `.field-optional` 標記。
+- 已設定時 primary CTA 改為「更換憑證」，並多一個「移除憑證」的 `btn-ghost`。
+- **兩個破壞性動作都要原生 `<dialog>` 二次確認**，且確認文案要講出後果：
+  更換 =「立刻對所有版本生效，沒有灰度也沒有回滾」；
+  移除 =「退回用平台預設金鑰，不是停止呼叫 LLM」。
+- 錯誤提示要點出「平台若沒設定 `ZENTRA_SECRET_KEY` 就不接受憑證，它不會退而存明文」。
+- 屬性名一律 `data-cred-*` 前綴：這張卡與編輯／刪除對話框同頁，
+  `data-form` / `data-submit` / `data-summary` 已經被它們用掉了。
+
+**沒有「顯示金鑰」的功能，而且不該假裝有** —— 契約保證回應只有尾四碼（api-contract §2.1）。
+
+五態：
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 摘要顯示「正在讀取憑證狀態…」，表單維持 hidden |
+| Empty | 未設定：摘要說明會用平台預設金鑰；只有「儲存憑證」一個 CTA |
+| Error | 讀取或寫入失敗顯示 `error.code` 與可行動建議；金鑰欄位標 `aria-invalid` |
+| Partial / Streaming | 不適用（沒有串流） |
+| Success | 摘要顯示尾四碼與更新時間；`aria-live` 宣告「所有版本都會用它」 |
+
 ### 5.5 `endpoints-card.js` — 三個門面
 
 - 顯示該 Agent 的三個門面：`rest` / `mcp` / `openapi`，每個一行 mono + `Copy`
@@ -541,6 +573,7 @@ apps/console/
       shell.js                   ← §5.1
       components/
         streaming-output.js  run-timeline.js  endpoints-card.js
+        llm-credential-card.js       ← §5.6（ZEN-012）
         create-agent-dialog.js  agent-list.js  agent-version-list.js
         version-registration.js  run-composer.js  recent-runs.js
       pages/

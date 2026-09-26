@@ -192,6 +192,24 @@
 > **Run 會 FAILED 且完全沒有事件**，而隔離測試全部照樣通過 —— 症狀不指向原因。
 > 冒煙測試當時是 21 通過 / 6 失敗，六條全是「沙盒回報不了」。
 
+> **ZEN-012 Console 畫面已補上（2026-09-26）。**
+>
+> Agent 詳情頁新增「LLM 憑證」卡（`llm-credential-card.js`）。ui-contract → **v0.5.3** §5.6。
+> 瀏覽器 E2E `tests/zen012/cdp_credential_e2e.mjs` **11/11**，含最重要的
+> 「金鑰明文從未出現在 DOM」與「重新整理後仍讀不到」。
+>
+> **三個既有護欄擋下這次改動，全部照規矩處理（不是放寬）**：
+> 1. 檔案清單與端點白名單是精確集合 → 契約先改（api-contract v0.5.0 已改）再加名單
+> 2. `test_console_stores_no_long_lived_credentials` 原本粗暴禁 `api_key` 字串。
+>    規則（docstring：不准進 localStorage）仍然對，檢查收窄成
+>    「只有 `api.js` 與憑證卡兩個檔可以出現該欄位」，並新增
+>    `test_the_credential_card_keeps_no_copy_of_the_key`（送出後必須清空、不得碰任何 storage）
+> 3. `type="password"` 被禁字串誤擋 —— 那正是安全寫法。改成稽核程式碼而非註解
+>
+> **實作時踩到的坑**：`data-summary` / `data-form` / `data-submit` 這些屬性名
+> 已經被編輯／刪除對話框用掉，同頁會撞。憑證卡改用 `data-cred-*` 前綴。
+> 元件內部 `root.querySelector` 本來就不會撞，但測試與除錯用 `document.querySelector` 會。
+
 > **ZEN-012 實作已交付（2026-09-26）：狀態 `REVIEW`，未裁定 `DONE`。**
 >
 > migration `0006`（`agent_llm_credentials` + `llm_calls.credential_source`）、

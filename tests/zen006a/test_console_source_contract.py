@@ -1,4 +1,4 @@
-"""Console 靜態稽核：ui-contract v0.5.1 / api-contract v0.3.1（ZEN-008 更新）。
+"""Console 靜態稽核：ui-contract v0.5.3 / api-contract v0.5.0（ZEN-012 更新）。
 
 本檔原本是 ZEN-006A 的範圍護欄（只准兩頁、只准三個端點）。ZEN-008 依契約把
 Console 擴成五頁、把 Agent/Version 端點接上，所以**上限跟著擴**——
@@ -45,6 +45,7 @@ EXPECTED_FILES = {
     "static/js/components/delete-agent-dialog.js",
     "static/js/components/edit-agent-dialog.js",
     "static/js/components/endpoints-card.js",
+    "static/js/components/llm-credential-card.js",
     "static/js/components/recent-runs.js",
     "static/js/components/run-composer.js",
     "static/js/components/run-timeline.js",
@@ -93,6 +94,8 @@ ALLOWED_V1_PATTERNS = [
     re.compile(r"^/agents/\{?[^/]*\}?/runs$"),
     re.compile(r"^/agents/\{?[^/]*\}?/versions$"),
     re.compile(r"^/agents/\{?[^/]*\}?/versions/\{?[^/]*\}?$"),
+    # ZEN-012：per-agent LLM 憑證（api-contract v0.5.0 §2.1）
+    re.compile(r"^/agents/\{?[^/]*\}?/llm-credential$"),
     re.compile(r"^/runs$"),
     re.compile(r"^/runs/\{?[^/]*\}?$"),
     re.compile(r"^/runs/\{?[^/]*\}?/events$"),
@@ -456,7 +459,8 @@ def test_only_whitelisted_v1_endpoints_are_referenced() -> None:
         )
     assert paths == {
         "/agents", "/agents/{}", "/agents/{}/runs", "/agents/{}/versions",
-        "/agents/{}/versions/{}", "/runs", "/runs/{}", "/runs/{}/events",
+        "/agents/{}/versions/{}", "/agents/{}/llm-credential",   # ZEN-012
+        "/runs", "/runs/{}", "/runs/{}/events",
         "/runs/{}/cancel",   # ZEN-008-D5：死碼，見下方 xfail
     }, paths
 
@@ -503,18 +507,65 @@ def test_console_never_references_internal_gateway_or_data_layer() -> None:
         assert hits == [], f"{_rel(path)}: {hits}"
 
 
+#: 允許出現 `api_key` / `apiKey` 的檔案（ZEN-012）。
+#:
+#: Console 現在**傳輸**一次性的 LLM 憑證（api-contract §2.1），但規則沒鬆：
+#: 它只寫不存、不回讀、不留在 DOM。名單刻意只有兩個檔，新增第三個要先想清楚為什麼。
+CREDENTIAL_WRITE_PATHS = {
+    "static/js/api.js",                              # 契約欄位名只在這裡出現一次
+    "static/js/components/llm-credential-card.js",   # 輸入表單
+}
+
+
 def test_console_stores_no_long_lived_credentials() -> None:
-    """ui-contract §6.4: never put an api_key in localStorage."""
-    banned = ["api_key", "apiKey", "Authorization", "Bearer", "secret", "password", "access_token"]
+    """ui-contract §6.4：憑證不准進瀏覽器儲存，也不准硬寫在原始碼裡。
+
+    `api_key` 在 ZEN-012 之後變成「可以傳，不可以留」——
+    所以字串檢查對兩個明列的檔案放行，**真正的規則由下面的儲存斷言守著**。
+    其餘的憑證字眼（`Authorization` / `Bearer` / `access_token` / `secret` / `password`）
+    一個檔案都不准出現：Console 是同源呼叫，它本來就不該自己組認證標頭。
+    """
+    always_banned = ["Authorization", "Bearer", "secret", "access_token"]
+    credential_fields = ["api_key", "apiKey"]
+
     for path in JS_FILES + HTML_FILES:
         source = _read(path)
-        hits = [name for name in banned if name in source]
+        hits = [name for name in always_banned if name in source]
         assert hits == [], f"{_rel(path)}: {hits}"
+
+        # `password` 單獨處理：`type="password"` 是**我們要的**寫法（遮蔽輸入），
+        # 禁的是把密碼當資料處理。檢查前先拿掉註解與那個型別宣告 ——
+        # 稽核的是程式碼，不是散文。
+        code = _strip_js_comments(source).replace('type="password"', "")
+        assert "password" not in code, (
+            f"{_rel(path)}: 出現 password，且不是 input 型別宣告"
+        )
+
+        if _rel(path) not in CREDENTIAL_WRITE_PATHS:
+            hits = [name for name in credential_fields if name in source]
+            assert hits == [], (
+                f"{_rel(path)}: {hits} —— 憑證欄位只准出現在 {sorted(CREDENTIAL_WRITE_PATHS)}"
+            )
+
+    # 這才是規則本身：任何憑證都不准進 localStorage / sessionStorage。
     storage_keys = set()
     for path in JS_FILES:
         source = _read(path)
         storage_keys.update(re.findall(r"(?:local|session)Storage\.\w+\(\s*([A-Z_]+|'[^']*')", source))
     assert storage_keys <= {"SIDEBAR_KEY", "STASH_KEY"}, storage_keys
+
+
+def test_the_credential_card_keeps_no_copy_of_the_key() -> None:
+    """金鑰不准存活過送出那一刻。
+
+    擋的是一個很容易寫出來的錯：把輸入值存進 module 變數「之後可能要用」。
+    元件只在送出時讀一次 `.value`，成功後立刻清空 —— DOM 與 JS 都不留副本。
+    """
+    source = _read(CONSOLE / "static/js/components/llm-credential-card.js")
+
+    assert "apiKey.value = ''" in source, "送出後必須清空輸入欄位"
+    for banned in ("localStorage", "sessionStorage", "indexedDB"):
+        assert banned not in source, f"憑證卡不得使用 {banned}"
 
 
 def test_localstorage_run_stash_has_been_removed() -> None:

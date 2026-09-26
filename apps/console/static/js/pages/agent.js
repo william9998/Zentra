@@ -3,6 +3,7 @@ import { mount as mountVersionList } from '../components/agent-version-list.js';
 import { mount as mountDeleteDialog } from '../components/delete-agent-dialog.js';
 import { mount as mountEditDialog } from '../components/edit-agent-dialog.js';
 import { mount as mountEndpoints } from '../components/endpoints-card.js';
+import { mount as mountCredential } from '../components/llm-credential-card.js';
 import { mount as mountRecentRuns } from '../components/recent-runs.js';
 import { mount as mountComposer } from '../components/run-composer.js';
 import { createCopyButton, createErrorBox, createTimers, el, formatDateTime } from '../dom.js';
@@ -39,6 +40,16 @@ const PAGE = `
     <section class="card">
       <div class="card-header"><h2 class="card-title">Endpoints</h2></div>
       <div data-endpoints></div>
+    </section>
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">LLM 憑證</h2>
+      </div>
+      <p class="field-hint">
+        憑證屬於這個 Agent，<strong>不屬於某個版本</strong> ——
+        發新版本不用重填，更換則所有版本立刻一起變。沒設定就用平台預設金鑰。
+      </p>
+      <div data-credential></div>
     </section>
     <section class="card">
       <div class="card-header"><h2 class="card-title">最近 Runs</h2></div>
@@ -79,6 +90,7 @@ function main() {
   }
 
   const endpoints = mountEndpoints(app.querySelector('[data-endpoints]'), { loading: true, agentId });
+  const credential = mountCredential(app.querySelector('[data-credential]'), { agentId });
   const composer = mountComposer(app.querySelector('[data-composer]'), {
     agentId, versions: [], versionsReady: false, latestPublishedVersion: null,
   });
@@ -189,6 +201,7 @@ function main() {
     versions.destroy();
     composer.destroy();
     endpoints.destroy();
+    credential.destroy();
     recentRuns.destroy();
     timers.clearAll();
     shell.destroy();
