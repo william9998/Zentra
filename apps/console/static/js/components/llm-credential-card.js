@@ -111,9 +111,16 @@ export function mount(root, props = {}) {
   const renderSummary = () => {
     summary.replaceChildren();
     if (!current || !current.configured) {
-      summary.append(
-        '這個 Agent 沒有自己的憑證，呼叫 LLM 時會用平台預設的金鑰。',
-      );
+      // 未設定是**剛建立 Agent 時的預設狀態**（建立對話框刻意不收金鑰，
+      // 見 BOARD/ZEN-012），所以這裡要說得夠清楚可以直接動手，
+      // 而不只是陳述「沒有設定」。
+      summary.append(el('span', 'status-dot'));
+      summary.append(' 尚未設定。這個 Agent 呼叫 LLM 時會用');
+      summary.append(el('strong', null, '平台預設的金鑰'));
+      summary.append('。要讓它用自己的帳號，在下面填入金鑰即可 —— ');
+      summary.append('設定一次之後，這個 Agent 的');
+      summary.append(el('strong', null, '所有版本'));
+      summary.append('都會用它，發新版本不用重填。');
       return;
     }
     // 沿用既有的狀態圓點命名，不自創 class（ui-contract §2 狀態語言）

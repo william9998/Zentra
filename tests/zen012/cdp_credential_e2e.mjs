@@ -90,8 +90,12 @@ async function main() {
 
     record('card.renders', await waitFor(`document.querySelector('#cred-api-key') !== null`));
 
-    record('card.says_not_configured_initially',
-      await evaluate(`return (document.querySelector('[data-cred-summary]').textContent || '').includes('平台預設');`));
+    // 未設定是剛建立 Agent 的預設狀態（建立對話框刻意不收金鑰），
+    // 所以這段文字要同時說出「現在用平台的」與「設定一次所有版本都會用」。
+    record('card.empty_state_guides_the_user', await evaluate(`
+      const text = document.querySelector('[data-cred-summary]').textContent || '';
+      return text.includes('平台預設') && text.includes('所有版本');
+    `), '未設定時要給得出下一步，不只是陳述沒設定');
 
     record('card.key_input_is_password_type',
       await evaluate(`return document.querySelector('#cred-api-key').type === 'password';`),

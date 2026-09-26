@@ -5,7 +5,11 @@ const FRAME = `
   <dialog aria-labelledby="create-agent-title">
     <form class="dialog-form" data-form>
       <h2 class="dialog-title" id="create-agent-title">建立 Agent</h2>
-      <p class="field-hint">先建立 metadata，下一步再註冊 immutable OCI image 版本。</p>
+      <p class="field-hint">
+        先建立 metadata，下一步再註冊 immutable OCI image 版本。
+        建立後會直接進入 Agent 詳情頁，<strong>LLM 憑證在那裡設定</strong> ——
+        它屬於 Agent 而不是某個版本，所以刻意不在這裡收。
+      </p>
       <div class="field">
         <label for="agent-name">名稱</label>
         <input type="text" id="agent-name" name="name" required autocomplete="off"
