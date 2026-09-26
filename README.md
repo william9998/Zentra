@@ -70,6 +70,7 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 |---|---|
 | [`examples/my-agent/`](examples/my-agent/) | **Start here to write an agent.** A working text-analysis agent — copy the directory, edit `agent.py` |
 | [`examples/llm-agent/`](examples/llm-agent/) | The same thing but calling a model through `ctx.llm()`, with the credential staying on the platform |
+| [`examples/stock-agent/`](examples/stock-agent/) | A bounded retry loop: search, judge whether the answer is there, search again with what was missing |
 | [`specs/`](specs/) | **Single source of truth.** Master spec, API & UI contracts, glossary, ADRs, feature specs |
 | [`docs/architecture/`](docs/architecture/) | Mermaid diagrams and design deep-dives |
 | [`coordination/`](coordination/) | Task board, handoff notes, spec-drift audits |

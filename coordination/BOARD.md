@@ -114,6 +114,7 @@
 | ZEN-006 | **Console 五個畫面**（原生 HTML/CSS/ES modules，零建置）：Agents 列表 / Agent 詳情 / 註冊新 image 版本 / Runs 列表 / Run 觀測 | `BACKLOG` | @architect（UI 契約）→ @builder | ZEN-004 + ZEN-008 | — |
 | **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:6000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `REVIEW` | @builder（主體，已交付）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
 | **ZEN-012** | **per-agent LLM 憑證**：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential`、Fernet 靜態加密、Gateway 依 Agent 選金鑰 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | [ADR-0011](../specs/adr/ADR-0011-per-agent-llm-credentials.md) · 見下方 |
+| **ZEN-013** | **Gateway 代理 Responses API**：`/internal/llm/v1/{path}` 改白名單制（`chat/completions` + `responses`），usage 解析支援兩種形狀 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | 見下方 |
 | ZEN-011 | **測試 fixture 不清理**：`tests/zen008` 每跑一次留下數十個 agent，累積到 894 筆才被發現。加 teardown 或改用可辨識的前綴 + 套件結束時批次清 | `BACKLOG` | @reviewer | — | 見下方說明 |
 | ZEN-010 | **退休 ZEN-000 內建 fixture**：移除 `builtin-echo` 與 `agent-runtime` 這條特例路徑，讓 Run 只剩「跑 agent 自己的 image」一條 | `BACKLOG` | @builder；@reviewer 驗收 | ZEN-009 驗收完 | 見下方說明 |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
@@ -191,6 +192,30 @@
 > 會蓋掉 compose 的預設值。改名後沒同步 `.env`，沙盒拿到的仍是舊主機名，
 > **Run 會 FAILED 且完全沒有事件**，而隔離測試全部照樣通過 —— 症狀不指向原因。
 > 冒煙測試當時是 21 通過 / 6 失敗，六條全是「沙盒回報不了」。
+
+> **ZEN-013（2026-09-26）：Gateway 不再綁死一條路徑。**
+>
+> 使用者要一個會用 LLM 網路搜尋的 agent。查證後 OpenAI 有兩種形狀：
+> `chat/completions` + `web_search_options`（只有 `*-search` 系列模型吃），
+> 與 `/responses` + `web_search` tool（模型自己決定何時搜）。
+> **舊 Gateway 只代理 `chat/completions`，等於把第二條擋在門外。**
+>
+> 改成 `POST /internal/llm/v1/{path:path}` + **白名單**
+> （`llm.UPSTREAM_PATHS = {chat/completions, responses}`）。
+> 刻意不是任意轉發：這個代理握著真金鑰，能打哪裡必須由平台決定 ——
+> 否則沙盒能拿平台金鑰打 files / fine-tuning / 帳務端點，而那些都不在計量裡。
+>
+> `_usage_from()` 同時認兩種形狀（`prompt/completion_tokens` 與 `input/output_tokens`）。
+> 只認一種的話，另一種的呼叫會被記成 0 token —— 帳安靜地錯掉。
+>
+> 新增 `examples/stock-agent/`：多節點 + **有界 retry 迴圈**的實例。
+> `assess` 節點讓模型判斷搜到的資料夠不夠，不夠就帶著「缺什麼」回 `research` 重搜，
+> 上限 3 輪（沙盒有 15 分鐘 wall-clock）。實測 `rounds: 2`，事件流看得到回頭。
+>
+> **踩到的坑（已寫進範例註解）**：`summary` 沒宣告在 `State` 的 TypedDict 裡，
+> LangGraph **安靜丟掉**該 key，不報錯 —— 最後在輸出 schema 驗證才爆
+> 「summary is a required property」。output_schema 的每個 required 欄位
+> 都必須在 State 有對應宣告。
 
 > **ZEN-012 Console 畫面已補上（2026-09-26）。**
 >

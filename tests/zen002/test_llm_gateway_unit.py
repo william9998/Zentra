@@ -82,3 +82,29 @@ def test_cost_uses_decimal_not_float(monkeypatch: pytest.MonkeyPatch) -> None:
     cost = llm._cost("m", 1_000_000, 1_000_000)
     assert isinstance(cost, Decimal)
     assert cost == Decimal("0.750000")
+
+
+def test_only_whitelisted_upstream_paths_are_forwarded() -> None:
+    """L-6：代理握著真金鑰，能打哪裡由平台決定，不是沙盒決定。
+
+    白名單外的路徑必須被擋 —— 否則沙盒可以用平台的金鑰打供應商的任何端點
+    （檔案上傳、fine-tune、帳務…），而那些都不在計量與稽核裡。
+    """
+    assert llm.UPSTREAM_PATHS == {"chat/completions", "responses"}
+
+    for evil in ("files", "fine_tuning/jobs", "../v1/organization", "chat/completions/../files"):
+        assert evil not in llm.UPSTREAM_PATHS
+
+
+def test_usage_is_read_from_the_responses_api_shape_too() -> None:
+    """L-7：兩種 API 的 usage 欄位名不同，只認一種就會把另一種記成 0。
+
+    `chat/completions` 用 prompt/completion_tokens，`responses` 用 input/output_tokens。
+    記成 0 不會報錯 —— 帳只是安靜地錯了。
+    """
+    assert llm._usage_from({"usage": {"input_tokens": 31, "output_tokens": 12}}) == (31, 12)
+    # 兩種都在時以 chat/completions 的為準（那是它自己的回應）
+    assert llm._usage_from({
+        "usage": {"prompt_tokens": 5, "completion_tokens": 6,
+                  "input_tokens": 99, "output_tokens": 99},
+    }) == (5, 6)

@@ -64,8 +64,9 @@ async def ingest_validation(
     return {"accepted": True}
 
 
-@router.post("/llm/v1/chat/completions")
-async def llm_chat_completions(
+@router.post("/llm/v1/{upstream_path:path}")
+async def llm_proxy(
+    upstream_path: str,
     request: Request,
     run: Run = Depends(require_run_token_only),
     session: AsyncSession = Depends(get_session),
@@ -75,11 +76,15 @@ async def llm_chat_completions(
     路徑裡刻意**沒有** `run_id` —— 它要與 OpenAI 相容，`ctx.llm()` 才能只是一個
     設了 `base_url` 的標準 chat model。歸屬由 run token 決定，呼叫者指定不了別人的 run。
 
+    `{upstream_path}` 走白名單（`llm.UPSTREAM_PATHS`）：`chat/completions` 與
+    `responses`。**不是任意轉發** —— 這個代理握著真金鑰，能打什麼由平台決定。
+    白名單外的路徑回 404，而不是默默轉出去。
+
     回應原樣轉回沙盒（含供應商的錯誤 body），只拿掉不該外流的 header。
     """
     body = await request.json()
-    status, headers, raw = await llm.chat_completions(
-        session, run.id, run.agent_id, body, request.headers
+    status, headers, raw = await llm.proxy(
+        session, run.id, run.agent_id, upstream_path.strip("/"), body, request.headers
     )
     return Response(
         content=raw,

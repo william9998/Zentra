@@ -49,6 +49,13 @@ _STRIP_RESPONSE_HEADERS = frozenset({
 
 _TOKENS_PER_PRICE_UNIT = Decimal(1_000_000)
 
+#: Gateway 願意轉發的上游路徑。**白名單，不是任意轉發** ——
+#: 這個代理握著真金鑰，能打什麼必須是我們決定的，不是沙盒決定的。
+#:
+#: `responses` 是 ZEN-013 加的：模型自己決定何時用 web search 這條路走
+#: Responses API，只代理 chat/completions 會把它擋在門外。
+UPSTREAM_PATHS = frozenset({"chat/completions", "responses"})
+
 
 def _price(model: str, kind: str) -> Decimal:
     """回傳每 token 的美金單價。沒設定價格的 model 一律 0。
@@ -71,8 +78,21 @@ def _cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
 
 
 def _usage_from(payload: dict[str, Any]) -> tuple[int, int]:
+    """兩種 API 的 usage 形狀不同，兩種都要認得。
+
+        chat/completions →  prompt_tokens / completion_tokens
+        responses        →  input_tokens  / output_tokens
+
+    只認其中一種的話，另一種的呼叫會被記成 0 token —— 帳就是錯的，
+    而且錯得很安靜。
+    """
     usage = payload.get("usage") or {}
-    return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    if prompt is None and completion is None:
+        prompt = usage.get("input_tokens")
+        completion = usage.get("output_tokens")
+    return int(prompt or 0), int(completion or 0)
 
 
 async def _record(
@@ -134,14 +154,17 @@ def _forwardable(headers: Any) -> dict[str, str]:
     }
 
 
-async def chat_completions(
+async def proxy(
     session: AsyncSession,
     run_id: uuid.UUID,
     agent_id: uuid.UUID,
+    upstream_path: str,
     body: dict[str, Any],
     headers: Any,
 ) -> tuple[int, dict[str, str], bytes]:
-    """代理一次 `POST /chat/completions`，回 `(status, headers, body)`。
+    """代理一次上游呼叫，回 `(status, headers, body)`。
+
+    `upstream_path` 必須在 `UPSTREAM_PATHS` 裡 —— 沙盒指定不了任意目的地。
 
     金鑰的選擇順序（ZEN-012）：**Agent 自己註冊的優先，沒有才用平台預設的。**
     Agent 的憑證綁在 `agent_id` 上，所以該 Agent 的每個版本都吃同一把；
@@ -178,7 +201,15 @@ async def chat_completions(
             502, run_id=str(run_id), details={"retryable": False},
         )
 
-    url = base_url.rstrip("/") + "/chat/completions"
+    if upstream_path not in UPSTREAM_PATHS:
+        raise ZentraError(
+            ErrorCode.VALIDATION_ERROR,
+            f"unsupported upstream path {upstream_path!r}; "
+            f"the gateway forwards only {sorted(UPSTREAM_PATHS)}",
+            404, run_id=str(run_id),
+        )
+
+    url = base_url.rstrip("/") + "/" + upstream_path
     outbound = _forwardable(headers) | {
         "authorization": f"Bearer {api_key}",   # ← 真金鑰只在這一行出現
         "content-type": "application/json",
