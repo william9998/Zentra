@@ -116,6 +116,7 @@
 | **ZEN-012** | **per-agent LLM 憑證**：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential`、Fernet 靜態加密、Gateway 依 Agent 選金鑰 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | [ADR-0011](../specs/adr/ADR-0011-per-agent-llm-credentials.md) · 見下方 |
 | **ZEN-013** | **Gateway 代理 Responses API**：`/internal/llm/v1/{path}` 改白名單制（`chat/completions` + `responses`），usage 解析支援兩種形狀 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | 見下方 |
 | **ZEN-014** | **Run 流程圖版面**：時間軸旁加切換鈕，用手寫 SVG 畫「這次實際走過的路」，回頭的邊 = retry 迴圈 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-006A | ui-contract v0.5.4 §5.7 |
+| **ZEN-015** | **常駐 Agent 容器**：一 Agent 一容器取代一 Run 一沙盒；容器生命週期、per-agent 下游 API key、用量歸戶與除錯查詢 | `BLOCKED` | 等使用者裁決 [ADR-0012](../specs/adr/ADR-0012-resident-agent-container.md) | — | [spec](../specs/features/ZEN-015/spec.md)（分支 `feat/resident-agent-container`） |
 | ZEN-011 | **測試 fixture 不清理**：`tests/zen008` 每跑一次留下數十個 agent，累積到 894 筆才被發現。加 teardown 或改用可辨識的前綴 + 套件結束時批次清 | `BACKLOG` | @reviewer | — | 見下方說明 |
 | ZEN-010 | **退休 ZEN-000 內建 fixture**：移除 `builtin-echo` 與 `agent-runtime` 這條特例路徑，讓 Run 只剩「跑 agent 自己的 image」一條 | `BACKLOG` | @builder；@reviewer 驗收 | ZEN-009 驗收完 | 見下方說明 |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
@@ -284,6 +285,34 @@
 > **未做**：`ZENTRA_SECRET_KEY` 是全平台一把（多租戶時要重新設計）；
 > 沒有憑證版本史；換金鑰沒有灰度也沒有回滾（這是使用者要的行為，但操作上要知道）；
 > Console 還沒有設定憑證的畫面，目前只能走 API。
+
+> **ZEN-015 / ADR-0012（2026-09-27）：單機高併發的架構選擇，等裁決。**
+>
+> 使用者問單機能不能承載高併發。實測目前的設定：併發上限 10 × `mem_limit` 2 GB = **20 GB**，
+> 而主機 Docker 實際只有 **1.9 GB** —— **超額 25 倍，且 `apps/sandbox/` 沒有任何記憶體准入控制**
+> （沒有 `MemTotal`、沒有 `MemFree`）。`mem_limit` 是上限不是預留，Docker 不會因此拒絕建立容器。
+>
+> **一個決定性的實測改變了結論**（ADR-0012）：
+>
+> | 寫法 | 3 個並行 |
+> |---|---|
+> | `def` 節點裡阻塞 | 1.00s，3 個執行緒 ← **安全**，LangGraph 丟執行緒池 |
+> | `async def` + `await` | 0.05s |
+> | **`async def` 裡阻塞** | **3.01s，完全序列化** ← 災難 |
+>
+> 所以共用容器的風險**不是「使用者沒寫非同步」**（那是直覺但錯的），
+> 而是「寫了 `async def` 卻在裡面阻塞」—— 一個具體、可靜態檢查的錯誤。
+>
+> ADR-0012 定了三個選項：A 維持現狀只補記憶體准入（誠實但不變快）、
+> B 一 Agent 一常駐容器（使用者提案）、C = B + 每容器並發上限 + 溢出開新容器。
+> **建議 C 且 N 預設為 1** —— N=1 時行為等同今天，可以先把常駐化做對再調 N。
+>
+> **這推翻 ADR-0001 第 2 條「沙盒絕不重用」**，所以是 P 級決定，不是實作細節。
+> P1/P2/P3/P5 不受影響；**P4 立場不動但實作要改**：token 必須跟著工作項走而非跟著容器，
+> 容器內用 `contextvars` 綁 `run_id`。誠實的代價是 L3/L4 從 per-Run 降為 per-Agent。
+>
+> spec 在 `specs/features/ZEN-015/`，分支 `feat/resident-agent-container`。
+> **實作卡在裁決**：選 A 跟選 C 的資料模型完全不同。
 
 > **開發資料清理已定為鐵則（2026-09-27，使用者裁示）**
 >
