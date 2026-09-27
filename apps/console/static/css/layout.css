@@ -670,9 +670,19 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   color: var(--text-primary);
 }
 
+/* 橫排流程圖：SVG 用自然寬度，太長時這裡橫向捲動。
+   SVG 若設 width:100% 會被縮到看不清字，那是我們不要的。 */
 .run-graph-canvas {
   overflow-x: auto;
+  overflow-y: hidden;
   padding: var(--space-3) 0;
+  /* 捲到底之前右側留一道漸層，暗示還有內容 */
+  background:
+    linear-gradient(to left, var(--bg-base), transparent 24px) right / 24px 100% no-repeat;
+}
+
+.run-graph-canvas svg {
+  display: block;
 }
 
 .graph-node-box {

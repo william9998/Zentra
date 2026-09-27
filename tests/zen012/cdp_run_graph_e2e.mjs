@@ -119,9 +119,31 @@ async function main() {
       `return document.querySelectorAll('[data-graph-canvas] .graph-node-count').length;`);
     record('graph.repeat_badge_shown', repeated >= 1, `${repeated} 個節點標了 ×N`);
 
+    // 版面方向：節點必須橫向排開，而不是疊成一欄
+    record('graph.lays_out_left_to_right', await evaluate(`
+      const boxes = [...document.querySelectorAll('[data-graph-canvas] .graph-node-box')];
+      if (boxes.length < 2) return false;
+      const xs = boxes.map(b => Number(b.getAttribute('x')));
+      const ys = boxes.map(b => Number(b.getAttribute('y')));
+      const increasing = xs.every((x, i) => i === 0 || x > xs[i - 1]);
+      const sameRow = ys.every(y => y === ys[0]);
+      return increasing && sameRow;
+    `), '節點要由左而右、同一列');
+
+    // 長流程要能捲，而不是被縮到看不清
+    record('graph.scrolls_instead_of_shrinking', await evaluate(`
+      const svg = document.querySelector('[data-graph-canvas] svg');
+      const canvas = document.querySelector('[data-graph-canvas]');
+      const widthAttr = svg.getAttribute('width');
+      if (widthAttr.includes('%')) return false;          // 100% 會縮到看不清
+      // 內容比容器寬時，容器必須可捲
+      if (svg.scrollWidth <= canvas.clientWidth) return true;   // 這次不夠長，不算失敗
+      return getComputedStyle(canvas).overflowX === 'auto';
+    `), 'SVG 要用自然寬度，容器負責捲動');
+
     record('graph.legend_mentions_retry', await evaluate(`
       return (document.querySelector('[data-graph-legend]').textContent || '').includes('retry');
-    `), '圖例要說明左側弧線是什麼');
+    `), '圖例要說明上方弧線是什麼');
 
     record('graph.no_library_loaded', await evaluate(`
       const srcs = [...document.querySelectorAll('script[src]')].map(s => s.src);
@@ -139,7 +161,11 @@ async function main() {
     record('fatal', false, String(error));
   } finally {
     child.kill('SIGKILL');
-    rmSync(profile, { recursive: true, force: true });
+    // Chrome 還在收尾時刪 profile 會 ENOTEMPTY。清不掉不是測試失敗，
+    // 只是留下一個暫存目錄 —— 不要讓它蓋掉真正的結果。
+    await sleep(200);
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+    catch { /* 暫存目錄清不掉，忽略 */ }
   }
 
   console.log(JSON.stringify({ checks }, null, 2));

@@ -7,9 +7,9 @@
 //
 // 所以這裡畫的是「這次 Run 實際走過的路」：
 //
-//   · 節點依**第一次出現**的順序由上而下排
+//   · 節點依**第一次出現**的順序由左而右排
 //   · 跑過多次的節點標 ×N，不重複畫一個框
-//   · 往回走的邊（回到更早出現過的節點）畫成右側的弧線 ← **那就是 retry 迴圈**
+//   · 往回走的邊（回到更早出現過的節點）畫成上方的弧線 ← **那就是 retry 迴圈**
 //
 // 對 Run 觀測來說這比靜態拓撲有用：靜態圖每次都長一樣，
 // 而「這次到底繞了幾圈」只有軌跡看得出來。
@@ -17,7 +17,10 @@
 // ## 為什麼是手寫 SVG
 //
 // ADR-0006 禁止任何執行期函式庫 —— d3 / cytoscape / mermaid 一律不行。
-// 版面因此刻意選了單欄直排：座標只是 index 乘上間距，不需要佈局演算法。
+// 版面因此刻意選了單列橫排：座標只是 index 乘上間距，不需要佈局演算法。
+//
+// **SVG 用自然像素寬度，不是 100%。** 設成 100% 會把長流程縮到看不清字；
+// 給它真實寬度、讓外層容器橫向捲動，節點大小才會固定（ui-contract §5.7）。
 //
 // 所有文字一律 textContent（節點名稱來自使用者的程式碼，是不可信字串）。
 
@@ -26,13 +29,15 @@ import { el } from '../dom.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// 版面常數。單欄直排，所以座標就是 index 乘間距 —— 沒有佈局演算法。
-const BOX_W = 260;
+// 版面常數。單列橫排，所以座標就是 index 乘間距 —— 沒有佈局演算法。
+const BOX_W = 190;
 const BOX_H = 56;
-const GAP = 40;
-const PAD_X = 28;          // 左側留白：回頭的弧線畫在這裡
-const PAD_Y = 20;
-const LOOP_OUT = 22;       // 弧線往左凸出多少
+const GAP = 56;            // 節點之間的水平間距，箭頭畫在這裡
+const PAD_X = 20;
+const PAD_TOP = 64;        // 上方留白：回頭的弧線畫在這裡
+const PAD_BOTTOM = 20;
+const ARC_BASE = 26;       // 弧線最低的高度
+const ARC_PER_SPAN = 14;   // 每跨過一個節點再加高一點，避免多條弧線重疊
 
 const FRAME = `
   <div class="run-graph" data-graph-root>
@@ -101,12 +106,13 @@ function buildTrace(events) {
 
 function render(canvas, trace, runFinished) {
   const { order, visits, done, edges } = trace;
-  const width = BOX_W + PAD_X * 2;
-  const height = PAD_Y * 2 + order.length * BOX_H + Math.max(0, order.length - 1) * GAP;
+  const width = PAD_X * 2 + order.length * BOX_W + Math.max(0, order.length - 1) * GAP;
+  const height = PAD_TOP + BOX_H + PAD_BOTTOM;
 
   const root = svg('svg', {
     viewBox: `0 0 ${width} ${height}`,
-    width: '100%',
+    // 自然寬度（不是 100%）—— 長流程要能橫向捲動，而不是被縮到看不清
+    width,
     height,
     role: 'img',
     'aria-label': `流程圖：依序經過 ${order.join('、')}`,
@@ -123,55 +129,59 @@ function render(canvas, trace, runFinished) {
   }
   root.appendChild(defs);
 
-  const topOf = (index) => PAD_Y + index * (BOX_H + GAP);
+  const leftOf = (index) => PAD_X + index * (BOX_W + GAP);
+  const midY = PAD_TOP + BOX_H / 2;
 
   // 先畫邊，節點蓋在上面
   for (const edge of edges) {
-    const fromTop = topOf(edge.fromIndex);
-    const toTop = topOf(edge.toIndex);
+    const fromLeft = leftOf(edge.fromIndex);
+    const toLeft = leftOf(edge.toIndex);
     if (!edge.back) {
       root.appendChild(svg('line', {
-        x1: PAD_X + BOX_W / 2, y1: fromTop + BOX_H,
-        x2: PAD_X + BOX_W / 2, y2: toTop,
+        x1: fromLeft + BOX_W, y1: midY,
+        x2: toLeft, y2: midY,
         class: 'graph-edge', 'marker-end': 'url(#gx-arrow)',
       }));
       continue;
     }
-    // 回頭的邊：從左側繞出去再接回上面的節點。這是 retry 迴圈的視覺形狀。
-    const startY = fromTop + BOX_H / 2;
-    const endY = toTop + BOX_H / 2;
-    const outX = PAD_X - LOOP_OUT;
+    // 回頭的邊：從上方繞回去。這是 retry 迴圈的視覺形狀。
+    // 跨得越遠拱得越高，多條弧線才不會疊在一起。
+    const span = Math.max(1, edge.fromIndex - edge.toIndex);
+    const lift = PAD_TOP - ARC_BASE - Math.min(span - 1, 3) * ARC_PER_SPAN;
+    const startX = fromLeft + BOX_W / 2;
+    const endX = toLeft + BOX_W / 2;
     root.appendChild(svg('path', {
-      d: `M ${PAD_X} ${startY} C ${outX} ${startY}, ${outX} ${endY}, ${PAD_X} ${endY}`,
+      d: `M ${startX} ${PAD_TOP} C ${startX} ${lift}, ${endX} ${lift}, ${endX} ${PAD_TOP}`,
       class: 'graph-edge graph-edge--back',
       fill: 'none', 'marker-end': 'url(#gx-arrow-back)',
     }));
   }
 
   order.forEach((name, index) => {
-    const top = topOf(index);
+    const left = leftOf(index);
+    const top = PAD_TOP;
     const count = visits.get(name) || 0;
     const isDone = done.has(name);
     const isRunning = !isDone && !runFinished;
 
     const group = svg('g', { class: 'graph-node' });
     group.appendChild(svg('rect', {
-      x: PAD_X, y: top, width: BOX_W, height: BOX_H, rx: 8,
+      x: left, y: top, width: BOX_W, height: BOX_H, rx: 8,
       class: 'graph-node-box'
         + (isRunning ? ' graph-node-box--running' : '')
         + (isDone ? ' graph-node-box--done' : ''),
     }));
     group.appendChild(svg('circle', {
-      cx: PAD_X + 18, cy: top + BOX_H / 2, r: 4,
+      cx: left + 16, cy: top + BOX_H / 2, r: 4,
       class: 'graph-node-dot'
         + (isRunning ? ' graph-node-dot--running' : ' graph-node-dot--done'),
     }));
 
     // 節點名稱來自使用者的程式碼 → textContent，且長名字截斷避免撐破框
     const label = svg('text', {
-      x: PAD_X + 34, y: top + BOX_H / 2 + 5, class: 'graph-node-label',
+      x: left + 30, y: top + BOX_H / 2 + 5, class: 'graph-node-label',
     });
-    label.textContent = name.length > 26 ? name.slice(0, 25) + '…' : name;
+    label.textContent = name.length > 17 ? name.slice(0, 16) + '…' : name;
     const title = svg('title');
     title.textContent = name;            // 完整名稱放 tooltip
     label.appendChild(title);
@@ -179,7 +189,7 @@ function render(canvas, trace, runFinished) {
 
     if (count > 1) {
       const badge = svg('text', {
-        x: PAD_X + BOX_W - 16, y: top + BOX_H / 2 + 5,
+        x: left + BOX_W - 12, y: top + BOX_H / 2 + 5,
         'text-anchor': 'end', class: 'graph-node-count',
       });
       badge.textContent = '×' + count;
@@ -222,7 +232,7 @@ export function mount(root, props = {}) {
       legend.append(' 個跑了不只一次');
     }
     if (loops) {
-      legend.append('。左側弧線是回頭的邊 —— 那是 retry 迴圈。');
+      legend.append('。上方弧線是回頭的邊 —— 那是 retry 迴圈。');
     } else {
       legend.append('。這次沒有回頭的邊。');
     }
