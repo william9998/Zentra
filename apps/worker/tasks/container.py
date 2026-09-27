@@ -45,7 +45,7 @@ def _manager(redis: Redis) -> SandboxManager:
     )
 
 
-def _destroy(manager: SandboxManager, agent_id, docker_id: str | None) -> None:
+def _destroy(manager: SandboxManager, container_uuid, docker_id: str | None) -> None:
     """銷毀這個 Agent 的常駐容器。**必須冪等** —— 重啟、停止、失敗清理都會走到這裡。
 
     **不能只靠 `row.container_id`。** 上一次啟動若在建立之後、寫回 DB 之前失敗
@@ -55,7 +55,7 @@ def _destroy(manager: SandboxManager, agent_id, docker_id: str | None) -> None:
     """
     from apps.sandbox.drivers.base import SandboxHandle
 
-    targets = [t for t in (docker_id, f"zentra-serve-{agent_id}") if t]
+    targets = [t for t in (docker_id, f"zentra-serve-{container_uuid}") if t]
     for target in targets:
         try:
             manager.driver_destroy(SandboxHandle(id=target, name=target))
@@ -99,7 +99,7 @@ def apply_container(self, container_uuid: str, action: str) -> dict:
         # 先撤銷的話，就算銷毀失敗，那個容器也已經拿不到任何新工作了。
         if action in ("stop", "restart"):
             containertoken.revoke_agent_sync(redis, row.agent_id)
-            _destroy(manager, row.agent_id, row.container_id)
+            _destroy(manager, row.id, row.container_id)
             row.container_id = None
             if action == "stop":
                 row.status = "STOPPED"
@@ -116,12 +116,13 @@ def apply_container(self, container_uuid: str, action: str) -> dict:
 
         # 啟動前先清殘骸。`start` 也要做，不只 `restart`：從 FAILED 重新啟動時
         # DB 沒有 container_id，但 Docker 裡可能留著上次那個退出的容器。
-        _destroy(manager, row.agent_id, row.container_id)
+        _destroy(manager, row.id, row.container_id)
 
         try:
             token = containertoken.issue_sync(redis, row.agent_id, _TOKEN_TTL_SECONDS)
             manager.prepare_image(version.image_ref)
             handle = manager.create_serve(
+                container_uuid=str(row.id),
                 agent_id=str(row.agent_id),
                 container_token=token,
                 image_ref=version.image_ref,

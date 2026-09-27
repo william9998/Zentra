@@ -1,14 +1,19 @@
 """Token-authenticated Gateway; reachable on port 8000, hidden from OpenAPI."""
 
+import json
+
 from fastapi import APIRouter, Depends, Request, Response
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.db import get_session
-from apps.api.deps import get_redis, require_run_token, require_run_token_only
+from apps.api.deps import (
+    get_redis, require_container_token, require_run_token, require_run_token_only,
+)
 from apps.api.models import Run
 from apps.api.schemas import BootstrapResponse, SandboxEvent, SandboxResult, ValidationPayload
-from apps.api.services import events, llm
+from apps.api.services import containers as container_service
+from apps.api.services import events, llm, work
 from apps.api.services.runs import save_result
 from apps.api.services.validation import save_validation
 from apps.api.deps import require_validation_token
@@ -91,4 +96,38 @@ async def llm_proxy(
         status_code=status,
         headers=headers,
         media_type=headers.get("content-type", "application/json"),
+    )
+
+
+@router.get("/agents/{agent_id}/work")
+async def take_work(
+    agent_id: str,
+    bound_agent_id: str = Depends(require_container_token),
+    redis: Redis = Depends(get_redis),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """常駐容器 long-poll 取工作（ZEN-015 / ADR-0012）。
+
+    **這是「容器拉、平台不推」的那一條路。** 讓平台推的話容器得監聽連線，
+    SPEC §8.1「容器內不開對外 HTTP port」與 L1 的「沙盒只有一個對外方向」就失效了。
+    用拉的，網路拓撲一個字都不用改。
+
+    回應：
+      · `200` + 工作項（含**那一個 Run 的** run token）
+      · `204` 逾時，沒有工作 —— 容器應該立刻再打一次
+
+    **取工作本身就是健康訊號**：容器能來要工作，表示它的 event loop 沒被卡死、
+    網路通、憑證有效。那正是我們想知道的全部，所以不另外做 `/healthz`。
+    """
+    import uuid as _uuid
+
+    await container_service.touch_health_by_agent(session, _uuid.UUID(bound_agent_id))
+
+    item = await work.pop(redis, bound_agent_id)
+    if item is None:
+        return Response(status_code=204)
+    return Response(
+        content=json.dumps(item),
+        status_code=200,
+        media_type="application/json",
     )

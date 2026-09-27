@@ -17,12 +17,16 @@ BUILD_QUEUE = "q.build"
 # 容器生命週期（ZEN-015）。走 q.build 而不是 q.run —— 它跟發布一樣是慢的、
 # 會拉 image 的工作，塞進 q.run 會卡住真正的 Run 派工。
 CONTAINER_TASK_NAME = "zentra.container.apply"
+# 常駐容器回寫結果後由 worker 裁決終態（ZEN-015）。走 q.run：它很快，
+# 而且跟 Run 的生命週期同一件事。
+FINALIZE_TASK_NAME = "zentra.run.finalize"
 
 _producer = Celery("zentra-producer", broker=_settings.redis_url, backend=_settings.redis_url)
 _producer.conf.task_routes = {
     RUN_TASK_NAME: {"queue": RUN_QUEUE},
     BUILD_TASK_NAME: {"queue": BUILD_QUEUE},
     CONTAINER_TASK_NAME: {"queue": BUILD_QUEUE},
+    FINALIZE_TASK_NAME: {"queue": RUN_QUEUE},
 }
 
 
@@ -61,3 +65,14 @@ def dispatch_container_restart(container_uuid: str) -> str:
 
 def dispatch_container_stop(container_uuid: str) -> str:
     return _dispatch_container(container_uuid, "stop")
+
+
+def dispatch_finalize(run_id: str) -> str:
+    """常駐容器回寫結果 → 請 worker 裁決終態。
+
+    task_id 帶前綴避免與 `dispatch_run` 的 task_id（就是 run_id）相撞。
+    """
+    result = _producer.send_task(
+        FINALIZE_TASK_NAME, args=[run_id], task_id=f"finalize:{run_id}"
+    )
+    return result.id

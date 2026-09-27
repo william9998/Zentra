@@ -14,14 +14,15 @@ from datetime import UTC, datetime
 
 import docker
 from redis import Redis
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import NoResultFound
 
 from apps.api.config import get_settings
 from apps.api.enums import BUILTIN_AGENT_VERSION_ID, AgentVersionStatus, ErrorCode, RunStatus
-from apps.api.models import AgentVersion, Run
-from apps.api.services import runtoken
+from apps.api.models import AgentContainer, AgentVersion, Run
+from apps.api.services import runtoken, work
 from apps.api.services import events as async_events
 from apps.sandbox.drivers.base import SandboxHandle, SandboxPlatformError
 from apps.sandbox.drivers.docker_driver import DockerSandboxDriver
@@ -200,6 +201,124 @@ async def finish(
     return {"run_id": str(run_id), "status": str(run.status)}
 
 
+def _sweep_timeouts(session: Session, redis: Redis) -> int:
+    """把逾時的常駐 Run 收成 FAILED（ZEN-015 / spec §5.3）。
+
+    一次性沙盒的逾時是 `driver.wait(timeout=…)` 抓的 —— 容器被殺、任務收尾。
+    **常駐容器不會被殺**，所以那個機制不存在：沙盒裡的 Run 若卡住或崩潰而沒回報，
+    這一列會永遠停在 RUNNING，而且畫面上看不出哪裡不對。
+
+    這裡刻意在「每次派工時順手掃」而不是開 celery beat ——
+    多一個排程服務要維運，而派工本來就會發生，掃描成本又極低。
+    代價誠實講：**沒有流量時不會掃**，所以最後幾筆可能停在 RUNNING 直到下次派工。
+
+    對「`async def` 裡阻塞」那種情況這條也救不了執行緒（ADR-0012 已寫明），
+    它只是讓**帳面上**的狀態誠實。
+    """
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    stale = session.execute(
+        select(Run).where(
+            Run.status == RunStatus.RUNNING,
+            Run.container_id.isnot(None),
+            Run.started_at.isnot(None),
+        ).limit(50)
+    ).scalars().all()
+
+    swept = 0
+    for run in stale:
+        deadline = run.started_at + timedelta(seconds=run.timeout_seconds)
+        if now < deadline:
+            continue
+        _transition(
+            session, redis, run.id, RunStatus.FAILED, terminal=True,
+            error=_error(
+                ErrorCode.SANDBOX_TIMEOUT,
+                f"the run exceeded its {run.timeout_seconds}s limit inside a resident "
+                "container and never reported a result",
+                str(run.id), True,
+            ),
+        )
+        runtoken.revoke_run_sync(redis, str(run.id))
+        if run.container_id:
+            session.execute(
+                update(AgentContainer)
+                .where(AgentContainer.id == run.container_id,
+                       AgentContainer.inflight_runs > 0)
+                .values(inflight_runs=AgentContainer.inflight_runs - 1)
+            )
+        swept += 1
+    if swept:
+        session.commit()
+        log.warning("swept %d timed-out resident runs", swept)
+    return swept
+
+
+@celery_app.task(name="zentra.run.finalize", bind=True, max_retries=0)
+def finalize_run(self, run_id: str) -> dict:
+    """常駐容器回寫結果後，由 worker 決定終態（ZEN-015）。
+
+    一次性沙盒的終態是 `_finish_sync` 在容器退出後決定的。常駐容器不會退出，
+    所以那個訊號不存在 —— 改由「結果進來了」觸發這個任務。
+
+    **終態的裁決權仍在 worker**（契約 §4：`/result` 只保存，不轉狀態）。
+    Gateway 收到結果就自己轉狀態的話，沙盒等於能宣告自己成功了。
+    """
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    with SessionSync() as session:
+        rid = uuid.UUID(run_id)
+        run = session.get(Run, rid)
+        if run is None or RunStatus(run.status).is_terminal:
+            return {"run_id": run_id, "status": run.status if run else "NOT_FOUND"}
+
+        # 容器把結果寫進來了，所以 exit code 用 0 或 1 表示「它說成功／失敗」。
+        # 判斷仍然看 run.error 有沒有東西 —— 那是沙盒回報的內容，不是它的主張。
+        exit_code = 1 if run.error else 0
+        result = _finish_sync(session, redis, rid, exit_code, None)
+
+        # 常駐路徑的 token 是在這裡撤銷的 —— execute_run 那邊不能撤，
+        # 因為它返回時容器才正要用（P4：跑完立即撤銷，只是「跑完」的時機不同）。
+        runtoken.revoke_run_sync(redis, run_id)
+
+        # 讓出容器的名額。**一定要做** —— 不減的話 inflight_runs 只增不減，
+        # 容器很快就會被當成滿載而所有 Run 都退回一次性沙盒。
+        if run.container_id:
+            session.execute(
+                update(AgentContainer)
+                .where(AgentContainer.id == run.container_id,
+                       AgentContainer.inflight_runs > 0)
+                .values(inflight_runs=AgentContainer.inflight_runs - 1)
+            )
+            session.commit()
+        return result
+
+
+def _ready_container(session: Session, agent_id, version_id) -> AgentContainer | None:
+    """這個 Agent 有沒有還有空位的 READY 容器（ZEN-015）。
+
+    **必須同時比對版本** —— 容器綁定單一 `agent_version_id`（P5）。
+    發新版之後舊容器還在跑舊版本，把新版的 Run 派進去會執行到錯的程式碼。
+
+    滿載（`inflight_runs >= N`）的容器不算 —— 那是 ADR-0012 選項 C 的「溢出」，
+    目前的行為是退回一次性沙盒，之後會改成開第二個容器。
+    """
+    limit = settings.sandbox_runs_per_container
+    row = session.execute(
+        select(AgentContainer)
+        .where(
+            AgentContainer.agent_id == agent_id,
+            AgentContainer.agent_version_id == version_id,
+            AgentContainer.status == "READY",
+            AgentContainer.inflight_runs < limit,
+        )
+        .order_by(AgentContainer.inflight_runs.asc())
+        .with_for_update()
+        .limit(1)
+    ).scalar_one_or_none()
+    return row
+
+
 @celery_app.task(name="zentra.run.execute", bind=True, acks_late=True)
 def execute_run(self, run_id: str) -> dict:
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
@@ -209,6 +328,11 @@ def execute_run(self, run_id: str) -> dict:
     handle: SandboxHandle | None = None
     token: str | None = None
     reserved = False
+    # 常駐容器（ZEN-015）：任務把工作丟進佇列就返回，但容器**才正要用那把 token**。
+    # 一次性沙盒是「任務結束 = 沙盒結束」，所以 finally 撤銷是對的；
+    # 常駐路徑不是。撤銷改由 finalize_run 在終態時做。
+    # 實測踩過：不區分的話容器回寫事件會 401，而錯誤只出現在容器日誌裡。
+    dispatched_to_container = False
 
     try:
         rid = uuid.UUID(run_id)
@@ -245,6 +369,43 @@ def execute_run(self, run_id: str) -> dict:
                 ),
             )
             return {"run_id": run_id, "status": str(RunStatus.FAILED)}
+
+        # ── ZEN-015：有常駐容器就派進去，沒有才開一次性沙盒 ──────────
+        #
+        # 這是新舊兩條路的分岔點。**沒啟動容器的 Agent 行為完全不變** ——
+        # 舊 image（沒有 serve 模式）也照樣能跑，因為它們走的還是下面那條。
+        # 順手掃逾時的常駐 Run。放在這裡是為了不用多養一個 celery beat ——
+        # 代價是沒有流量時不會掃（見 _sweep_timeouts 的說明）。
+        try:
+            _sweep_timeouts(session, redis)
+        except Exception:                          # noqa: BLE001
+            # 掃描失敗不該影響這次派工。
+            log.exception("sweeping timed-out runs failed")
+            session.rollback()
+
+        container = _ready_container(session, run.agent_id, version.id)
+        if container is not None:
+            work.push_sync(redis, run.agent_id, {
+                "run_id": run_id,
+                "run_token": token,                # ← P4：token 跟著工作項走
+                "entrypoint": run.entrypoint,
+                "input": run.input,
+                "manifest": version.manifest or {},
+            })
+            container.inflight_runs += 1
+            _transition(session, redis, rid, RunStatus.RUNNING,
+                        started_at=datetime.now(UTC))
+            session.execute(
+                update(Run).where(Run.id == rid).values(container_id=container.id)
+            )
+            session.commit()
+            # **不等結果就返回。** 常駐容器同時跑 N 個 Run，而 Celery worker 只有
+            # 十個行程 —— 在這裡等會讓 Celery 變成新的瓶頸，N 就白設了。
+            # 結果由容器自己回寫 /internal/runs/{id}/result，終態由 finalize_run 裁決。
+            manager.release(run_id)
+            reserved = False
+            dispatched_to_container = True
+            return {"run_id": run_id, "status": str(RunStatus.RUNNING), "dispatched": True}
 
         # Keep the ZEN-000 fixture runnable during the migration. Every user
         # registered version uses the exact DB-resolved digest path.
@@ -291,7 +452,7 @@ def execute_run(self, run_id: str) -> dict:
 
     finally:
         # 順序有意義：先撤銷憑證，再銷毀沙盒，最後才放掉併發名額
-        if token:
+        if token and not dispatched_to_container:
             # Revoke every token for this Run, including one left by a
             # redelivered task that raced before the terminal state was set.
             runtoken.revoke_run_sync(redis, run_id)

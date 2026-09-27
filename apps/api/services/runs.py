@@ -65,3 +65,11 @@ async def save_result(session: AsyncSession, run_id: UUID, body: SandboxResult) 
         run.usage = usage
         run.result_received_at = datetime.now(UTC)
     await session.commit()
+
+    # 常駐容器（ZEN-015）沒有「容器退出」這個訊號，所以沒有 worker 在等它。
+    # 結果進來就是終態的觸發點 —— 但**裁決權仍在 worker**（契約 §4：
+    # `/result` 只保存，不轉狀態）。Gateway 自己轉的話，沙盒等於能宣告自己成功。
+    if run.container_id is not None:
+        from apps.api.tasks import dispatch_finalize
+        import asyncio
+        await asyncio.to_thread(dispatch_finalize, str(run_id))

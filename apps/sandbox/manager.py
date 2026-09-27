@@ -171,6 +171,7 @@ class SandboxManager:
 
     def create_serve(
         self,
+        container_uuid: str,
         agent_id: str,
         container_token: str,
         image_ref: str,
@@ -182,6 +183,7 @@ class SandboxManager:
         容器內的並發由 `max_concurrent_runs` 控（ADR-0012 的 N）。
         """
         spec = SandboxSpec.for_serve(
+            container_uuid=container_uuid,
             agent_id=agent_id,
             image_ref=image_ref,
             network=self._network,

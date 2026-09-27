@@ -146,6 +146,20 @@ async def mark_failed(
     await session.commit()
 
 
+async def touch_health_by_agent(session: AsyncSession, agent_id: uuid.UUID) -> None:
+    """容器來取工作時呼叫。用 agent_id 找是因為容器只知道自己屬於哪個 Agent ——
+    它不知道自己在 DB 裡的那一列 id，也不需要知道。"""
+    rows = await live_containers(session, agent_id)
+    if not rows:
+        return
+    now = datetime.now(UTC)
+    for row in rows:
+        row.last_health_at = now
+        if row.status in ("STARTING", "UNHEALTHY"):
+            row.status = "READY"
+    await session.commit()
+
+
 async def touch_health(session: AsyncSession, container_uuid: uuid.UUID) -> None:
     """容器 long-poll 取工作時呼叫 —— **取工作本身就是最好的健康訊號**。
 

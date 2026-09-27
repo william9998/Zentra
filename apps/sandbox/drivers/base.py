@@ -177,6 +177,7 @@ class SandboxSpec:
     def for_serve(
         cls,
         *,
+        container_uuid: str,
         agent_id: str,
         image_ref: str,
         network: str,
@@ -188,9 +189,14 @@ class SandboxSpec:
 
         **注意這裡沒有 run token。** 容器啟動時還不知道要跑哪個 Run；
         run token 跟著工作項在 long-poll 的回應裡進來（ADR-0012 的 P4 實作）。
+
+        **`resource_id` 是容器列的 id，不是 agent_id。** 一個 Agent 可以有多個容器
+        （版本切換期間並存、並發滿了溢出），用 agent_id 當容器名會讓第二個容器
+        把第一個擠掉 —— 實測踩過：啟動新版本時舊版本的容器被無聲殺掉，
+        DB 卻還留著兩列都說 READY。
         """
         return cls(
-            resource_id=agent_id,
+            resource_id=container_uuid,
             image_ref=image_ref,
             network=network,
             mode=SandboxMode.SERVE,
@@ -283,9 +289,13 @@ class SandboxSpec:
         expected = expected_by_mode[self.mode]
         if set(self.env) != expected:
             raise ValueError(f"{self.mode.value} environment must contain exactly {sorted(expected)}")
+        if self.mode is SandboxMode.SERVE:
+            # SERVE 的 resource_id 是容器列的 id（容器名要唯一），
+            # 而 env 裡的 ZENTRA_AGENT_ID 是它服務哪個 Agent —— 兩者本來就不同。
+            self._validate_limits()
+            return
         id_key = {
             SandboxMode.VALIDATE: "ZENTRA_AGENT_VERSION_ID",
-            SandboxMode.SERVE: "ZENTRA_AGENT_ID",
         }.get(self.mode, "ZENTRA_RUN_ID")
         if self.env[id_key] != self.resource_id:
             raise ValueError(f"{self.mode.value} resource ID does not match spec")
