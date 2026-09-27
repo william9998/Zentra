@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.5.3` |
+| 契約版本 | `v0.5.4` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -402,6 +402,39 @@ export function mount(el, props) {
 | Partial / Streaming | `BUILDING` 輪詢態；保留 `202` 已知 metadata，超過 3 秒顯示驗證工作內容與已耗時 |
 | Success | `PUBLISHED` 摘要與前往詳情 CTA；輪詢已停止 |
 
+### 5.7 `run-graph.js` — Run 的流程圖版面（v0.5.4 新增，ZEN-014）
+
+Run 觀測頁的第二種版面。時間軸上方一組 `role="group"` 的切換鈕（時間軸 / 流程圖），
+用 `aria-pressed` 表示目前版面，**不是**只靠顏色。
+
+**畫的是執行軌跡，不是 graph 定義。** 平台不知道使用者的 graph 長什麼樣 ——
+`entrypoints` 只描述輸入輸出。手上只有 `node.start` / `node.end` 的先後順序，
+所以畫的是「這次實際走過的路」：
+
+- 節點依**第一次出現**的順序單欄直排；跑過多次的標 `×N`，不重複畫框
+- 往回走的邊（回到更早出現過的節點）畫成左側弧線，**虛線 + 不同顏色** —— 那是 retry 迴圈
+- 每個節點一個狀態圓點：執行中 / 已完成，配合框線顏色，不只靠顏色區分
+
+**硬性規則**：
+
+1. **手寫 inline SVG，不得引入任何繪圖函式庫**（d3 / cytoscape / mermaid 一律不行，ADR-0006）。
+   版面因此刻意選單欄直排：座標是 index 乘間距，不需要佈局演算法。
+2. 節點名稱來自使用者的程式碼，是**不可信字串** —— 一律 `textContent`，
+   過長截斷並把完整名稱放 `<title>`。
+3. **不自己訂閱 SSE。** 兩個版面共用時間軸收到的同一份事件；
+   兩份訂閱會各自漏事件，而且沒人分得出哪一份是對的。
+4. Run 進終態時要收到 `finished`，否則沒收到 `node.end` 的節點會永遠顯示成執行中。
+
+五態：
+
+| 狀態 | 呈現與動作 |
+|---|---|
+| Loading | 不適用（資料來自時間軸，切過去時已經有了） |
+| Empty | 還沒有節點事件時顯示一句說明，不畫空白畫布 |
+| Error | 不適用（錯誤由時間軸與頁面錯誤區負責） |
+| Partial / Streaming | 執行中的節點以 `--running` 框線與圓點標示；新事件進來即重繪 |
+| Success | 全部節點 `--done`；圖例說明有幾個節點、幾個跑了不只一次、有沒有回頭的邊 |
+
 ### 5.6 `llm-credential-card.js` — 這個 Agent 的 LLM 憑證（v0.5.3 新增，ZEN-012）
 
 位於 Agent 詳情頁的一張 card。**不在版本列表裡** —— 憑證綁 Agent 不綁版本
@@ -574,6 +607,7 @@ apps/console/
       components/
         streaming-output.js  run-timeline.js  endpoints-card.js
         llm-credential-card.js       ← §5.6（ZEN-012）
+        run-graph.js                 ← §5.7（ZEN-014）
         create-agent-dialog.js  agent-list.js  agent-version-list.js
         version-registration.js  run-composer.js  recent-runs.js
       pages/

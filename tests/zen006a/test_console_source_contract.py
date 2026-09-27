@@ -46,6 +46,7 @@ EXPECTED_FILES = {
     "static/js/components/edit-agent-dialog.js",
     "static/js/components/endpoints-card.js",
     "static/js/components/llm-credential-card.js",
+    "static/js/components/run-graph.js",
     "static/js/components/recent-runs.js",
     "static/js/components/run-composer.js",
     "static/js/components/run-timeline.js",

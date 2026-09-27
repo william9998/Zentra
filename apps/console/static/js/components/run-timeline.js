@@ -226,6 +226,10 @@ export function mount(root, props = {}) {
     get length() {
       return events.length;
     },
+    /** 圖表版面要讀同一份事件 —— 兩個版面各存一份會漂移。 */
+    get events() {
+      return events;
+    },
     update(next = {}) {
       if (next.state) setState(next.state, next.info);
       if (next.connection !== undefined) setConnection(next.connection);

@@ -657,3 +657,73 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   font-weight: normal;
   color: var(--text-secondary);
 }
+
+/* Run 觀測的版面切換與流程圖（ui-contract §5.7 / ZEN-014） */
+.view-switch {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 calc(var(--space-2) * -1);
+}
+
+.view-switch [aria-pressed="true"] {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+.run-graph-canvas {
+  overflow-x: auto;
+  padding: var(--space-3) 0;
+}
+
+.graph-node-box {
+  fill: var(--surface-2);
+  stroke: var(--border-default);
+  stroke-width: 1;
+}
+
+.graph-node-box--running {
+  stroke: var(--status-running);
+}
+
+.graph-node-box--done {
+  stroke: var(--border-strong);
+}
+
+.graph-node-dot--running {
+  fill: var(--status-running);
+}
+
+.graph-node-dot--done {
+  fill: var(--status-succeeded);
+}
+
+.graph-node-label {
+  fill: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.graph-node-count {
+  fill: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.graph-edge {
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+/* 回頭的邊 —— retry 迴圈。用虛線與不同顏色，不只靠位置區分。 */
+.graph-edge--back {
+  stroke: var(--status-scheduling);
+  stroke-dasharray: 4 3;
+}
+
+.graph-arrow {
+  fill: var(--border-strong);
+}
+
+.graph-arrow--back {
+  fill: var(--status-scheduling);
+}

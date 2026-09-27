@@ -13,6 +13,7 @@ import {
 } from '../dom.js';
 import { createStore } from '../store.js';
 import { mount as mountShell } from '../shell.js';
+import { mount as mountGraph } from '../components/run-graph.js';
 import { mount as mountTimeline } from '../components/run-timeline.js';
 
 // §2 Run 狀態的視覺語言：圓點 + 文字標籤，永遠不只靠顏色。
@@ -38,7 +39,15 @@ const PAGE = `
       <div class="card-header"><h2 class="card-title">基本資料</h2></div>
       <div class="meta-grid" data-meta></div>
     </section>
+    <div class="view-switch" role="group" aria-label="事件檢視方式">
+      <button type="button" class="btn-ghost btn-sm" data-view="timeline" aria-pressed="true">時間軸</button>
+      <button type="button" class="btn-ghost btn-sm" data-view="graph" aria-pressed="false">流程圖</button>
+    </div>
     <div data-timeline></div>
+    <section class="card" data-graph-card hidden>
+      <div class="card-header"><h2 class="card-title">流程圖</h2></div>
+      <div data-graph></div>
+    </section>
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">結果</h2>
@@ -127,7 +136,31 @@ function main() {
   const resultActions = app.querySelector('[data-result-actions]');
   const usageSlot = app.querySelector('[data-usage]');
   const pageErrorSlot = app.querySelector('[data-page-error]');
-  const timeline = mountTimeline(app.querySelector('[data-timeline]'), {
+  const graphCard = app.querySelector('[data-graph-card]');
+  const timelineSlot = app.querySelector('[data-timeline]');
+  const viewButtons = [...app.querySelectorAll('[data-view]')];
+  const graph = mountGraph(app.querySelector('[data-graph]'), { events: [], finished: false });
+
+  // 兩個版面共用 timeline 收到的同一份事件；切換只是顯示哪一個。
+  // 圖表不自己訂閱 SSE —— 兩份訂閱會各自漏事件，而且沒人分得出哪一份是對的。
+  let view = 'timeline';
+  const syncView = () => {
+    timelineSlot.hidden = view !== 'timeline';
+    graphCard.hidden = view !== 'graph';
+    for (const button of viewButtons) {
+      button.setAttribute('aria-pressed', String(button.dataset.view === view));
+    }
+    if (view === 'graph') graph.update({ events: timeline.events });
+  };
+  const onViewClick = (event) => {
+    const button = event.target.closest('[data-view]');
+    if (!button) return;
+    view = button.dataset.view;
+    syncView();
+  };
+  for (const button of viewButtons) button.addEventListener('click', onViewClick);
+
+  const timeline = mountTimeline(timelineSlot, {
     state: 'loading',
     connection: '準備連線…',
     runId,
@@ -328,6 +361,8 @@ function main() {
       store.set({ run });
       if (isTerminalStatus(run.status)) stopElapsedTimer();
       else startElapsedTimer();
+      // Run 已終結 → 圖表不要再把沒收到 node.end 的節點畫成「執行中」
+      graph.update({ finished: isTerminalStatus(run.status), events: timeline.events });
     } catch (error) {
       if (error instanceof ApiError) {
         // 已經有畫面時不要把整頁換掉，只在串流區塊說明。
@@ -355,6 +390,7 @@ function main() {
       onEvent(event) {
         event.receivedAt = new Date();
         timeline.append(event);
+        if (view === 'graph') graph.update({ events: timeline.events });
         if (event.type === EVENT_TYPE.NODE_START || event.type === EVENT_TYPE.NODE_END) {
           store.set({ currentNode: event.node });
         }
@@ -402,6 +438,8 @@ function main() {
       subscription = null;
     }
     timers.clearAll();          // 所有 setInterval / setTimeout
+    for (const button of viewButtons) button.removeEventListener('click', onViewClick);
+    graph.destroy();
     timeline.destroy();
     shell.destroy();
     store.clear();

@@ -115,6 +115,7 @@
 | **ZEN-009** | **內部 Registry**：compose 加 `registry:2`（`127.0.0.1:6000`），使用者**同機** `docker push` → 用既有端點註冊 digest。**tar 上傳已撤回** | `REVIEW` | @builder（主體，已交付）；@reviewer 驗收 | ZEN-008 | [ADR-0009](../specs/adr/ADR-0009-internal-registry-image-upload.md) · [spec](../specs/features/ZEN-009/spec.md) · [交接](handoffs/ZEN-009/architect-to-implementation.md) |
 | **ZEN-012** | **per-agent LLM 憑證**：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential`、Fernet 靜態加密、Gateway 依 Agent 選金鑰 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | [ADR-0011](../specs/adr/ADR-0011-per-agent-llm-credentials.md) · 見下方 |
 | **ZEN-013** | **Gateway 代理 Responses API**：`/internal/llm/v1/{path}` 改白名單制（`chat/completions` + `responses`），usage 解析支援兩種形狀 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-002 | 見下方 |
+| **ZEN-014** | **Run 流程圖版面**：時間軸旁加切換鈕，用手寫 SVG 畫「這次實際走過的路」，回頭的邊 = retry 迴圈 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-006A | ui-contract v0.5.4 §5.7 |
 | ZEN-011 | **測試 fixture 不清理**：`tests/zen008` 每跑一次留下數十個 agent，累積到 894 筆才被發現。加 teardown 或改用可辨識的前綴 + 套件結束時批次清 | `BACKLOG` | @reviewer | — | 見下方說明 |
 | ZEN-010 | **退休 ZEN-000 內建 fixture**：移除 `builtin-echo` 與 `agent-runtime` 這條特例路徑，讓 Run 只剩「跑 agent 自己的 image」一條 | `BACKLOG` | @builder；@reviewer 驗收 | ZEN-009 驗收完 | 見下方說明 |
 | ZEN-007 | **收尾與驗收**：隔離回歸測試、失敗路徑、`zentra` CLI、demo 腳本、README | `BACKLOG` | @reviewer + @builder | ZEN-002…006 + ZEN-008 | — |
@@ -192,6 +193,30 @@
 > 會蓋掉 compose 的預設值。改名後沒同步 `.env`，沙盒拿到的仍是舊主機名，
 > **Run 會 FAILED 且完全沒有事件**，而隔離測試全部照樣通過 —— 症狀不指向原因。
 > 冒煙測試當時是 21 通過 / 6 失敗，六條全是「沙盒回報不了」。
+
+> **ZEN-014（2026-09-27）：Run 觀測頁加流程圖版面。**
+>
+> 使用者反映事件時間軸「太工程師」，要 n8n 那種節點圖。
+>
+> **一個設計決定值得記**：平台**不知道**使用者的 graph 長什麼樣 ——
+> `entrypoints` 只描述輸入輸出，沒有節點與邊。手上只有 `node.start` / `node.end` 的順序。
+> 所以畫的是**這次實際走過的路**，不是靜態拓撲：節點依第一次出現排序、
+> 跑過多次標 `×N`、**往回走的邊畫成左側虛線弧** —— 那就是 retry 迴圈。
+> 對 Run 觀測來說這反而比靜態圖有用：靜態圖每次都長一樣，繞了幾圈只有軌跡看得出來。
+>
+> **手寫 inline SVG**，ADR-0006 禁止任何繪圖函式庫（d3 / cytoscape / mermaid）。
+> 版面刻意選單欄直排：座標是 index 乘間距，不需要佈局演算法。
+>
+> 兩個版面**共用時間軸收到的同一份事件**，圖表不自己訂閱 SSE ——
+> 兩份訂閱會各自漏事件，而且沒人分得出哪一份是對的。
+>
+> 瀏覽器 E2E `tests/zen012/cdp_run_graph_e2e.mjs` **11/11**，
+> 含最重要的 `back_edge_drawn`（沒過的話這個版面沒比時間軸多給任何東西）。
+> 實測 5 個節點、1 條回頭的邊、3 個節點標 ×N。
+>
+> **踩到的坑**：事件 view model 的節點名在頂層 `event.node`，不是 `event.data.node`
+> （見 `api.js` 的 `viewEvent()`）。第一次跑 E2E 時圖是空的但不報錯 ——
+> 欄位讀錯在 JS 裡是 `undefined`，安靜跳過。
 
 > **ZEN-013（2026-09-26）：Gateway 不再綁死一條路徑。**
 >
