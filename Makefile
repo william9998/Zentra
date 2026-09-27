@@ -9,7 +9,7 @@
 # 那正是 ZEN-009 的 Z9-A6 在防的事。長駐服務就是五個，不多不少。
 
 .DEFAULT_GOAL := help
-.PHONY: help up down ps logs images base runtime migrate smoke test console rebuild-app
+.PHONY: help up down ps logs images base runtime migrate smoke test clean-test-data console rebuild-app
 
 API      := http://localhost:8000
 REGISTRY := 127.0.0.1:6000
@@ -81,6 +81,9 @@ test:  ## 跑測試，例：make test SUITE=tests/zen008（預設不含瀏覽器
 			zentra-app:latest \
 			sh -c "pip install -q pytest pytest-asyncio anyio 2>/dev/null; pytest $(SUITE) $(IGNORE) -q"; \
 	fi
+
+clean-test-data:  ## **開發完必跑**：清掉平台上的測試 Agent 與 Run（留 builtin fixture）
+	bash scripts/clean-test-data.sh
 
 # ── 其他 ──────────────────────────────────────────────────────────────
 

@@ -67,6 +67,10 @@ coordination/BOARD.md 任務看板
 3. **契約優先。** 前端不准猜欄位名，後端不准自創回應格式。兩邊都對 `specs/api-contract.md`。
 4. **誠實回報。** 測試沒過就說沒過，附輸出。沒做的明講。不要用「已完成」帶過。
 5. **不擴張範圍。** 發現順帶該修的 → 記在 BOARD 或回報裡，不要自己加戲。
+6. **收掉自己造的測試資料。** 開發結束前跑 `make clean-test-data` ——
+   在平台上建立的測試 Agent 與 Run 一律清掉（內建 fixture 留著）。
+   **這是交付的一部分**，不是附加的禮貌：測試每跑一次留下數十個 Agent，
+   實測累積到過 894 個，Console 完全看不出哪個是真的（見 `AGENTS.md` §開發資料的清理）。
 
 ## 什麼時候叫 subagent
 
@@ -91,6 +95,7 @@ uv sync && uv run uvicorn apps.api.main:app --reload   # 同時服務 Console �
 uv run celery -A apps.worker.celery_app worker -Q q.run,q.build -l info
 uv run alembic upgrade head
 uv run pytest                   # 平常只跑受影響的 suite：uv run pytest tests/zen008
+make clean-test-data            # **開發完必跑**：清掉平台上的測試 Agent 與 Run
 
 # Agent base image（使用者的 agent image 以此為基底，ADR-0009）
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
