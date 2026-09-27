@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.5.0` |
+| 契約版本 | `v0.6.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -229,9 +229,51 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 | `PUT` | `/v1/agents/{id}/llm-credential` | 註冊／覆寫這個 Agent 的 LLM 憑證（見 §2.1） |
 | `GET` | `/v1/agents/{id}/llm-credential` | 憑證的 metadata。**永遠不含金鑰** |
 | `DELETE` | `/v1/agents/{id}/llm-credential` | 移除憑證，退回用平台預設金鑰 |
+| `GET` | `/v1/agents/{id}/containers` | 這個 Agent 的常駐容器狀態（見 §2.2） |
+| `POST` | `/v1/agents/{id}/containers` | 啟動常駐容器。回 `202` |
+| `POST` | `/v1/agents/{id}/containers/{cid}/restart` | 重啟。回 `202` |
+| `DELETE` | `/v1/agents/{id}/containers/{cid}` | 停止。回 `202` |
 
 > `PUT /v1/agents/{id}/aliases/{alias}`（流量切換）於 v0.2.0 移除。
 > 呼叫時不指定 `version` 即用最新 `PUBLISHED` 版本。
+
+### 2.2 常駐容器（v0.6.0 新增，ZEN-015）
+
+依 [ADR-0012](./adr/ADR-0012-resident-agent-container.md)：一 Agent 一（或多）常駐容器。
+
+**啟動是明確動作，不是註冊的副作用** —— 註冊是「這個版本存在」，
+啟動是「現在開始佔資源」。綁在一起會讓「發十個版本」變成「開十個容器」。
+
+```jsonc
+// POST /v1/agents/{id}/containers   body 可省略，省略就用最新的 PUBLISHED
+{ "version": "1.2.0" }
+```
+
+三條寫入端點都回 **`202`**：平台只登記期望狀態，實際建立／銷毀由 worker 做
+（`api` 不掛 `docker.sock`，而且 image pull 可能很慢）。
+
+```jsonc
+{
+  "container_id": "01a0…",
+  "agent_id": "01a0…",
+  "agent_version": "1.2.0",
+  "status": "READY",              // STARTING | READY | UNHEALTHY | STOPPED | FAILED
+  "inflight_runs": 3,
+  "max_concurrent_runs": 30,      // SANDBOX_RUNS_PER_CONTAINER
+  "restart_count": 0,
+  "started_at": "…", "last_health_at": "…",
+  "error": null
+}
+```
+
+**硬規則**：
+
+1. `status` 只有上面五個值。`READY` 表示**實際確認過容器還在跑**，
+   不是「建立指令沒報錯」—— 一啟動就退出的容器必須是 `FAILED` 並在 `error` 帶上它的輸出。
+2. `restart_count` 一定要回。一直重啟的容器是壞掉了，不是需要再重啟一次，
+   而那件事在畫面上看起來跟「剛啟動」一模一樣。
+3. 容器綁定單一版本（P5）。發新版要新容器，切換期間兩個並存。
+4. 新增錯誤 code `AGENT_NOT_RUNNING`：呼叫了沒有 `READY` 容器的 Agent。
 
 ### 2.1 Agent 的 LLM 憑證（v0.5.0 新增，ZEN-012）
 
@@ -491,6 +533,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.6.0 | 2026-09-27 | **新增常駐容器端點**（ZEN-015 / ADR-0012）：`GET`/`POST /v1/agents/{id}/containers`、`POST .../restart`、`DELETE .../{cid}`，與 §2.2。新增錯誤 code `AGENT_NOT_RUNNING`。**Runs／SSE／MCP 的形狀完全未變** —— 常駐化對呼叫端無感 | @architect |
 | v0.5.0 | 2026-09-26 | **新增 per-agent LLM 憑證**（ZEN-012）：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential` 三條端點與 §2.1。憑證綁 Agent 不綁版本；回應永不含金鑰。Runs／SSE／MCP 形狀未變，無新增錯誤 code | @architect |
 | v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的全部新增**：移除 multipart 形狀、移除 `artifact.origin`、`version_id`/`artifact.image_ref`/`artifact.digest` 恢復為任何狀態都非 `null`、`details.stage` 值域退回 `PULL|INSPECT|VALIDATE`、`QUOTA_EXCEEDED` 退回只表示併發 Run 上限。改為使用者在平台主機上直接 `docker push localhost:6000/<repo>:<tag>` 後以既有 JSON 路徑註冊。**v0.4.0 的新增從未實作，因此相對於 v0.3.1 本次是零變更** | @architect |
 | v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 讓 `POST /v1/agents/{id}/versions` 同時接受 multipart image tar 上傳；新增 `artifact.origin`（純描述性）；`version_id`/`artifact.image_ref`/`artifact.digest` 在 `UPLOADED` + `BUILDING` 期間可為 `null`；`details.stage` 值域加 `LOAD`/`PUSH`；`QUOTA_EXCEEDED` 說明放寬到含磁碟餘裕。**沒有新增錯誤 code**，`version_id` 語意與 Runs/SSE/MCP 形狀未變 | @architect |

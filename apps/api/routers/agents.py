@@ -14,14 +14,22 @@ from apps.api.schemas import (
     AgentVersionResponse,
     CreateAgentRequest,
     CreateAgentResponse,
+    AgentContainerListResponse,
+    AgentContainerResponse,
     AgentLlmCredentialResponse,
     CreateAgentVersionRequest,
+    StartAgentContainerRequest,
     SetAgentLlmCredentialRequest,
     UpdateAgentRequest,
 )
+from apps.api.config import get_settings
 from apps.api.services import agent_credentials
 from apps.api.services import agents as service
-from apps.api.tasks import dispatch_build
+from apps.api.services import containers as container_service
+from apps.api.tasks import (
+    dispatch_build, dispatch_container_restart,
+    dispatch_container_start, dispatch_container_stop,
+)
 
 router = APIRouter(prefix="/v1/agents", tags=["agents"])
 
@@ -81,6 +89,94 @@ async def delete_agent(
 ) -> Response:
     await service.delete_agent(session, await service.load_agent(session, agent_id))
     return Response(status_code=204)
+
+
+# ── 常駐容器（ZEN-015）────────────────────────────────────────────────
+#
+# **啟動是明確動作，不是註冊的副作用。** 註冊是「這個版本存在」，
+# 啟動是「現在開始佔資源」——綁在一起會讓「發十個版本」變成「開十個容器」。
+
+
+def _container_view(row, semver: str) -> AgentContainerResponse:
+    return AgentContainerResponse(
+        container_id=str(row.id),
+        agent_id=str(row.agent_id),
+        agent_version=semver,
+        status=row.status,
+        inflight_runs=row.inflight_runs,
+        max_concurrent_runs=get_settings().sandbox_runs_per_container,
+        restart_count=row.restart_count,
+        started_at=row.started_at,
+        last_health_at=row.last_health_at,
+        error=row.error,
+    )
+
+
+async def _semver_of(session: AsyncSession, row) -> str:
+    from apps.api.models import AgentVersion
+    version = await session.get(AgentVersion, row.agent_version_id)
+    return version.semver if version else "?"
+
+
+@router.get("/{agent_id}/containers", response_model=AgentContainerListResponse)
+async def list_agent_containers(
+    agent_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> AgentContainerListResponse:
+    agent = await service.load_agent(session, agent_id)
+    rows = await container_service.list_containers(session, agent.id)
+    return AgentContainerListResponse(items=[
+        _container_view(row, await _semver_of(session, row)) for row in rows
+    ])
+
+
+@router.post("/{agent_id}/containers", status_code=202, response_model=AgentContainerResponse)
+async def start_agent_container(
+    agent_id: str,
+    body: StartAgentContainerRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> AgentContainerResponse:
+    """啟動這個 Agent 的常駐容器。
+
+    回 `202`：這裡只登記 `STARTING`，**實際建容器由 worker 做** ——
+    api 不掛 docker.sock，而且 image pull 可能很慢，不該卡住請求。
+    """
+    agent = await service.load_agent(session, agent_id)
+    version = None
+    if body and body.version:
+        version = await service.load_version_by_semver(session, agent.id, body.version)
+    row = await container_service.request_start(session, agent.id, version)
+    dispatch_container_start(str(row.id))
+    return _container_view(row, await _semver_of(session, row))
+
+
+@router.post("/{agent_id}/containers/{container_uuid}/restart",
+             status_code=202, response_model=AgentContainerResponse)
+async def restart_agent_container(
+    agent_id: str,
+    container_uuid: str,
+    session: AsyncSession = Depends(get_session),
+) -> AgentContainerResponse:
+    """重啟。容器掛掉時使用者唯一能做的事，所以它必須存在且好按。"""
+    await service.load_agent(session, agent_id)
+    row = await container_service.load_container(session, container_uuid)
+    row = await container_service.request_restart(session, row)
+    dispatch_container_restart(str(row.id))
+    return _container_view(row, await _semver_of(session, row))
+
+
+@router.delete("/{agent_id}/containers/{container_uuid}", status_code=202,
+               response_model=AgentContainerResponse)
+async def stop_agent_container(
+    agent_id: str,
+    container_uuid: str,
+    session: AsyncSession = Depends(get_session),
+) -> AgentContainerResponse:
+    await service.load_agent(session, agent_id)
+    row = await container_service.load_container(session, container_uuid)
+    row = await container_service.request_stop(session, row)
+    dispatch_container_stop(str(row.id))
+    return _container_view(row, await _semver_of(session, row))
 
 
 # ── LLM 憑證（ZEN-012）────────────────────────────────────────────────

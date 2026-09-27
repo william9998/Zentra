@@ -38,6 +38,10 @@ def parse_digest_reference(image_ref: str) -> tuple[str, str]:
 class SandboxMode(StrEnum):
     VALIDATE = "validate"
     RUN = "run"
+    #: ZEN-015：常駐容器。啟動後不退出，long-poll Internal Gateway 取工作，
+    #: 同時處理多個 Run。與 RUN 的差別不只是生命週期 —— 它拿到的憑證也不同：
+    #: **啟動時只有 container token（只能取工作），run token 跟著工作項才進來。**
+    SERVE = "serve"
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,35 @@ class SandboxSpec:
         )
 
     @classmethod
+    def for_serve(
+        cls,
+        *,
+        agent_id: str,
+        image_ref: str,
+        network: str,
+        gateway_url: str,
+        container_token: str,
+        max_concurrent_runs: int,
+    ) -> "SandboxSpec":
+        """常駐容器（ZEN-015）。
+
+        **注意這裡沒有 run token。** 容器啟動時還不知道要跑哪個 Run；
+        run token 跟著工作項在 long-poll 的回應裡進來（ADR-0012 的 P4 實作）。
+        """
+        return cls(
+            resource_id=agent_id,
+            image_ref=image_ref,
+            network=network,
+            mode=SandboxMode.SERVE,
+            env={
+                "ZENTRA_GATEWAY_URL": gateway_url,
+                "ZENTRA_AGENT_ID": agent_id,
+                "ZENTRA_CONTAINER_TOKEN": container_token,
+                "ZENTRA_MAX_CONCURRENT_RUNS": str(max_concurrent_runs),
+            },
+        )
+
+    @classmethod
     def for_run(
         cls,
         *,
@@ -203,7 +236,10 @@ class SandboxSpec:
     def role(self) -> str:
         if self.resource_id is None:
             return "sandbox"
-        return "validation" if self.mode is SandboxMode.VALIDATE else "run"
+        return {
+            SandboxMode.VALIDATE: "validation",
+            SandboxMode.SERVE: "serve",
+        }.get(self.mode, "run")
 
     @property
     def is_oci(self) -> bool:
@@ -229,14 +265,28 @@ class SandboxSpec:
         return values
 
     def _validate_environment(self) -> None:
-        expected = (
-            {"ZENTRA_GATEWAY_URL", "ZENTRA_AGENT_VERSION_ID", "ZENTRA_VALIDATION_TOKEN"}
-            if self.mode is SandboxMode.VALIDATE
-            else {"ZENTRA_GATEWAY_URL", "ZENTRA_RUN_ID", "ZENTRA_RUN_TOKEN"}
-        )
+        # 每種模式**恰好**這幾個變數，多一個少一個都擋。
+        # 這條檢查是 P4 的第一道關：多注入一個 secret 會在建立容器時就失敗，
+        # 而不是等到有人發現金鑰進了沙盒。
+        expected_by_mode = {
+            SandboxMode.VALIDATE: {
+                "ZENTRA_GATEWAY_URL", "ZENTRA_AGENT_VERSION_ID", "ZENTRA_VALIDATION_TOKEN",
+            },
+            SandboxMode.RUN: {"ZENTRA_GATEWAY_URL", "ZENTRA_RUN_ID", "ZENTRA_RUN_TOKEN"},
+            # SERVE 沒有 run token —— 它啟動時還不知道要跑哪個 Run。
+            # container token 的權限只有「取這個 agent 的工作」，碰不到 run 與 LLM（ZEN-015）。
+            SandboxMode.SERVE: {
+                "ZENTRA_GATEWAY_URL", "ZENTRA_AGENT_ID", "ZENTRA_CONTAINER_TOKEN",
+                "ZENTRA_MAX_CONCURRENT_RUNS",
+            },
+        }
+        expected = expected_by_mode[self.mode]
         if set(self.env) != expected:
             raise ValueError(f"{self.mode.value} environment must contain exactly {sorted(expected)}")
-        id_key = "ZENTRA_AGENT_VERSION_ID" if self.mode is SandboxMode.VALIDATE else "ZENTRA_RUN_ID"
+        id_key = {
+            SandboxMode.VALIDATE: "ZENTRA_AGENT_VERSION_ID",
+            SandboxMode.SERVE: "ZENTRA_AGENT_ID",
+        }.get(self.mode, "ZENTRA_RUN_ID")
         if self.env[id_key] != self.resource_id:
             raise ValueError(f"{self.mode.value} resource ID does not match spec")
         if not all(isinstance(value, str) and value for value in self.env.values()):

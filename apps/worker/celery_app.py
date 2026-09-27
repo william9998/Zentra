@@ -8,7 +8,7 @@ celery_app = Celery(
     "zentra",
     broker=_settings.redis_url,     # ADR-0005：broker 與 result 都是 Redis，不用 RabbitMQ
     backend=_settings.redis_url,
-    include=["apps.worker.tasks.run", "apps.worker.tasks.build"],
+    include=["apps.worker.tasks.run", "apps.worker.tasks.build", "apps.worker.tasks.container"],
 )
 
 celery_app.conf.update(
@@ -20,6 +20,9 @@ celery_app.conf.update(
     task_routes={
         "zentra.run.execute": {"queue": "q.run"},
         "zentra.build.execute": {"queue": "q.build"},
+        # 容器生命週期走 q.build：它跟發布一樣會拉 image、會慢，
+        # 塞進 q.run 會卡住真正的 Run 派工。
+        "zentra.container.apply": {"queue": "q.build"},
     },
     timezone="UTC",
     enable_utc=True,

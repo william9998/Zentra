@@ -275,3 +275,32 @@ class AgentLlmCredentialResponse(BaseModel):
     base_url: str | None = None
     default_model: str | None = None
     updated_at: datetime | None = None
+
+
+class AgentContainerResponse(BaseModel):
+    """常駐容器的狀態（ZEN-015）。
+
+    `restart_count` 刻意回給使用者：一直重啟的容器是壞掉了，
+    而那件事在畫面上看起來跟「剛啟動」一模一樣，沒有這個數字分不出來。
+    """
+
+    container_id: str
+    agent_id: str
+    agent_version: str
+    status: str                 # STARTING | READY | UNHEALTHY | STOPPED | FAILED
+    inflight_runs: int
+    max_concurrent_runs: int
+    restart_count: int
+    started_at: datetime | None = None
+    last_health_at: datetime | None = None
+    error: str | None = None
+
+
+class AgentContainerListResponse(BaseModel):
+    items: list[AgentContainerResponse]
+
+
+class StartAgentContainerRequest(StrictRequest):
+    """省略 `version` 就用最新的 `PUBLISHED`。"""
+
+    version: str | None = None
