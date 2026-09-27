@@ -20,25 +20,42 @@ from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError
 
 
-class SecretsNotConfigured(ZentraError):
-    """平台沒設定加密金鑰，因此不接受任何憑證。"""
+_HOWTO = (
+    'generate one with: python -c "from cryptography.fernet import Fernet; '
+    'print(Fernet.generate_key().decode())"'
+)
 
-    def __init__(self) -> None:
-        super().__init__(
-            ErrorCode.VALIDATION_ERROR,
-            "the platform cannot store credentials: set ZENTRA_SECRET_KEY on the app service "
-            '(generate one with: python -c "from cryptography.fernet import Fernet; '
-            'print(Fernet.generate_key().decode())")',
-            422,
-            details={"field": "api_key"},
-        )
+
+class SecretsNotConfigured(ZentraError):
+    """平台沒設定加密金鑰。
+
+    寫入與讀取都會走到這裡，但**兩邊的意思不一樣**，訊息必須分開講：
+    寫入時是「不接受你的憑證」，讀取時是「你存過的憑證現在解不開」。
+    先前兩邊共用「cannot store」這句話，讀取失敗時看起來像是使用者沒填 ——
+    但他其實填過了，而且平台也收下了。
+    """
+
+    def __init__(self, *, reading: bool = False) -> None:
+        if reading:
+            message = (
+                "a credential is stored for this agent but the platform cannot decrypt it: "
+                "ZENTRA_SECRET_KEY is not set on the app service. "
+                "If it was set before and has since changed or been lost, that credential is "
+                f"permanently unreadable -- set a key and register the credential again ({_HOWTO})"
+            )
+        else:
+            message = (
+                "the platform cannot store credentials: set ZENTRA_SECRET_KEY on the app "
+                f"service ({_HOWTO})"
+            )
+        super().__init__(ErrorCode.VALIDATION_ERROR, message, 422, details={"field": "api_key"})
 
 
 @lru_cache
-def _cipher() -> Fernet:
+def _cipher(*, reading: bool = False) -> Fernet:
     key = get_settings().secret_key
     if not key:
-        raise SecretsNotConfigured
+        raise SecretsNotConfigured(reading=reading)
     try:
         return Fernet(key.encode())
     except (ValueError, TypeError) as exc:
@@ -64,7 +81,7 @@ def decrypt(ciphertext: str) -> str:
     而不是靜靜地退回平台預設金鑰 —— 後者會讓使用者以為自己的金鑰還在用。
     """
     try:
-        return _cipher().decrypt(ciphertext.encode()).decode()
+        return _cipher(reading=True).decrypt(ciphertext.encode()).decode()
     except InvalidToken as exc:
         raise ZentraError(
             ErrorCode.INTERNAL_ERROR,
