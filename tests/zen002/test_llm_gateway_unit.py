@@ -108,3 +108,34 @@ def test_usage_is_read_from_the_responses_api_shape_too() -> None:
         "usage": {"prompt_tokens": 5, "completion_tokens": 6,
                   "input_tokens": 99, "output_tokens": 99},
     }) == (5, 6)
+
+
+def test_stream_options_is_only_added_for_chat_completions() -> None:
+    """L-8：`stream_options` 是 chat/completions 專屬的。
+
+    實測踩過：把它塞給 Responses API，供應商回
+    `400 Unknown parameter: 'stream_options.include_usage'`，整個呼叫失敗。
+    **假供應商照單全收，所以這條只有真金鑰才發現得了** —— 這個測試補上那個缺口。
+
+    這裡驗的是 `proxy()` 裡那段條件，用讀原始碼的方式擋回歸：
+    加參數的那一行必須被路徑條件包住。
+    """
+    import inspect
+
+    source = inspect.getsource(llm.proxy)
+    assert 'streaming and upstream_path == "chat/completions"' in source, (
+        "stream_options 必須只在 chat/completions 時加入"
+    )
+
+
+def test_streaming_usage_is_found_in_the_responses_api_nesting() -> None:
+    """L-9：Responses API 把用量放在 `response.completed` 事件的 `response` 底下。
+
+    只找頂層的話，那些呼叫全部記成 0 token —— 不會報錯，帳安靜地錯。
+    """
+    raw = (
+        b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        b'data: {"type":"response.completed","response":'
+        b'{"usage":{"input_tokens":41,"output_tokens":17}}}\n\n'
+    )
+    assert llm._usage_from_stream(raw) == (41, 17)

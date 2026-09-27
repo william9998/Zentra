@@ -66,16 +66,47 @@ def _reply_for(prompt: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:                                    # noqa: N802
+        # 印出實際收到的上游路徑。Gateway 到底轉發到哪裡，看這個最直接。
+        print(f"[fake] POST {self.path}", flush=True)
         if self.headers.get("authorization") != f"Bearer {EXPECTED_KEY}":
             self._send(401, {"error": {"message": "fake provider: wrong key"}})
             return
 
-        # Responses API 一律拒絕 —— 驗 agent 會不會正確退回 chat/completions
+        # Responses API：預設拒絕（驗 agent 的退化路徑）。
+        # 設 FAKE_ACCEPT_RESPONSES=1 則接受，用來證明 Gateway 真的轉發得到 /responses。
         if self.path.rstrip("/").endswith("/responses"):
-            self._send(400, {"error": {
-                "message": "fake provider does not implement the Responses API",
-                "type": "invalid_request_error",
-            }})
+            if os.environ.get("FAKE_ACCEPT_RESPONSES") != "1":
+                self._send(400, {"error": {
+                    "message": "fake provider does not implement the Responses API",
+                    "type": "invalid_request_error",
+                }})
+                return
+            length = int(self.headers.get("content-length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            prompt = ""
+            raw_input = body.get("input")
+            if isinstance(raw_input, str):
+                prompt = raw_input
+            elif isinstance(raw_input, list):
+                for item in raw_input:
+                    content = item.get("content") if isinstance(item, dict) else None
+                    if isinstance(content, str):
+                        prompt = content
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and part.get("text"):
+                                prompt = str(part["text"])
+            self._send(200, {
+                "id": "resp-fake", "object": "response",
+                "model": body.get("model", "fake-model"),
+                "status": "completed",
+                "output": [{
+                    "type": "message", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": _reply_for(prompt)}],
+                }],
+                # ← Responses API 的 usage 欄位名跟 chat/completions 不同
+                "usage": {"input_tokens": 33, "output_tokens": 44, "total_tokens": 77},
+            })
             return
 
         length = int(self.headers.get("content-length") or 0)

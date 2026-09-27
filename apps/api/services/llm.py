@@ -187,7 +187,11 @@ async def proxy(
     model = str(body.get("model") or fallback_model)
     body = {**body, "model": model}
     streaming = bool(body.get("stream"))
-    if streaming:
+    if streaming and upstream_path == "chat/completions":
+        # `stream_options` 是 chat/completions 專屬的。塞給 Responses API 會被
+        # 供應商以 400 `Unknown parameter` 擋下 —— 實測踩過（真金鑰才會發現，
+        # 假供應商照單全收）。Responses API 的用量在 `response.completed` 事件裡，
+        # 不需要也不接受這個參數。
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
 
     if not api_key:
@@ -254,10 +258,14 @@ async def proxy(
 
 
 def _usage_from_stream(raw: bytes) -> tuple[int, int]:
-    """從 SSE 串流的最後一個帶 usage 的 chunk 取出用量。
+    """從 SSE 串流取出用量。兩種 API 放的位置不同，兩處都找。
 
-    OpenAI 在 `stream_options.include_usage` 開啟時，會在 `[DONE]` 之前送一個
-    `usage` 不為 null 的 chunk。找不到就記 0 —— 寧可用量記少也不要記錯。
+        chat/completions →  data: {... "usage": {...}}          頂層
+        responses        →  data: {"type":"response.completed",
+                                   "response": {... "usage": {...}}}   巢狀一層
+
+    只找頂層的話，Responses API 的串流會被記成 0 token —— 不會報錯，帳安靜地錯。
+    找不到就記 0：寧可用量記少也不要記錯。
     """
     for line in reversed(raw.split(b"\n")):
         if not line.startswith(b"data: "):
@@ -271,4 +279,7 @@ def _usage_from_stream(raw: bytes) -> tuple[int, int]:
             continue
         if payload.get("usage"):
             return _usage_from(payload)
+        nested = payload.get("response")
+        if isinstance(nested, dict) and nested.get("usage"):
+            return _usage_from(nested)
     return 0, 0
