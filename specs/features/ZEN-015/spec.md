@@ -14,6 +14,7 @@ LLM agent 幾乎全是 I/O 等待，閒置的容器佔著記憶體卻沒在算�
 ### 做
 
 - **Agent 生命週期**：`PUBLISHED` 的版本可以「啟動」，得到常駐容器；可停止、可重啟
+- **每容器並發上限 `N`**（`SANDBOX_RUNS_PER_CONTAINER`，預設 **30**），滿了溢出開新容器
 - **派工改為送進常駐容器**，不是每次 `containers.create`
 - **容器健康檢查與重啟**（Console 按鈕 + API 端點）
 - **每個 Agent 可發多把下游 API key**，呼叫 `/v1` 與 `/mcp` 時帶著
@@ -95,7 +96,9 @@ agent_containers                       -- 一個 Agent 目前的常駐容器
   last_health_at    timestamptz
   restart_count     int default 0
   error             text
-  UNIQUE (agent_id)                    -- ADR-0012 建議 N=1：一個 Agent 一個容器
+  inflight_runs     int default 0       -- 目前正在跑幾個 Run（上限 N）
+  -- 一個 Agent 可以有多個容器（N 滿了溢出），所以不是 UNIQUE(agent_id)
+  INDEX (agent_id, status)
 
 agent_api_keys                         -- 下游應用拿來呼叫這個 Agent 的 key
   id            uuid PK
@@ -123,6 +126,24 @@ runs
 
 `llm_calls` **不動** —— 它已經有 `run_id`，join 就拿得到 key 的歸屬。
 在 `llm_calls` 再存一次 `api_key_id` 是冗餘，而且會有兩份可能不一致的真相。
+
+## 4.3 派工方向：容器拉，平台不推
+
+常駐容器**不開任何 port**。它 long-poll Internal Gateway 取工作：
+
+```
+容器 ──▶ GET /internal/agents/{agent_id}/work    （long-poll，等到有工作或逾時）
+     ◀── {run_id, entrypoint, input, run_token, manifest}
+容器 ──▶ POST /internal/runs/{run_id}/events     （既有路徑）
+容器 ──▶ POST /internal/runs/{run_id}/result     （既有路徑）
+```
+
+**這樣做的理由是隔離，不是效能。** 讓平台推的話容器得監聽連線，
+SPEC §8.1「容器內不開對外 HTTP port」與 L1 的「沙盒只有一個對外方向」就失效了 ——
+而那是 P4 最容易驗證的一條性質。拉的做法讓網路拓撲**一個字都不用改**。
+
+`run_token` **跟著工作項一起送**，不在容器啟動時給（ADR-0012 的 P4 實作）。
+容器內用 `contextvars` 綁定，確保 Run A 的 token 不會洩漏到 Run B 的 context。
 
 ## 5. 設計要點
 

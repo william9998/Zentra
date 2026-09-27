@@ -29,6 +29,19 @@ class Settings(BaseSettings):
     # SPEC §10：Run 最長 15 分鐘硬上限
     run_timeout_seconds: int = 900
 
+    # ── 常駐容器（ZEN-015 / ADR-0012）────────────────────────────────
+    # 一個容器同時能跑幾個 Run。滿了就溢出開新容器，讓容器掛掉的爆炸半徑有界。
+    #
+    # ⚠️ 這個數字與容器的 mem_limit 是**一組的**：N=30 表示 30 個 Run 共用該容器的
+    #    2 GB，平均每 Run 約 68 MB。agent 若把大 payload 整份讀進記憶體，
+    #    幾個並行就會吃掉額度，然後同容器的 30 個一起被 OOM killer 帶走。
+    #    調 N 的時候要一起看記憶體，不能只調一個。
+    sandbox_runs_per_container: int = Field(
+        default=30, validation_alias="SANDBOX_RUNS_PER_CONTAINER")
+    # 容器閒置多久回收（秒）。0 = 不自動回收，只能手動停止。
+    container_idle_timeout_seconds: int = Field(
+        default=0, validation_alias="CONTAINER_IDLE_TIMEOUT_SECONDS")
+
     # ── LLM（ZEN-002 / P4）────────────────────────────────────────────
     # 真金鑰**只**存在這裡，也就是 app 服務的環境變數裡。
     # 它永遠不進沙盒：沙盒拿到的是綁定單一 run_id 的 run token，

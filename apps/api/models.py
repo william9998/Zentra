@@ -104,6 +104,19 @@ class Run(Base):
 
     timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=900)
 
+    # ── ZEN-015 ──────────────────────────────────────────────────────
+    #: 哪一把下游 API key 觸發的。Console 或內部發起時是 None。
+    #: 用量歸戶靠它 join `llm_calls`（那張表刻意不重複存一份）。
+    api_key_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_api_keys.id", ondelete="SET NULL")
+    )
+    #: 多輪對話用，**本期不啟用**。先建欄位是因為之後補 migration 比現在多一欄貴。
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    #: 跑在哪個常駐容器。除錯時要回答「這批錯誤是不是同一個容器出的」。
+    container_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_containers.id", ondelete="SET NULL")
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -211,3 +224,72 @@ class AgentLlmCredential(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class AgentContainer(Base):
+    """一個 Agent 的常駐容器（ZEN-015 / ADR-0012）。
+
+    取代「一 Run 一沙盒」：容器啟動後常駐，Run 被派進去非同步並行處理。
+    一個 Agent 可以有**多個**容器 —— 單一容器的並發到 `SANDBOX_RUNS_PER_CONTAINER`
+    （預設 30）就溢出開新的，讓容器掛掉時的爆炸半徑有界。
+
+    **容器綁定單一 `agent_version_id`**（P5）。發新版要換容器，切換期間兩個並存。
+    """
+
+    __tablename__ = "agent_containers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_versions.id"), nullable=False
+    )
+    container_id: Mapped[str | None] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="STARTING")
+    inflight_runs: Mapped[int] = mapped_column(nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_health_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 一直重啟的容器是壞掉了，不是需要再重啟一次。這個數字讓那件事看得見。
+    restart_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_agent_containers_agent_status", "agent_id", "status"),
+        CheckConstraint(
+            "status IN ('STARTING','READY','UNHEALTHY','STOPPED','FAILED')",
+            name="ck_agent_containers_status",
+        ),
+    )
+
+
+class AgentApiKey(Base):
+    """下游應用拿來呼叫這個 Agent 的 key（ZEN-015）。
+
+    **存雜湊，不是密文** —— 這裡只需要「驗證來的人是誰」，雜湊就夠且更安全：
+    資料庫外洩也還原不出可用的 key。
+
+    與 `AgentLlmCredential` 的差別是刻意的：那個要把明文轉發給供應商，
+    只能加密不能雜湊。**兩者不要做成同一套。**
+    """
+
+    __tablename__ = "agent_api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    key_prefix: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 軟撤銷：保留歷史用量的歸屬。硬刪會讓過去的帳變成無主。
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_agent_api_keys_agent", "agent_id"),)
