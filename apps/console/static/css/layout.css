@@ -676,9 +676,9 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   overflow-x: auto;
   overflow-y: hidden;
   padding: var(--space-3) 0;
-  /* 捲到底之前右側留一道漸層，暗示還有內容 */
+  /* 捲到底之前右側留一道漸層，暗示還有內容。寬度用 token，不寫死 px。 */
   background:
-    linear-gradient(to left, var(--bg-base), transparent 24px) right / 24px 100% no-repeat;
+    linear-gradient(to left, var(--bg-base), transparent) right / var(--space-5) 100% no-repeat;
 }
 
 .run-graph-canvas svg {
