@@ -13,7 +13,7 @@ from apps.api.deps import (
 from apps.api.models import Run
 from apps.api.schemas import BootstrapResponse, SandboxEvent, SandboxResult, ValidationPayload
 from apps.api.services import containers as container_service
-from apps.api.services import events, llm, work
+from apps.api.services import agent_credentials, events, llm, work
 from apps.api.services.runs import save_result
 from apps.api.services.validation import save_validation
 from apps.api.deps import require_validation_token
@@ -36,6 +36,7 @@ async def bootstrap(
     return BootstrapResponse(
         run_id=str(run.id), entrypoint=run.entrypoint, input=run.input,
         manifest=version.manifest,
+        default_model=await agent_credentials.default_model_for(session, run.agent_id),
     )
 
 

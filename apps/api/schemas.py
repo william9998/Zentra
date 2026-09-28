@@ -179,6 +179,10 @@ class BootstrapResponse(BaseModel):
     entrypoint: str
     input: dict[str, Any]
     manifest: dict[str, Any]
+    #: 這個 Agent 沒指定 model 時要用哪個（憑證設定 → 平台預設）。
+    #: **平台算好再送進沙盒** —— SDK 自己猜一個的話，使用者在 Console 上設的值
+    #: 永遠到不了，而且「沒生效」看起來跟「生效了」一模一樣。
+    default_model: str = ""
 
 
 class ValidationPayload(StrictRequest):

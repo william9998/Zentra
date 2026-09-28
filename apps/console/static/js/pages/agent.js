@@ -1,5 +1,6 @@
 import { ApiError, ERROR_CODE, VERSION_STATUS, getAgent } from '../api.js';
 import { mount as mountKeysCard } from '../components/api-keys-card.js';
+import { mount as mountContainers } from '../components/containers-card.js';
 import { mount as mountVersionList } from '../components/agent-version-list.js';
 import { mount as mountDeleteDialog } from '../components/delete-agent-dialog.js';
 import { mount as mountEditDialog } from '../components/edit-agent-dialog.js';
@@ -52,6 +53,10 @@ const PAGE = `
         發新版本不用重填，更換則所有版本立刻一起變。沒設定就用平台預設金鑰。
       </p>
       <div data-credential></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">常駐容器</h2></div>
+      <div data-containers></div>
     </section>
     <section class="card">
       <div class="card-header"><h2 class="card-title">下游 API key</h2></div>
@@ -117,6 +122,9 @@ function main() {
   });
   // key 卡片與用量面板共用同一份 key 清單：卡片拿到之後推給面板，
   // 面板不必自己再抓一次（也就不會有兩份可能不同步的下拉選單）。
+  const containers = mountContainers(app.querySelector('[data-containers]'), {
+    agentId, timers,
+  });
   const usagePanel = mountUsagePanel(app.querySelector('[data-usage]'), { agentId });
   const keysCard = mountKeysCard(app.querySelector('[data-keys]'), {
     agentId,
@@ -224,6 +232,7 @@ function main() {
     composer.destroy();
     endpoints.destroy();
     credential.destroy();
+    containers.destroy();
     keysCard.destroy();
     usagePanel.destroy();
     recentRuns.destroy();

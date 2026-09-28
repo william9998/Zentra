@@ -99,7 +99,9 @@ async def test_gateway_requires_run_scoped_token_and_accepts_array_events() -> N
 
             bootstrap = await client.get(f"/internal/runs/{run_a}/bootstrap", headers=headers)
             assert bootstrap.status_code == 200, bootstrap.text
-            assert set(bootstrap.json()) == {"run_id", "entrypoint", "input", "manifest"}
+            # `default_model` 是 v0.9.0 加的：平台算好送進沙盒，SDK 不准自己補寫死值
+            assert set(bootstrap.json()) == {
+                "run_id", "entrypoint", "input", "manifest", "default_model"}
             assert bootstrap.json()["input"] == {"question": "hello"}
 
             event_url = f"/internal/runs/{run_a}/events"

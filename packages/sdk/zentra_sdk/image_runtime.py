@@ -203,6 +203,7 @@ async def _execute(
     entrypoint_name: str,
     run_input: dict[str, Any],
     manifest: dict[str, Any],
+    default_model: str = "",
 ) -> None:
     """跑完一個 Run：驗輸入 → compile → 串事件 → 回寫結果。
 
@@ -231,7 +232,8 @@ async def _execute(
 
     pending: list[tuple[str, dict[str, Any]]] = []
     context = ZentraContext(
-        run_id, manifest, lambda kind, payload: pending.append((kind, payload))
+        run_id, manifest, lambda kind, payload: pending.append((kind, payload)),
+        default_model=default_model, run_token=token,
     )
     graph = build(context)
     if not _is_uncompiled_state_graph(graph):
@@ -278,6 +280,9 @@ async def run() -> None:
         await _execute(
             client, gateway, run_id, token,
             bootstrap["entrypoint"], bootstrap["input"], bootstrap["manifest"],
+            # 平台解析好的預設 model。舊平台沒有這個欄位 → 空字串，
+            # 那時 ctx.llm() 會要求呼叫端明寫，而不是默默用別的 model。
+            bootstrap.get("default_model") or "",
         )
 
 
@@ -316,6 +321,7 @@ async def serve() -> None:
                 client, gateway, run_id, token,
                 item.get("entrypoint") or "default", item.get("input") or {},
                 item.get("manifest") or {},
+                item.get("default_model") or "",
             )
         except Exception as exc:                  # noqa: BLE001
             # **一定要印出來。** 常駐容器不會退出，所以「容器的 exit code 與輸出」

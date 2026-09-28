@@ -42,6 +42,7 @@ EXPECTED_FILES = {
     "static/js/components/agent-list.js",
     "static/js/components/agent-version-list.js",
     "static/js/components/api-keys-card.js",
+    "static/js/components/containers-card.js",
     "static/js/components/create-agent-dialog.js",
     "static/js/components/delete-agent-dialog.js",
     "static/js/components/edit-agent-dialog.js",
@@ -104,6 +105,9 @@ ALLOWED_V1_PATTERNS = [
     re.compile(r"^/agents/\{?[^/]*\}?/api-keys/\{?[^/]*\}?$"),
     re.compile(r"^/agents/\{?[^/]*\}?/usage$"),
     re.compile(r"^/agents/\{?[^/]*\}?/llm-calls$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/containers$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/containers/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/containers/\{?[^/]*\}?/restart$"),
     re.compile(r"^/runs$"),
     re.compile(r"^/runs/\{?[^/]*\}?$"),
     re.compile(r"^/runs/\{?[^/]*\}?/events$"),
@@ -281,7 +285,8 @@ def test_non_token_css_has_no_literal_colors_or_sizes() -> None:
 
 @pytest.mark.parametrize("name", ["shell.js", "components/run-timeline.js",
                                   "components/api-keys-card.js",
-                                  "components/usage-panel.js"])
+                                  "components/usage-panel.js",
+                                  "components/containers-card.js"])
 def test_components_expose_destroy(name: str) -> None:
     source = _read(CONSOLE / "static/js" / name)
     assert re.search(r"export function mount\(", source), name
@@ -380,7 +385,7 @@ def test_contract_enums_still_say_what_this_test_asserts() -> None:
     contract = _read(API_CONTRACT)
     # 這是絆線：契約版本一動就該有人回來看 Console 有沒有跟上。
     # v0.4.0–v0.6.0 之間沒人更新它，所以它紅了好幾個版本都沒被當一回事。
-    assert "| 契約版本 | `v0.8.0` |" in contract
+    assert "| 契約版本 | `v0.9.0` |" in contract
     for code in CONTRACT_ERROR_CODES:
         assert f"`{code}`" in contract, code
     for status in CONTRACT_RUN_STATUS:
@@ -474,6 +479,8 @@ def test_only_whitelisted_v1_endpoints_are_referenced() -> None:
         "/agents/{}/versions/{}", "/agents/{}/llm-credential",   # ZEN-012
         "/agents/{}/api-keys", "/agents/{}/api-keys/{}",         # ZEN-015
         "/agents/{}/usage", "/agents/{}/llm-calls",              # ZEN-015
+        "/agents/{}/containers", "/agents/{}/containers/{}",     # ZEN-015
+        "/agents/{}/containers/{}/restart",
         "/runs", "/runs/{}", "/runs/{}/events",
         "/runs/{}/cancel",   # ZEN-008-D5：死碼，見下方 xfail
     }, paths

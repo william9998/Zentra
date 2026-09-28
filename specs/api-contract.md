@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.8.0` |
+| 契約版本 | `v0.9.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -246,8 +246,23 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 
 依 [ADR-0012](./adr/ADR-0012-resident-agent-container.md)：一 Agent 一（或多）常駐容器。
 
-**啟動是明確動作，不是註冊的副作用** —— 註冊是「這個版本存在」，
-啟動是「現在開始佔資源」。綁在一起會讓「發十個版本」變成「開十個容器」。
+**註冊不會啟動容器，但第一筆 Run 會**（v0.9.0 起）。
+
+註冊是「這個版本存在」，那不該佔資源 —— 綁在一起會讓「發十個版本」變成
+「開十個容器」。但**有人真的呼叫**就不一樣了：那時容器一定要存在，
+要求使用者記得先按一個按鈕只是把平台的工作推給他。
+
+所以現在的規則是：
+
+- `POST /v1/agents/{id}/containers` 仍然在，意思變成**預熱** ——
+  把冷啟動的成本挪到你方便的時候。
+- 沒有可用容器時，第一筆 Run **會等**平台把容器拉起來（含 image pull），
+  上限 `CONTAINER_START_TIMEOUT_SECONDS`（預設 180 秒）。
+- 起不來就**退回一次性沙盒**，Run 照樣跑完。常駐是效能手段，
+  它壞掉不該讓整個平台停擺。
+- 閒置超過 `CONTAINER_IDLE_TIMEOUT_SECONDS`（預設 1800 秒）**自動停止**。
+  自動產生的東西必須自動消失，否則「被呼叫過一次」等於「永久佔記憶體」。
+  `inflight_runs > 0` 的容器不會被收。
 
 ```jsonc
 // POST /v1/agents/{id}/containers   body 可省略，省略就用最新的 PUBLISHED
@@ -563,11 +578,18 @@ Run 結束立即撤銷。**帶著 A 的 token 存取 B 的 run_id → `403 PERMI
 
 | Method | Path | 說明 |
 |---|---|---|
-| `GET` | `/internal/runs/{run_id}/bootstrap` | 取 manifest、entrypoint 名稱、input |
+| `GET` | `/internal/runs/{run_id}/bootstrap` | 取 manifest、entrypoint 名稱、input、`default_model` |
 | `POST` | `/internal/runs/{run_id}/events` | 回寫事件（批次，body 是事件陣列） |
 | `POST` | `/internal/runs/{run_id}/result` | 回寫最終 output 或 error |
 | `POST` | `/internal/llm/v1/chat/completions` | **OpenAI 相容**。平台換上真金鑰、計量 token、寫 `llm_calls` |
 | `POST` | `/internal/versions/{version_id}/validation` | `--mode=validate` 沙盒回報驗證結果與抽出的 entrypoints schema |
+
+> **`default_model` 為什麼由平台算好再送（v0.9.0 新增）**
+>
+> 這是 `ctx.llm()` 沒指定 model 時要用哪個：Agent 憑證的 `default_model` → 平台預設。
+> **SDK 不准自己補一個寫死的值** —— 那樣使用者在 Console 上設的預設 model 永遠到不了，
+> 而「沒生效」在畫面上看起來跟「生效了」一模一樣（實際發生過，見 ZEN-012 的迴歸）。
+> 常駐容器走工作項拿同一個欄位，**每筆 Run 重算**，所以中途改憑證下一筆就生效。
 
 版本 validation 使用 `Authorization: Bearer <validation_token>`。token 綁定單一 `agent_version_id`，
 TTL 最長 10 分鐘，validation 結束立即撤銷。A version token 存取 B version → `403 PERMISSION_DENIED`。
@@ -577,7 +599,7 @@ ZEN-000 用到的三條路由內容格式如下；這些是沙盒與平台間的
 
 | 路由 | Request | 成功 Response |
 |---|---|---|
-| `GET /internal/runs/{run_id}/bootstrap` | 無 body | `200`：`{"run_id":"<uuid>","entrypoint":"default","input":{},"manifest":{}}` |
+| `GET /internal/runs/{run_id}/bootstrap` | 無 body | `200`：`{"run_id":"<uuid>","entrypoint":"default","input":{},"manifest":{},"default_model":"gpt-4o-mini"}` |
 | `POST /internal/runs/{run_id}/events` | **頂層 JSON 陣列**：`[{"event_id":"01930000-0000-7000-8000-000000000003","type":"node.start","payload":{"node":"echo_node","ts":"..."}}]`；沙盒可送 `node.start`、`node.end`、`token`、`log`、`custom`、`error`，`run.status` 只由平台產生 | `202`：`{"accepted":1,"last_seq":42}`；`accepted` 是新寫入的事件數，`last_seq` 是此批最後一筆（含重送）的 SSE id，空陣列時為 `null` |
 | `POST /internal/runs/{run_id}/result` | `{"output":{},"error":null,"usage":{}}`；失敗時 `output=null` 且 `error.code` 為 §0 枚舉值 | `202`：`{"accepted":true}` |
 
@@ -630,6 +652,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.9.0 | 2026-09-28 | **常駐容器改為隨第一筆 Run 自動啟動、閒置自動停止**（§2.2）；`POST /containers` 語意變成預熱。Internal Gateway 的 bootstrap 新增 `default_model`（§4），讓 per-agent 預設 model 真的送得到沙盒。**公開端點的形狀未變** | @architect |
 | v0.8.0 | 2026-09-28 | **新增用量與除錯查詢**（ZEN-015 §3.3）：`GET /v1/agents/{id}/usage`、`GET /v1/agents/{id}/llm-calls` 與 §2.4。`GET /v1/runs` 新增 `api_key_id` 篩選。**既有回應形狀未變**，無新增錯誤 code | @architect |
 | v0.7.0 | 2026-09-28 | **新增 per-agent 下游 API key**（ZEN-015）：`POST`/`GET`/`DELETE /v1/agents/{id}/api-keys` 與 §2.3。認證是**有帶就驗、沒帶放行**（`ZENTRA_REQUIRE_AGENT_API_KEY` 可改成強制），REST 與 MCP 同一套規則。`runs` 新增 `api_key_id`，**回應形狀未變**，無新增錯誤 code | @architect |
 | v0.6.0 | 2026-09-27 | **新增常駐容器端點**（ZEN-015 / ADR-0012）：`GET`/`POST /v1/agents/{id}/containers`、`POST .../restart`、`DELETE .../{cid}`，與 §2.2。新增錯誤 code `AGENT_NOT_RUNNING`。**Runs／SSE／MCP 的形狀完全未變** —— 常駐化對呼叫端無感 | @architect |

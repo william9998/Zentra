@@ -9,20 +9,22 @@
 """
 
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 
 import docker
 from redis import Redis
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import NoResultFound
 
 from apps.api.config import get_settings
+from apps.api.ids import uuid7
 from apps.api.enums import BUILTIN_AGENT_VERSION_ID, AgentVersionStatus, ErrorCode, RunStatus
-from apps.api.models import AgentContainer, AgentVersion, Run
-from apps.api.services import runtoken, work
+from apps.api.models import AgentContainer, AgentLlmCredential, AgentVersion, Run
+from apps.api.services import agent_credentials, runtoken, work
 from apps.api.services import events as async_events
 from apps.sandbox.drivers.base import SandboxHandle, SandboxPlatformError
 from apps.sandbox.drivers.docker_driver import DockerSandboxDriver
@@ -294,6 +296,22 @@ def finalize_run(self, run_id: str) -> dict:
         return result
 
 
+def _default_model(session: Session, agent_id) -> str:
+    """這個 Agent 的預設 model，送進常駐容器的工作項（ZEN-015 / ZEN-012）。
+
+    **每個工作項都重算一次，不在容器啟動時決定。** 憑證可以中途被改
+    （ADR-0011：改了所有版本立刻一起變），而容器可能已經跑了好幾天 ——
+    啟動時算一次會讓那個承諾在常駐模式下悄悄失效。
+
+    只查 model 名稱，不碰密文。
+    """
+    row = session.execute(
+        select(AgentLlmCredential.default_model)
+        .where(AgentLlmCredential.agent_id == agent_id)
+    ).scalar_one_or_none()
+    return agent_credentials.pick_default_model(row)
+
+
 def _ready_container(session: Session, agent_id, version_id) -> AgentContainer | None:
     """這個 Agent 有沒有還有空位的 READY 容器（ZEN-015）。
 
@@ -317,6 +335,104 @@ def _ready_container(session: Session, agent_id, version_id) -> AgentContainer |
         .limit(1)
     ).scalar_one_or_none()
     return row
+
+
+def _claim_container_slot(session: Session, agent_id, version) -> tuple[AgentContainer | None, bool]:
+    """在同一個交易裡決定「誰去啟動容器」。回傳 `(容器列, 是不是我要去啟動)`。
+
+    ## 為什麼要鎖
+
+    十個請求同時打進一個還沒啟動的 Agent，十個 worker 會同時發現「沒有容器」。
+    沒有鎖的話它們會開十個容器 —— 而這台機器開兩個就滿了。
+
+    用 advisory lock 而不是唯一索引，是因為**鎖只需要罩住「檢查加寫入」那一瞬間**，
+    不該罩住 image pull（那要幾十秒）。交易一結束鎖就放掉，真正的啟動在鎖外面做。
+
+    鎖的 key 用 `agent_version_id`：容器綁定單一版本（P5），所以「該不該再開一個」
+    本來就是 per-version 的問題。
+    """
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": str(version.id)},
+    )
+
+    # 拿到鎖之後**要重查一次** —— 等鎖的期間別人可能已經啟動好了。
+    ready = _ready_container(session, agent_id, version.id)
+    if ready is not None:
+        session.commit()
+        return ready, False
+
+    starting = session.execute(
+        select(AgentContainer).where(
+            AgentContainer.agent_id == agent_id,
+            AgentContainer.agent_version_id == version.id,
+            AgentContainer.status == "STARTING",
+        ).limit(1)
+    ).scalar_one_or_none()
+    if starting is not None:
+        # 別人正在啟動。我只要等它好。
+        session.commit()
+        return starting, False
+
+    row = AgentContainer(
+        id=uuid7(), agent_id=agent_id, agent_version_id=version.id, status="STARTING",
+    )
+    session.add(row)
+    session.commit()
+    return row, True
+
+
+def _wait_ready(session: Session, container_uuid, deadline: float) -> AgentContainer | None:
+    """等某個容器變成 READY。逾時或 FAILED 回 `None`。
+
+    輪詢 DB 而不是等 Celery 的結果：啟動可能是**別的 worker** 發動的，
+    那個 AsyncResult 我拿不到。DB 那一列才是所有人都看得到的真相。
+    """
+    while time.monotonic() < deadline:
+        session.expire_all()
+        row = session.get(AgentContainer, container_uuid)
+        if row is None or row.status == "FAILED":
+            return None
+        if row.status == "READY":
+            return row
+        time.sleep(0.5)
+    return None
+
+
+def _ensure_container(
+    session: Session, redis: Redis, agent_id, version,
+) -> AgentContainer | None:
+    """沒有可用的常駐容器就開一個，並**等它起來**（ZEN-015）。
+
+    第一筆 Run 會付出啟動成本（含 image pull），之後的 Run 直接進熱容器。
+    使用者可以先按「啟動」把這筆成本挪到自己方便的時候，但不按也能用。
+
+    **起不來就回 `None`，由呼叫端退回一次性沙盒。** 常駐化是效能手段，
+    它壞掉不該讓整個平台不能跑 —— 舊路徑留著當安全網。
+    """
+    from apps.worker.tasks.container import start_container
+
+    container, mine = _claim_container_slot(session, agent_id, version)
+    if container is None:
+        return None
+    if container.status == "READY":
+        return container
+
+    budget = float(settings.container_start_timeout_seconds)
+    deadline = time.monotonic() + budget
+    if mine:
+        log.info("no resident container for agent %s; starting one inline", agent_id)
+        manager = _manager(redis)
+        try:
+            status = start_container(session, redis, manager, container)
+        except Exception:                          # noqa: BLE001
+            log.exception("inline container start failed for agent %s", agent_id)
+            session.rollback()
+            return None
+        if status != "READY":
+            return None
+        return container
+    return _wait_ready(session, container.id, deadline)
 
 
 @celery_app.task(name="zentra.run.execute", bind=True, acks_late=True)
@@ -384,6 +500,10 @@ def execute_run(self, run_id: str) -> dict:
             session.rollback()
 
         container = _ready_container(session, run.agent_id, version.id)
+        if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
+            # 沒有現成的就開一個並等它 —— 常駐不再是「使用者記得按啟動」才有的東西。
+            # ZEN-000 的內建 fixture 沒有 serve 模式，跳過它（ZEN-010 會退休它）。
+            container = _ensure_container(session, redis, run.agent_id, version)
         if container is not None:
             work.push_sync(redis, run.agent_id, {
                 "run_id": run_id,
@@ -391,6 +511,7 @@ def execute_run(self, run_id: str) -> dict:
                 "entrypoint": run.entrypoint,
                 "input": run.input,
                 "manifest": version.manifest or {},
+                "default_model": _default_model(session, run.agent_id),
             })
             container.inflight_runs += 1
             _transition(session, redis, rid, RunStatus.RUNNING,

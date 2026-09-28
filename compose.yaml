@@ -116,7 +116,9 @@ services:
 
   worker:
     build: { context: ., dockerfile: docker/worker.Dockerfile }
-    command: ["celery", "-A", "apps.worker.celery_app", "worker", "-Q", "q.run,q.build", "-l", "info", "--concurrency", "10"]
+    # -B = embedded beat，驅動閒置容器回收（ZEN-015）。schedule 檔寫到 /tmp，
+    # 因為工作目錄在 image 裡是唯讀的。單 worker 才能這樣掛，見 celery_app.py。
+    command: ["celery", "-A", "apps.worker.celery_app", "worker", "-Q", "q.run,q.build", "-l", "info", "--concurrency", "10", "-B", "--schedule", "/tmp/celerybeat-schedule"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}

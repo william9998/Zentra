@@ -26,4 +26,17 @@ celery_app.conf.update(
     },
     timezone="UTC",
     enable_utc=True,
+    # 閒置容器回收（ZEN-015）。容器現在會被第一筆 Run 自動拉起來，
+    # **自動產生的東西必須自動消失** —— 使用者沒按過啟動，也不會想到要按停止。
+    #
+    # ⚠️ 這個排程靠 worker 的 `-B`（embedded beat）驅動，所以**只能有一個 worker**。
+    #    要多開 worker 就得把 beat 拆成獨立行程，否則每個 worker 都會各掃一次。
+    #    ADR-0005 是單機單 worker，所以現在這樣可以。
+    beat_schedule={
+        "sweep-idle-containers": {
+            "task": "zentra.container.sweep_idle",
+            "schedule": 60.0,
+            "options": {"queue": "q.build"},
+        },
+    },
 )

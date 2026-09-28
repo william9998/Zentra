@@ -50,8 +50,17 @@ class Settings(BaseSettings):
     sandbox_runs_per_container: int = Field(
         default=30, validation_alias="SANDBOX_RUNS_PER_CONTAINER")
     # 容器閒置多久回收（秒）。0 = 不自動回收，只能手動停止。
+    #
+    # **自動啟動之後這個值不能是 0。** 任何被呼叫過一次的 Agent 都會留下一個
+    # 常駐容器，而每個容器吃 2 GB —— 不回收的話，叫過三個 Agent 就把這台機器塞滿。
+    # 30 分鐘是「還會再被呼叫」與「別一直佔著」之間的折衷。
     container_idle_timeout_seconds: int = Field(
-        default=0, validation_alias="CONTAINER_IDLE_TIMEOUT_SECONDS")
+        default=1800, validation_alias="CONTAINER_IDLE_TIMEOUT_SECONDS")
+
+    # 第一筆 Run 最多等常駐容器啟動多久（秒）。含 image pull。
+    # 逾時不會讓 Run 失敗 —— 它會退回一次性沙盒，常駐只是效能手段。
+    container_start_timeout_seconds: int = Field(
+        default=180, validation_alias="CONTAINER_START_TIMEOUT_SECONDS")
 
     # ── LLM（ZEN-002 / P4）────────────────────────────────────────────
     # 真金鑰**只**存在這裡，也就是 app 服務的環境變數裡。

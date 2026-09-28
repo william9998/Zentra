@@ -855,3 +855,20 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   .usage-split,
   .usage-totals { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ── 常駐容器（ZEN-015）────────────────────────────────────────────── */
+
+.containers-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.data-row--containers { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+
+/* 啟動失敗的原因可能很長（Docker 的錯誤訊息），讓它自己佔一整列 */
+.containers-error {
+  grid-column: 1 / -1;
+  padding-top: var(--space-2);
+  overflow-wrap: anywhere;
+}

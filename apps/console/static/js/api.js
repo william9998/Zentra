@@ -401,6 +401,45 @@ export async function deleteAgentLlmCredential(agentId) {
   await req('/agents/' + encodeURIComponent(agentId) + '/llm-credential', { method: 'DELETE' });
 }
 
+/** 常駐容器的狀態（api-contract §2.2）。 */
+function viewContainer(raw) {
+  return {
+    containerId: raw.container_id,
+    agentId: raw.agent_id,
+    agentVersion: raw.agent_version,
+    status: raw.status,
+    inflightRuns: raw.inflight_runs,
+    maxConcurrentRuns: raw.max_concurrent_runs,
+    // 一直重啟的容器是壞掉了，不是需要再重啟一次 —— 沒有這個數字看不出差別
+    restartCount: raw.restart_count,
+    startedAt: toDate(raw.started_at),
+    lastHealthAt: toDate(raw.last_health_at),
+    error: raw.error || null,
+  };
+}
+
+export async function listAgentContainers(agentId) {
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/containers');
+  return (raw && raw.items ? raw.items : []).map(viewContainer);
+}
+
+/** POST /v1/agents/{id}/containers —— 回 202，狀態先是 STARTING。 */
+export async function startAgentContainer(agentId, version) {
+  const body = version ? { version } : {};
+  return viewContainer(await req(
+    '/agents/' + encodeURIComponent(agentId) + '/containers', jsonPost(body)));
+}
+
+export async function restartAgentContainer(agentId, containerId) {
+  return viewContainer(await req('/agents/' + encodeURIComponent(agentId)
+    + '/containers/' + encodeURIComponent(containerId) + '/restart', { method: 'POST' }));
+}
+
+export async function stopAgentContainer(agentId, containerId) {
+  return viewContainer(await req('/agents/' + encodeURIComponent(agentId)
+    + '/containers/' + encodeURIComponent(containerId), { method: 'DELETE' }));
+}
+
 /**
  * 下游 API key 的 metadata（api-contract §2.3）。
  *

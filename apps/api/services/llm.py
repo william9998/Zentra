@@ -179,9 +179,8 @@ async def proxy(
     owned = await agent_credentials.resolve(session, agent_id)
     api_key = owned.api_key if owned else settings.llm_api_key
     base_url = (owned.base_url if owned and owned.base_url else settings.llm_base_url)
-    fallback_model = (
-        owned.default_model if owned and owned.default_model else settings.llm_default_model
-    )
+    # 與 bootstrap／工作項同一條規則，不要在這裡重寫一次
+    fallback_model = agent_credentials.pick_default_model(owned.default_model if owned else None)
     source = owned.source if owned else "PLATFORM"
 
     model = str(body.get("model") or fallback_model)

@@ -88,6 +88,30 @@ async def delete_credential(session: AsyncSession, agent_id: uuid.UUID) -> bool:
     return bool(result.rowcount)
 
 
+def pick_default_model(agent_default: str | None) -> str:
+    """這個 Agent 沒指定 model 時該用哪個。**優先序的唯一定義。**
+
+    Gateway、bootstrap 與常駐容器的工作項三個地方都要回答這個問題，
+    各自寫一次的話它們遲早會不一致 —— 而不一致時，畫面上看起來完全一樣。
+    """
+    from apps.api.config import get_settings
+
+    return agent_default or get_settings().llm_default_model
+
+
+async def default_model_for(session: AsyncSession, agent_id: uuid.UUID) -> str:
+    """給 bootstrap：只讀 model 名稱，**不解密金鑰**。
+
+    用 `resolve()` 也拿得到，但那會把明文金鑰解出來丟掉 ——
+    為了一個 model 名稱去碰明文是沒必要的風險。
+    """
+    row = (await session.execute(
+        select(AgentLlmCredential.default_model)
+        .where(AgentLlmCredential.agent_id == agent_id)
+    )).scalar_one_or_none()
+    return pick_default_model(row)
+
+
 async def resolve(session: AsyncSession, agent_id: uuid.UUID) -> ResolvedCredential | None:
     """給 Gateway：這個 Agent 該用哪一把金鑰。
 

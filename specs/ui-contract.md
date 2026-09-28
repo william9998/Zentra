@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.6.0` |
+| 契約版本 | `v0.6.1` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -589,6 +589,20 @@ API key 是別人往裡打這個 Agent 用的。
 3. 逐筆表的每一列都連到那個 Run —— 查到哪筆錯之後，下一個動作一定是去看它。
 4. 逐筆表用游標翻頁（「載入更多」），不是一次抓全部。
 
+### 5.15 `containers-card.js` — 常駐容器（v0.6.1 新增，ZEN-015）
+
+在 Agent 詳情頁。列出這個 Agent 的常駐容器，可預熱／重啟／停止。
+
+1. **文案要說清楚容器會自己起、也會自己收。** 按鈕叫「預熱」不叫「啟動」——
+   叫啟動會讓人以為不按就不能用。空狀態要明說「沒有容器不是故障」，
+   否則每次回來看到空的都會以為出事。
+2. **`restartCount` 一定要顯示**（§2.2）。一直重啟的容器是壞掉了，
+   不是需要再重啟一次 —— 少了這個數字，那件事看起來跟「剛啟動」一模一樣。
+3. 狀態用 §2 的圓點 + 文字，**不只靠顏色**。五個狀態借用既有的圓點 class，
+   不自創（`STARTING→SCHEDULING`、`READY→SUCCEEDED`、`STOPPED→CANCELLED`…）。
+4. **只有在有容器處於 `STARTING` 時才輪詢**，其餘時間這張卡完全不發請求。
+5. 容器綁單一版本（P5），發新版會並存兩個，所以這裡是列表不是單筆。
+
 ### 5.11 按鈕（CSS class，不是元件）
 
 | class | 樣式 |
@@ -639,6 +653,7 @@ apps/console/
         run-graph.js                 ← §5.7（ZEN-014）
         api-keys-card.js             ← §5.13（ZEN-015）
         usage-panel.js               ← §5.14（ZEN-015）
+        containers-card.js           ← §5.15（ZEN-015）
         create-agent-dialog.js  agent-list.js  agent-version-list.js
         version-registration.js  run-composer.js  recent-runs.js
       pages/
@@ -719,6 +734,7 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.6.1 | 2026-09-28 | **新增 §5.15 `containers-card.js`**（ZEN-015）：常駐容器的預熱／重啟／停止與狀態。§6.1 檔案清單同步 | @architect |
 | v0.6.0 | 2026-09-28 | **新增 §5.13 `api-keys-card.js` 與 §5.14 `usage-panel.js`**（ZEN-015）：下游 API key 的發放／撤銷，以及 per-key 用量與逐筆除錯。§6.1 檔案清單同步。沒有新 token | @architect |
 | v0.1.0 | 2026-09-20 | 初版 | @ui-designer |
 | v0.2.0 | 2026-09-20 | 改採 Stock-Insight-Chat 深色單色設計語言；**移除全部 emoji 圖示**，狀態改用圓點 + 文字；補齊尺寸/比例 token（控制項高度、圖示尺寸、版面寬度） | @ui-designer |
