@@ -313,6 +313,60 @@ class AgentApiKeyListResponse(BaseModel):
     items: list[AgentApiKeyResponse]
 
 
+class UsageTotals(BaseModel):
+    """與契約 §1 的 Run `usage` 同一個形狀，所以前端只要會讀一種。"""
+
+    llm_calls: int
+    input_tokens: int
+    output_tokens: int
+    #: 十進位字串，不是 float。這是帳，浮點誤差會變成對不起來的數字。
+    cost_usd: str
+
+
+class UsageByKey(UsageTotals):
+    """`key_id` 為 null 代表 Console 發起、沒有歸戶的用量 —— 那一列要留著。"""
+
+    key_id: str | None = None
+    name: str | None = None
+    key_prefix: str | None = None
+
+
+class UsageByModel(UsageTotals):
+    model: str
+
+
+class AgentUsageResponse(BaseModel):
+    """三種切面一次回。除錯時它們是一起看的，拆成三次往返只是把拼裝推給前端。"""
+
+    totals: UsageTotals
+    by_key: list[UsageByKey]
+    by_model: list[UsageByModel]
+
+
+class LlmCallSummary(BaseModel):
+    """一次 LLM 呼叫。帶著 `run_id` 與 `api_key_id`，所以查到哪筆錯就能直接跳過去。"""
+
+    call_id: str
+    run_id: str
+    run_status: str
+    api_key_id: str | None = None
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: str
+    latency_ms: int | None = None
+    status_code: int | None = None
+    error: str | None = None
+    credential_source: str
+    created_at: datetime
+
+
+class LlmCallListResponse(BaseModel):
+    items: list[LlmCallSummary]
+    #: 無下一頁為 null。**key 一定在**（契約 §0），不然前端只能靠它在不在去猜。
+    next_cursor: str | None = None
+
+
 class AgentContainerResponse(BaseModel):
     """常駐容器的狀態（ZEN-015）。
 

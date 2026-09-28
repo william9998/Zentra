@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.7.0` |
+| 契約版本 | `v0.8.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -236,6 +236,8 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 | `POST` | `/v1/agents/{id}/api-keys` | 發一把下游 key。回 `201`，**明文只出現這一次**（見 §2.3） |
 | `GET` | `/v1/agents/{id}/api-keys` | key 列表，**含已撤銷的**。永不含 key 本身 |
 | `DELETE` | `/v1/agents/{id}/api-keys/{key_id}` | 撤銷一把 key。回 `200` 帶 `revoked_at`（軟撤銷） |
+| `GET` | `/v1/agents/{id}/usage` | LLM 用量：總計、依 key、依 model（見 §2.4） |
+| `GET` | `/v1/agents/{id}/llm-calls` | 逐筆 LLM 呼叫，可篩可翻頁（見 §2.4） |
 
 > `PUT /v1/agents/{id}/aliases/{alias}`（流量切換）於 v0.2.0 移除。
 > 呼叫時不指定 `version` 即用最新 `PUBLISHED` 版本。
@@ -317,6 +319,58 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
    硬刪會讓這把 key 過去的 Run 變成無主的帳。重複撤銷是冪等的。
 3. `GET` **含已撤銷的 key**。藏起來的話，用量查詢會出現一把查不到名字的 key。
 4. `runs.api_key_id` 記的是觸發那筆 Run 的 key。Console 發起的 Run 是 `NULL`。
+
+### 2.4 用量與除錯查詢（v0.8.0 新增，ZEN-015）
+
+回答兩個問題，所以是兩條端點：
+
+| 問題 | 端點 |
+|---|---|
+| 這把 key 花了多少、花在哪個模型上 | `GET /v1/agents/{id}/usage` |
+| 這把 key 的**哪一筆** request 出錯了 | `GET /v1/agents/{id}/llm-calls` |
+
+兩條共用同一組查詢參數（全部選填，可疊加）：
+
+`api_key_id` · `since` · `until` · `model` · `credential_source`
+（`llm-calls` 另有 `status_code` · `errors_only` · `limit` · `cursor`）
+
+```jsonc
+// GET /v1/agents/{id}/usage?api_key_id=…&since=2026-09-01T00:00:00Z
+{
+  "totals":   { "llm_calls": 4, "input_tokens": 340, "output_tokens": 140, "cost_usd": "0.000495" },
+  "by_key":   [{ "key_id": "0199…", "name": "行銷站", "key_prefix": "zk_live_a1b2",
+                 "llm_calls": 3, "input_tokens": 310, "output_tokens": 130, "cost_usd": "0.00045" },
+               { "key_id": null, "name": null, "key_prefix": null,
+                 "llm_calls": 1, "input_tokens": 30, "output_tokens": 10, "cost_usd": "0.000045" }],
+  "by_model": [{ "model": "gpt-4o-mini", "llm_calls": 3, "input_tokens": 330,
+                 "output_tokens": 140, "cost_usd": "0.000495" }]
+}
+```
+
+```jsonc
+// GET /v1/agents/{id}/llm-calls?api_key_id=…&errors_only=true
+{
+  "items": [{
+    "call_id": "63a7…", "run_id": "01a0…", "run_status": "SUCCEEDED",
+    "api_key_id": "0199…", "model": "gpt-4o",
+    "input_tokens": 10, "output_tokens": 0, "cost_usd": "0",
+    "latency_ms": 120, "status_code": 429, "error": "rate limited",
+    "credential_source": "AGENT", "created_at": "2026-09-28T13:57:31Z"
+  }],
+  "next_cursor": null
+}
+```
+
+1. **`by_key` 一定含 `key_id: null` 那一列** —— 那是沒帶 key 的呼叫（Console 發起的）。
+   濾掉它總計就對不起來，而「這些用量是誰打的」通常正是在查的東西。
+2. **`cost_usd` 是十進位字串**，不是數字。與 §1 的 Run `usage` 同一個理由：這是帳，
+   浮點會變成對不起來的數字。前端只印，不算。
+3. **歸戶靠 `runs.api_key_id` join**，`llm_calls` 沒有自己的 `api_key_id`。
+   存兩份會有兩份可能不一致的真相，而不一致時無法判斷哪份是對的。
+4. `errors_only=true` 等於 `error IS NOT NULL OR status_code >= 400`。
+   給它一個開關是因為那是除錯的第一個動作。
+5. `next_cursor` 與 §0 的游標同一種格式（`created_at` + `id` 的 base64），
+   **無下一頁時是 `null`，key 一定在**。
 
 ### 2.1 Agent 的 LLM 憑證（v0.5.0 新增，ZEN-012）
 
@@ -576,6 +630,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.8.0 | 2026-09-28 | **新增用量與除錯查詢**（ZEN-015 §3.3）：`GET /v1/agents/{id}/usage`、`GET /v1/agents/{id}/llm-calls` 與 §2.4。`GET /v1/runs` 新增 `api_key_id` 篩選。**既有回應形狀未變**，無新增錯誤 code | @architect |
 | v0.7.0 | 2026-09-28 | **新增 per-agent 下游 API key**（ZEN-015）：`POST`/`GET`/`DELETE /v1/agents/{id}/api-keys` 與 §2.3。認證是**有帶就驗、沒帶放行**（`ZENTRA_REQUIRE_AGENT_API_KEY` 可改成強制），REST 與 MCP 同一套規則。`runs` 新增 `api_key_id`，**回應形狀未變**，無新增錯誤 code | @architect |
 | v0.6.0 | 2026-09-27 | **新增常駐容器端點**（ZEN-015 / ADR-0012）：`GET`/`POST /v1/agents/{id}/containers`、`POST .../restart`、`DELETE .../{cid}`，與 §2.2。新增錯誤 code `AGENT_NOT_RUNNING`。**Runs／SSE／MCP 的形狀完全未變** —— 常駐化對呼叫端無感 | @architect |
 | v0.5.0 | 2026-09-26 | **新增 per-agent LLM 憑證**（ZEN-012）：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential` 三條端點與 §2.1。憑證綁 Agent 不綁版本；回應永不含金鑰。Runs／SSE／MCP 形狀未變，無新增錯誤 code | @architect |

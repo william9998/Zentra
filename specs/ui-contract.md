@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.5.5` |
+| 契約版本 | `v0.6.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -563,6 +563,32 @@ trigger 只接受 `API` 與 `MCP`：Console 建立的 Run 顯示 `API`，不得�
 | Partial / Streaming | 載入下一 cursor 時保留現有列；RUNNING 列只顯示當前已知狀態，不在此頁開 SSE |
 | Success | 依 created time 新到舊顯示；有 next cursor 時提供「查看全部 Runs」連至 Runs 頁並帶 Agent 篩選 |
 
+### 5.13 `api-keys-card.js` — 下游 API key（v0.6.0 新增，ZEN-015）
+
+在 Agent 詳情頁，緊鄰 §5.6 的憑證卡。**兩張卡管的是相反方向的東西**，
+放在一起是為了讓這件事一眼看得出來：憑證是這個 Agent 往外打 LLM 用的，
+API key 是別人往裡打這個 Agent 用的。
+
+1. **明文只出現一次。** 發完之後用一個必須自己關掉的區塊顯示，附複製鈕，
+   並明說「關掉就沒了」。不准做「再看一次」——平台存的是雜湊，那個功能不存在。
+2. **撤銷過的 key 留在清單裡**（灰掉，`data-row--muted`），因為它的歷史用量還掛著。
+   狀態用 §2 的狀態圓點 + 文字，**不只靠顏色**。
+3. 空狀態要說清楚代價：「還沒有發過 key，所有呼叫都記成未歸戶」。
+4. 卡片把 key 清單透過 `onChange` 推給 §5.14 的面板，**兩邊不各抓一次** ——
+   不然下拉選單會跟清單不同步。
+5. Console 是同源呼叫，**不自己組認證標頭**（§6.4）。怎麼帶 key 的說明留給契約 §2.3。
+
+### 5.14 `usage-panel.js` — 用量與除錯（v0.6.0 新增，ZEN-015）
+
+回答兩個問題，所以是上下兩半：上半是總計 + 依 key + 依 model 的彙總，
+下半是逐筆 LLM 呼叫。篩選列有 key 下拉、「只看出錯的」勾選與重新整理。
+
+1. **`key_id` 為 null 的那一列要顯示成「未歸戶」**，並說明是 Console 發起的。
+   濾掉它總計就對不起來。
+2. **金額不做運算。** `costUsd` 是十進位字串，直接印。要合計讓後端 SQL 算。
+3. 逐筆表的每一列都連到那個 Run —— 查到哪筆錯之後，下一個動作一定是去看它。
+4. 逐筆表用游標翻頁（「載入更多」），不是一次抓全部。
+
 ### 5.11 按鈕（CSS class，不是元件）
 
 | class | 樣式 |
@@ -611,6 +637,8 @@ apps/console/
         streaming-output.js  run-timeline.js  endpoints-card.js
         llm-credential-card.js       ← §5.6（ZEN-012）
         run-graph.js                 ← §5.7（ZEN-014）
+        api-keys-card.js             ← §5.13（ZEN-015）
+        usage-panel.js               ← §5.14（ZEN-015）
         create-agent-dialog.js  agent-list.js  agent-version-list.js
         version-registration.js  run-composer.js  recent-runs.js
       pages/
@@ -691,6 +719,7 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.6.0 | 2026-09-28 | **新增 §5.13 `api-keys-card.js` 與 §5.14 `usage-panel.js`**（ZEN-015）：下游 API key 的發放／撤銷，以及 per-key 用量與逐筆除錯。§6.1 檔案清單同步。沒有新 token | @architect |
 | v0.1.0 | 2026-09-20 | 初版 | @ui-designer |
 | v0.2.0 | 2026-09-20 | 改採 Stock-Insight-Chat 深色單色設計語言；**移除全部 emoji 圖示**，狀態改用圓點 + 文字；補齊尺寸/比例 token（控制項高度、圖示尺寸、版面寬度） | @ui-designer |
 | v0.3.0 | 2026-09-20 | 依 ADR-0005 降維：Console 收斂成五個畫面；移除 `<AgentWizard>` 與 `<FlowCanvas>`；新增 `<VersionUpload>` 與 `<EndpointsCard>`。設計 token 與無障礙底線不變 | @ui-designer |

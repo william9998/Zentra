@@ -211,6 +211,8 @@ def test_openapi_contains_no_ui_routes(client) -> None:
         "/v1/agents/{agent_id}/llm-credential",
         "/v1/agents/{agent_id}/api-keys",
         "/v1/agents/{agent_id}/api-keys/{key_id}",
+        "/v1/agents/{agent_id}/usage",
+        "/v1/agents/{agent_id}/llm-calls",
         "/v1/agents/{agent_id}/containers",
         "/v1/agents/{agent_id}/containers/{container_uuid}",
         "/v1/agents/{agent_id}/containers/{container_uuid}/restart",

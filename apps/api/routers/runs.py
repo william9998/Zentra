@@ -1,8 +1,6 @@
 """Public Run API from API contract v0.3.1."""
 
 import asyncio
-import base64
-import json
 import uuid
 from datetime import datetime
 
@@ -20,29 +18,12 @@ from apps.api.models import AgentVersion, Run
 from apps.api.schemas import (
     CreateRunRequest, CreateRunResponse, RunListResponse, RunResponse, RunSummary,
 )
-from apps.api.services import events
+from apps.api.services import events, pagination
 from apps.api.services.runs import create_run as create_run_record
 from apps.api.services.streaming import event_stream
 from apps.api.tasks import dispatch_run
 
 router = APIRouter(prefix="/v1", tags=["runs"])
-
-
-def _cursor_encode(created_at: datetime, run_id: uuid.UUID) -> str:
-    raw = json.dumps([created_at.isoformat(), str(run_id)], separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _cursor_decode(cursor: str) -> tuple[datetime, uuid.UUID]:
-    try:
-        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
-        created_at, run_id = json.loads(raw)
-        return datetime.fromisoformat(created_at), uuid.UUID(run_id)
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise ZentraError(
-            ErrorCode.VALIDATION_ERROR, "cursor is invalid", 422,
-            details={"field": "cursor"},
-        ) from exc
 
 
 async def _to_response(run: Run, session: AsyncSession) -> RunResponse:
@@ -106,6 +87,7 @@ async def invoke_run(
 @router.get("/runs", response_model=RunListResponse)
 async def list_runs(
     agent_id: str | None = None,
+    api_key_id: str | None = None,
     status: RunStatus | None = None,
     trigger: RunTrigger | None = None,
     created_after: datetime | None = None,
@@ -125,6 +107,15 @@ async def list_runs(
                 ErrorCode.VALIDATION_ERROR, "agent_id is invalid", 422,
                 details={"field": "agent_id"},
             ) from exc
+    if api_key_id:
+        # 「這把 key 打進來的哪幾筆失敗了」＝ api_key_id + status=FAILED（ZEN-015 §3.3）
+        try:
+            statement = statement.where(Run.api_key_id == uuid.UUID(api_key_id))
+        except ValueError as exc:
+            raise ZentraError(
+                ErrorCode.VALIDATION_ERROR, "api_key_id is invalid", 422,
+                details={"field": "api_key_id"},
+            ) from exc
     if status is not None:
         statement = statement.where(Run.status == status)
     if trigger is not None:
@@ -134,7 +125,7 @@ async def list_runs(
     if created_before is not None:
         statement = statement.where(Run.created_at <= created_before)
     if cursor:
-        cursor_created_at, cursor_id = _cursor_decode(cursor)
+        cursor_created_at, cursor_id = pagination.decode(cursor)
         statement = statement.where(or_(
             Run.created_at < cursor_created_at,
             and_(Run.created_at == cursor_created_at, Run.id < cursor_id),
@@ -151,7 +142,7 @@ async def list_runs(
             started_at=run.started_at, finished_at=run.finished_at,
         ) for run, semver in rows],
         next_cursor=(
-            _cursor_encode(rows[-1][0].created_at, rows[-1][0].id)
+            pagination.encode(rows[-1][0].created_at, rows[-1][0].id)
             if has_more and rows else None
         ),
     )

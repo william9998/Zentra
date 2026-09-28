@@ -1,11 +1,15 @@
 """Agent metadata, OCI versions, and generated Agent OpenAPI."""
 
 import asyncio
+import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.db import get_session
+from apps.api.enums import ErrorCode
+from apps.api.errors import ZentraError
 from apps.api.schemas import (
     AgentDetail,
     AgentListResponse,
@@ -18,9 +22,11 @@ from apps.api.schemas import (
     AgentContainerResponse,
     AgentApiKeyListResponse,
     AgentApiKeyResponse,
+    AgentUsageResponse,
     AgentLlmCredentialResponse,
     IssueAgentApiKeyRequest,
     IssuedAgentApiKeyResponse,
+    LlmCallListResponse,
     CreateAgentVersionRequest,
     StartAgentContainerRequest,
     SetAgentLlmCredentialRequest,
@@ -31,6 +37,7 @@ from apps.api.services import agent_api_keys
 from apps.api.services import agent_credentials
 from apps.api.services import agents as service
 from apps.api.services import containers as container_service
+from apps.api.services import usage as usage_service
 from apps.api.tasks import (
     dispatch_build, dispatch_container_restart,
     dispatch_container_start, dispatch_container_stop,
@@ -288,6 +295,79 @@ async def revoke_agent_api_key(
     agent = await service.load_agent(session, agent_id)
     row = await agent_api_keys.load_key(session, agent.id, key_id)
     return _key_view(await agent_api_keys.revoke(session, row))
+
+
+# ── 用量與除錯查詢（ZEN-015 §3.3）──────────────────────────────────────
+# 歸戶靠 `runs.api_key_id` join `llm_calls`。沒有 key 的 Run（Console 發起）
+# 在報表裡是 `key_id: null` 的一列，**不是被濾掉** —— 沒歸戶的用量通常正是要找的。
+
+
+def _filters(
+    api_key_id: str | None, since: datetime | None, until: datetime | None,
+    model: str | None, credential_source: str | None, status_code: int | None,
+    errors_only: bool,
+) -> usage_service.CallFilters:
+    key_uuid = None
+    if api_key_id:
+        try:
+            key_uuid = uuid.UUID(api_key_id)
+        except ValueError as exc:
+            raise ZentraError(
+                ErrorCode.VALIDATION_ERROR, "api_key_id is invalid", 422,
+                details={"field": "api_key_id"},
+            ) from exc
+    return usage_service.CallFilters(
+        api_key_id=key_uuid, since=since, until=until, model=model,
+        credential_source=credential_source, status_code=status_code,
+        errors_only=errors_only,
+    )
+
+
+@router.get("/{agent_id}/usage", response_model=AgentUsageResponse)
+async def agent_usage(
+    agent_id: str,
+    api_key_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    model: str | None = None,
+    credential_source: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> AgentUsageResponse:
+    """這個 Agent 的 LLM 用量：總計、依 key、依 model。
+
+    回答的是「這把 key 這個月花了多少、花在哪個模型上」（spec §3.3 的第一條查詢）。
+    """
+    agent = await service.load_agent(session, agent_id)
+    filters = _filters(api_key_id, since, until, model, credential_source, None, False)
+    return AgentUsageResponse(**await usage_service.aggregate(session, agent.id, filters))
+
+
+@router.get("/{agent_id}/llm-calls", response_model=LlmCallListResponse)
+async def agent_llm_calls(
+    agent_id: str,
+    api_key_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    model: str | None = None,
+    credential_source: str | None = None,
+    status_code: int | None = None,
+    errors_only: bool = False,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> LlmCallListResponse:
+    """逐筆列出 LLM 呼叫，最新的在前。
+
+    回答的是「這把 key 的哪一筆 request 出錯了」（spec §3.3 的第二條查詢）。
+    `errors_only=true` 是除錯的第一個動作，所以給它一個開關，
+    不要求呼叫端自己組 `status_code >= 400 OR error IS NOT NULL`。
+    """
+    agent = await service.load_agent(session, agent_id)
+    filters = _filters(
+        api_key_id, since, until, model, credential_source, status_code, errors_only)
+    items, next_cursor = await usage_service.list_calls(
+        session, agent.id, filters, limit=limit, cursor=cursor)
+    return LlmCallListResponse(items=items, next_cursor=next_cursor)
 
 
 @router.post("/{agent_id}/versions", status_code=202, response_model=AgentVersionResponse,

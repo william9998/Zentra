@@ -41,6 +41,7 @@ EXPECTED_FILES = {
     "static/js/api.js",
     "static/js/components/agent-list.js",
     "static/js/components/agent-version-list.js",
+    "static/js/components/api-keys-card.js",
     "static/js/components/create-agent-dialog.js",
     "static/js/components/delete-agent-dialog.js",
     "static/js/components/edit-agent-dialog.js",
@@ -50,6 +51,7 @@ EXPECTED_FILES = {
     "static/js/components/recent-runs.js",
     "static/js/components/run-composer.js",
     "static/js/components/run-timeline.js",
+    "static/js/components/usage-panel.js",
     "static/js/components/version-registration.js",
     "static/js/dom.js",
     "static/js/pages/agent.js",
@@ -97,6 +99,11 @@ ALLOWED_V1_PATTERNS = [
     re.compile(r"^/agents/\{?[^/]*\}?/versions/\{?[^/]*\}?$"),
     # ZEN-012：per-agent LLM 憑證（api-contract v0.5.0 §2.1）
     re.compile(r"^/agents/\{?[^/]*\}?/llm-credential$"),
+    # ZEN-015：下游 API key 與用量／除錯查詢（api-contract v0.7.0 §2.3、v0.8.0 §2.4）
+    re.compile(r"^/agents/\{?[^/]*\}?/api-keys$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/api-keys/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/usage$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/llm-calls$"),
     re.compile(r"^/runs$"),
     re.compile(r"^/runs/\{?[^/]*\}?$"),
     re.compile(r"^/runs/\{?[^/]*\}?/events$"),
@@ -272,7 +279,9 @@ def test_non_token_css_has_no_literal_colors_or_sizes() -> None:
 # ----------------------------------------- §6.3 rule 6: destroy() really exists
 
 
-@pytest.mark.parametrize("name", ["shell.js", "components/run-timeline.js"])
+@pytest.mark.parametrize("name", ["shell.js", "components/run-timeline.js",
+                                  "components/api-keys-card.js",
+                                  "components/usage-panel.js"])
 def test_components_expose_destroy(name: str) -> None:
     source = _read(CONSOLE / "static/js" / name)
     assert re.search(r"export function mount\(", source), name
@@ -371,7 +380,7 @@ def test_contract_enums_still_say_what_this_test_asserts() -> None:
     contract = _read(API_CONTRACT)
     # 這是絆線：契約版本一動就該有人回來看 Console 有沒有跟上。
     # v0.4.0–v0.6.0 之間沒人更新它，所以它紅了好幾個版本都沒被當一回事。
-    assert "| 契約版本 | `v0.7.0` |" in contract
+    assert "| 契約版本 | `v0.8.0` |" in contract
     for code in CONTRACT_ERROR_CODES:
         assert f"`{code}`" in contract, code
     for status in CONTRACT_RUN_STATUS:
@@ -463,6 +472,8 @@ def test_only_whitelisted_v1_endpoints_are_referenced() -> None:
     assert paths == {
         "/agents", "/agents/{}", "/agents/{}/runs", "/agents/{}/versions",
         "/agents/{}/versions/{}", "/agents/{}/llm-credential",   # ZEN-012
+        "/agents/{}/api-keys", "/agents/{}/api-keys/{}",         # ZEN-015
+        "/agents/{}/usage", "/agents/{}/llm-calls",              # ZEN-015
         "/runs", "/runs/{}", "/runs/{}/events",
         "/runs/{}/cancel",   # ZEN-008-D5：死碼，見下方 xfail
     }, paths

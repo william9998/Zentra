@@ -1,4 +1,4 @@
-// api.js —— specs/api-contract.md v0.3.1 的唯一出口（ui-contract §6.2）。
+// api.js —— specs/api-contract.md v0.8.0 的唯一出口（ui-contract §6.2）。
 //
 // 規則：契約的欄位名（snake_case）**只准出現在這個檔案裡**。
 // 這一層把回應正規化成 Console 自己的 camelCase view model，頁面拿到的是那個物件。
@@ -399,6 +399,113 @@ export async function setAgentLlmCredential(agentId, values) {
 /** DELETE /v1/agents/{id}/llm-credential —— 移除後退回用平台預設金鑰。 */
 export async function deleteAgentLlmCredential(agentId) {
   await req('/agents/' + encodeURIComponent(agentId) + '/llm-credential', { method: 'DELETE' });
+}
+
+/**
+ * 下游 API key 的 metadata（api-contract §2.3）。
+ *
+ * **契約保證這裡沒有 key 本身** —— 只有 `key_prefix` 這幾碼辨識用。
+ * 唯一有明文的地方是 `issueAgentApiKey()` 的回傳，而且只有那一次。
+ */
+function viewAgentKey(raw) {
+  return {
+    keyId: raw.key_id,
+    name: raw.name,
+    keyPrefix: raw.key_prefix,
+    createdAt: toDate(raw.created_at),
+    lastUsedAt: toDate(raw.last_used_at),
+    revokedAt: toDate(raw.revoked_at),
+  };
+}
+
+/** GET /v1/agents/{id}/api-keys —— **含已撤銷的**，歷史用量還掛在它們身上。 */
+export async function listAgentApiKeys(agentId) {
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/api-keys');
+  return (raw && raw.items ? raw.items : []).map(viewAgentKey);
+}
+
+/**
+ * POST /v1/agents/{id}/api-keys —— 發一把新的。
+ *
+ * `plaintext` **只有這一次拿得到**。平台只存雜湊，所以沒有「再看一次」的端點，
+ * 呼叫端沒抄下來就只能重發一把。
+ */
+export async function issueAgentApiKey(agentId, name) {
+  const raw = await req(
+    '/agents/' + encodeURIComponent(agentId) + '/api-keys', jsonPost({ name }));
+  return Object.assign(viewAgentKey(raw), { plaintext: raw.key });
+}
+
+/** DELETE /v1/agents/{id}/api-keys/{key_id} —— 軟撤銷，回 200 帶 revoked_at。 */
+export async function revokeAgentApiKey(agentId, keyId) {
+  return viewAgentKey(await req('/agents/' + encodeURIComponent(agentId)
+    + '/api-keys/' + encodeURIComponent(keyId), { method: 'DELETE' }));
+}
+
+/** §3.3 的篩選條件。空值一律不送，免得 `?model=` 被當成「model 是空字串」。 */
+function usageParams(query = {}) {
+  const params = new URLSearchParams();
+  const set = (key, value) => {
+    if (value !== null && value !== undefined && value !== '') params.set(key, value);
+  };
+  set('api_key_id', query.keyId);
+  set('since', query.since);
+  set('until', query.until);
+  set('model', query.model);
+  set('credential_source', query.credentialSource);
+  set('status_code', query.statusCode);
+  if (query.errorsOnly) params.set('errors_only', 'true');
+  set('limit', query.limit);
+  set('cursor', query.cursor);
+  return params.toString();
+}
+
+/** GET /v1/agents/{id}/usage —— 總計、依 key、依 model 三個切面一次回。 */
+export async function getAgentUsage(agentId, query = {}) {
+  const suffix = usageParams(query);
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/usage'
+    + (suffix ? '?' + suffix : ''));
+  return {
+    totals: viewUsage(raw.totals),
+    // key_id 為 null 的那一列是 Console 發起、沒歸戶的用量。**不要濾掉它** ——
+    // 那通常正是在找的東西。
+    byKey: (raw.by_key || []).map((row) => Object.assign(viewUsage(row), {
+      keyId: row.key_id, name: row.name, keyPrefix: row.key_prefix,
+    })),
+    byModel: (raw.by_model || []).map((row) => Object.assign(viewUsage(row), {
+      model: row.model,
+    })),
+  };
+}
+
+/** 一次 LLM 呼叫。帶著 runId，所以查到哪筆錯就能直接跳過去。 */
+function viewLlmCall(raw) {
+  return {
+    callId: raw.call_id,
+    runId: raw.run_id,
+    runStatus: raw.run_status,
+    keyId: raw.api_key_id,
+    model: raw.model,
+    inputTokens: raw.input_tokens,
+    outputTokens: raw.output_tokens,
+    costUsd: raw.cost_usd,
+    latencyMs: raw.latency_ms,
+    statusCode: raw.status_code,
+    error: raw.error,
+    credentialSource: raw.credential_source,
+    createdAt: toDate(raw.created_at),
+  };
+}
+
+/** GET /v1/agents/{id}/llm-calls —— 逐筆，最新的在前。 */
+export async function listAgentLlmCalls(agentId, query = {}) {
+  const suffix = usageParams(query);
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/llm-calls'
+    + (suffix ? '?' + suffix : ''));
+  return {
+    items: (raw.items || []).map(viewLlmCall),
+    nextCursor: raw.next_cursor || null,
+  };
 }
 
 export async function listAgentVersions(agentId) {
