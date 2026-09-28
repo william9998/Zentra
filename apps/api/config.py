@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     # SPEC §10：Run 最長 15 分鐘硬上限
     run_timeout_seconds: int = 900
 
+    # 呼叫 Agent 是否**強制**帶 API key（ZEN-015）。
+    #
+    # 預設 false：契約 §0 寫明 `/v1` 的認證在 MVP 未實作，而 Console 目前也沒有
+    # 帶 key 的能力（它該走同源 session，那還沒做）。所以現在的行為是
+    # **有帶就驗、沒帶放行** —— key 買到的是「用量歸戶」，不是「擋住未授權的人」。
+    #
+    # 這兩件事不一樣，別混。要真的擋人就把它設成 true，但**設之前先確認 Console
+    # 已經有辦法認證**，否則 Console 會整個不能用。
+    require_agent_api_key: bool = Field(
+        default=False, validation_alias="ZENTRA_REQUIRE_AGENT_API_KEY")
+
     # ── 常駐容器（ZEN-015 / ADR-0012）────────────────────────────────
     # 一個容器同時能跑幾個 Run。滿了就溢出開新容器，讓容器掛掉的爆炸半徑有界。
     #

@@ -77,6 +77,8 @@ def test_openapi_still_clean_without_console(probe) -> None:
         "/v1/agents/{agent_id}",
         "/v1/agents/{agent_id}/openapi.json",
         "/v1/agents/{agent_id}/llm-credential",
+        "/v1/agents/{agent_id}/api-keys",
+        "/v1/agents/{agent_id}/api-keys/{key_id}",
         "/v1/agents/{agent_id}/containers",
         "/v1/agents/{agent_id}/containers/{container_uuid}",
         "/v1/agents/{agent_id}/containers/{container_uuid}/restart",

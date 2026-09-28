@@ -277,6 +277,42 @@ class AgentLlmCredentialResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class IssueAgentApiKeyRequest(StrictRequest):
+    """發一把新的下游 key（ZEN-015）。"""
+
+    name: str = Field(
+        min_length=1, max_length=128,
+        description="給人看的名字，例如下游應用名。撤銷時靠它認出是哪一把。",
+    )
+
+
+class AgentApiKeyResponse(BaseModel):
+    """**不含 key 本身**。`key_prefix` 只是辨識用的前幾碼。"""
+
+    key_id: str
+    agent_id: str
+    name: str
+    key_prefix: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class IssuedAgentApiKeyResponse(AgentApiKeyResponse):
+    """建立時的回應，**唯一一次**看得到明文。
+
+    平台只存雜湊，所以這個值遺失了就只能重發一把。這是刻意的。
+    """
+
+    key: str
+
+
+class AgentApiKeyListResponse(BaseModel):
+    """含已撤銷的 key —— 歷史用量還掛在它們身上。"""
+
+    items: list[AgentApiKeyResponse]
+
+
 class AgentContainerResponse(BaseModel):
     """常駐容器的狀態（ZEN-015）。
 

@@ -21,7 +21,14 @@ async def create_run(
     body: CreateRunRequest,
     *,
     trigger: RunTrigger,
+    api_key_id: UUID | None = None,
 ) -> tuple[Run, AgentVersion]:
+    """建立一筆 Run。
+
+    `api_key_id` 是哪一把下游 key 觸發的（ZEN-015）。**Console 發起時是 None**，
+    那不是錯誤：MVP 的 Console 沒有 key，契約 §0 也還沒要求 `/v1` 認證。
+    這個欄位買到的是「用量歸戶」，不是「擋住未授權的人」。
+    """
     agent = await agents.load_agent(session, agent_id)
     version = await agents.resolve_published_version(session, agent.id, body.version)
     selected = agents.entrypoint(version, body.entrypoint)
@@ -33,6 +40,7 @@ async def create_run(
         status=RunStatus.QUEUED, trigger=trigger,
         entrypoint=body.entrypoint, input=body.input,
         timeout_seconds=body.config.timeout_seconds, celery_task_id=str(run_id),
+        api_key_id=api_key_id,
     )
     session.add(run)
     await session.flush()

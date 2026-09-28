@@ -94,6 +94,52 @@ async def require_run_token_only(
     return run
 
 
+async def optional_agent_api_key(
+    agent_id: str,
+    authorization: str = Header(default=""),
+    session: AsyncSession = Depends(get_session),
+):
+    """解析呼叫端帶的 Agent API key（ZEN-015）。回傳 `AgentApiKey` 或 `None`。
+
+    **有帶就必須有效，沒帶預設放行。**
+
+    沒帶放行是因為契約 §0 寫明 `/v1` 的認證在 MVP 未實作，而 Console 目前也沒有
+    帶 key 的能力。所以現在 key 買到的是**用量歸戶**，不是**擋住未授權的人** ——
+    這兩件事不一樣，設定 `ZENTRA_REQUIRE_AGENT_API_KEY=true` 才會變成後者。
+
+    帶了無效的 key 一律擋。「帶了但打錯」跟「沒帶」是不同的意圖，
+    默默當成匿名放行會讓呼叫端以為自己的用量有被記到。
+    """
+    from apps.api.config import get_settings
+    from apps.api.services import agent_api_keys
+
+    scheme, _, token = authorization.partition(" ")
+    presented = token if scheme.lower() == "bearer" and token else ""
+
+    if not presented:
+        if get_settings().require_agent_api_key:
+            raise ZentraError(
+                ErrorCode.UNAUTHENTICATED,
+                "this platform requires an agent API key: send Authorization: Bearer <key>",
+                401,
+            )
+        return None
+
+    row = await agent_api_keys.resolve(session, presented)
+    if row is None:
+        raise ZentraError(
+            ErrorCode.UNAUTHENTICATED, "the agent API key is invalid or revoked", 401
+        )
+    if str(row.agent_id) != agent_id:
+        # 跨 Agent 使用是這把 key 唯一有意義的濫用方式，所以這條是重點。
+        raise ZentraError(
+            ErrorCode.PERMISSION_DENIED,
+            "this API key belongs to a different agent", 403,
+        )
+    await agent_api_keys.touch(session, row)
+    return row
+
+
 async def require_container_token(
     agent_id: str,
     authorization: str = Header(default=""),

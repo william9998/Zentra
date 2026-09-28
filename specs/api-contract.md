@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.6.0` |
+| 契約版本 | `v0.7.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -233,6 +233,9 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 | `POST` | `/v1/agents/{id}/containers` | 啟動常駐容器。回 `202` |
 | `POST` | `/v1/agents/{id}/containers/{cid}/restart` | 重啟。回 `202` |
 | `DELETE` | `/v1/agents/{id}/containers/{cid}` | 停止。回 `202` |
+| `POST` | `/v1/agents/{id}/api-keys` | 發一把下游 key。回 `201`，**明文只出現這一次**（見 §2.3） |
+| `GET` | `/v1/agents/{id}/api-keys` | key 列表，**含已撤銷的**。永不含 key 本身 |
+| `DELETE` | `/v1/agents/{id}/api-keys/{key_id}` | 撤銷一把 key。回 `200` 帶 `revoked_at`（軟撤銷） |
 
 > `PUT /v1/agents/{id}/aliases/{alias}`（流量切換）於 v0.2.0 移除。
 > 呼叫時不指定 `version` 即用最新 `PUBLISHED` 版本。
@@ -274,6 +277,46 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
    而那件事在畫面上看起來跟「剛啟動」一模一樣。
 3. 容器綁定單一版本（P5）。發新版要新容器，切換期間兩個並存。
 4. 新增錯誤 code `AGENT_NOT_RUNNING`：呼叫了沒有 `READY` 容器的 Agent。
+
+### 2.3 Agent 的下游 API key（v0.7.0 新增，ZEN-015）
+
+一個 Agent 可以發多把 key 給不同的下游應用。**key 買到的是「這筆用量是誰打的」，
+不是「擋住未授權的人」** —— 這兩件事不一樣，別混：
+
+- 契約 §0 寫明 `/v1` 的認證在 MVP 未實作，Console 目前也沒有帶 key 的能力。
+- 所以預設行為是**有帶就必須有效，沒帶放行**。沒帶時 `runs.api_key_id` 是 `NULL`。
+- 帶了無效或已撤銷的 key 一律 `401`；帶了**別的 Agent 的** key 是 `403`。
+  「帶了但打錯」跟「沒帶」是不同的意圖，默默當成匿名會讓呼叫端以為用量有記到。
+- 要真的擋人：`ZENTRA_REQUIRE_AGENT_API_KEY=true`，沒帶 key 就 `401`。
+  **設之前先確認 Console 有辦法認證**，否則 Console 會整個不能用。
+
+認證方式：`Authorization: Bearer zk_live_…`。REST 與 MCP 兩個門面**同一套規則**
+（同一把 key 兩邊都能用，判斷一字不差）。
+
+```jsonc
+// POST /v1/agents/{id}/api-keys
+{ "name": "下游應用名稱" }               // 必填，1–128 字元
+
+// 201 —— key 欄位只在這裡出現過一次
+{
+  "key_id": "0199…",
+  "agent_id": "0193…",
+  "name": "下游應用名稱",
+  "key": "zk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",  // ← 只有這次
+  "key_prefix": "zk_live_xxxx",          // 列表裡用來認出是哪一把
+  "created_at": "2026-09-28T10:00:00Z",
+  "last_used_at": null,
+  "revoked_at": null
+}
+```
+
+1. 平台只存 **SHA-256 雜湊**，不是密文。`key` 遺失只能重發一把，**沒有「再看一次」的端點**
+   —— 這不是靠紀律，是靠沒有那個功能。與 §2.1 的 LLM 憑證刻意不同：
+   那個要把明文轉發給供應商，只能加密；這個只要驗證身分，雜湊更安全。
+2. **軟撤銷。** `DELETE` 回 `200` 帶 `revoked_at`，不是 `204`，而且那一列還在。
+   硬刪會讓這把 key 過去的 Run 變成無主的帳。重複撤銷是冪等的。
+3. `GET` **含已撤銷的 key**。藏起來的話，用量查詢會出現一把查不到名字的 key。
+4. `runs.api_key_id` 記的是觸發那筆 Run 的 key。Console 發起的 Run 是 `NULL`。
 
 ### 2.1 Agent 的 LLM 憑證（v0.5.0 新增，ZEN-012）
 
@@ -533,6 +576,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.7.0 | 2026-09-28 | **新增 per-agent 下游 API key**（ZEN-015）：`POST`/`GET`/`DELETE /v1/agents/{id}/api-keys` 與 §2.3。認證是**有帶就驗、沒帶放行**（`ZENTRA_REQUIRE_AGENT_API_KEY` 可改成強制），REST 與 MCP 同一套規則。`runs` 新增 `api_key_id`，**回應形狀未變**，無新增錯誤 code | @architect |
 | v0.6.0 | 2026-09-27 | **新增常駐容器端點**（ZEN-015 / ADR-0012）：`GET`/`POST /v1/agents/{id}/containers`、`POST .../restart`、`DELETE .../{cid}`，與 §2.2。新增錯誤 code `AGENT_NOT_RUNNING`。**Runs／SSE／MCP 的形狀完全未變** —— 常駐化對呼叫端無感 | @architect |
 | v0.5.0 | 2026-09-26 | **新增 per-agent LLM 憑證**（ZEN-012）：`PUT`/`GET`/`DELETE /v1/agents/{id}/llm-credential` 三條端點與 §2.1。憑證綁 Agent 不綁版本；回應永不含金鑰。Runs／SSE／MCP 形狀未變，無新增錯誤 code | @architect |
 | v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的全部新增**：移除 multipart 形狀、移除 `artifact.origin`、`version_id`/`artifact.image_ref`/`artifact.digest` 恢復為任何狀態都非 `null`、`details.stage` 值域退回 `PULL|INSPECT|VALIDATE`、`QUOTA_EXCEEDED` 退回只表示併發 Run 上限。改為使用者在平台主機上直接 `docker push localhost:6000/<repo>:<tag>` 後以既有 JSON 路徑註冊。**v0.4.0 的新增從未實作，因此相對於 v0.3.1 本次是零變更** | @architect |

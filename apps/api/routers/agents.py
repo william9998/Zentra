@@ -16,13 +16,18 @@ from apps.api.schemas import (
     CreateAgentResponse,
     AgentContainerListResponse,
     AgentContainerResponse,
+    AgentApiKeyListResponse,
+    AgentApiKeyResponse,
     AgentLlmCredentialResponse,
+    IssueAgentApiKeyRequest,
+    IssuedAgentApiKeyResponse,
     CreateAgentVersionRequest,
     StartAgentContainerRequest,
     SetAgentLlmCredentialRequest,
     UpdateAgentRequest,
 )
 from apps.api.config import get_settings
+from apps.api.services import agent_api_keys
 from apps.api.services import agent_credentials
 from apps.api.services import agents as service
 from apps.api.services import containers as container_service
@@ -224,6 +229,65 @@ async def delete_llm_credential(
     agent = await service.load_agent(session, agent_id)
     await agent_credentials.delete_credential(session, agent.id)
     return Response(status_code=204)
+
+
+# ── 下游 API key（ZEN-015）──────────────────────────────────────────────
+# 明文只在 POST 的回應裡出現一次。DB 存的是 SHA-256，所以**沒有任何端點讀得回來** ——
+# 這同樣不是靠紀律，是靠沒有那個功能。
+
+
+def _key_view(row) -> AgentApiKeyResponse:
+    return AgentApiKeyResponse(
+        key_id=str(row.id), agent_id=str(row.agent_id), name=row.name,
+        key_prefix=row.key_prefix, created_at=row.created_at,
+        last_used_at=row.last_used_at, revoked_at=row.revoked_at,
+    )
+
+
+@router.post("/{agent_id}/api-keys", status_code=201,
+             response_model=IssuedAgentApiKeyResponse)
+async def issue_agent_api_key(
+    agent_id: str,
+    body: IssueAgentApiKeyRequest,
+    session: AsyncSession = Depends(get_session),
+) -> IssuedAgentApiKeyResponse:
+    """發一把 key 給下游應用。**`key` 只在這次回應出現，之後讀不回來。**"""
+    agent = await service.load_agent(session, agent_id)
+    issued = await agent_api_keys.issue(session, agent.id, body.name)
+    return IssuedAgentApiKeyResponse(
+        **_key_view(issued.row).model_dump(), key=issued.plaintext,
+    )
+
+
+@router.get("/{agent_id}/api-keys", response_model=AgentApiKeyListResponse)
+async def list_agent_api_keys(
+    agent_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> AgentApiKeyListResponse:
+    """列出這個 Agent 的所有 key，**含已撤銷的**。
+
+    已撤銷的留在列表裡是因為歷史 Run 還掛在它們身上；藏起來的話，
+    用量查詢會出現一把查不到名字的 key。
+    """
+    agent = await service.load_agent(session, agent_id)
+    rows = await agent_api_keys.list_keys(session, agent.id)
+    return AgentApiKeyListResponse(items=[_key_view(row) for row in rows])
+
+
+@router.delete("/{agent_id}/api-keys/{key_id}", response_model=AgentApiKeyResponse)
+async def revoke_agent_api_key(
+    agent_id: str,
+    key_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> AgentApiKeyResponse:
+    """撤銷一把 key。**軟撤銷**，所以回 200 帶 `revoked_at`，不是 204。
+
+    撤銷後立刻失效，但那把 key 的列仍在，過去的 Run 也還查得到是誰打的。
+    重複撤銷是冪等的。
+    """
+    agent = await service.load_agent(session, agent_id)
+    row = await agent_api_keys.load_key(session, agent.id, key_id)
+    return _key_view(await agent_api_keys.revoke(session, row))
 
 
 @router.post("/{agent_id}/versions", status_code=202, response_model=AgentVersionResponse,

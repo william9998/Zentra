@@ -13,7 +13,7 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.db import get_session
-from apps.api.deps import get_redis, load_run
+from apps.api.deps import get_redis, load_run, optional_agent_api_key
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
 from apps.api.models import AgentVersion, Run
@@ -62,8 +62,12 @@ async def _to_response(run: Run, session: AsyncSession) -> RunResponse:
 async def create_run(
     agent_id: str, body: CreateRunRequest, response: Response,
     session: AsyncSession = Depends(get_session),
+    api_key = Depends(optional_agent_api_key),
 ) -> CreateRunResponse:
-    run, version = await create_run_record(session, agent_id, body, trigger=RunTrigger.API)
+    run, version = await create_run_record(
+        session, agent_id, body, trigger=RunTrigger.API,
+        api_key_id=api_key.id if api_key else None,
+    )
     # The worker publishes QUEUED along with subsequent events. Broker I/O is
     # synchronous, so never run send_task on FastAPI's event loop.
     await asyncio.to_thread(dispatch_run, str(run.id))
@@ -80,8 +84,12 @@ async def invoke_run(
     agent_id: str,
     body: CreateRunRequest,
     session: AsyncSession = Depends(get_session),
+    api_key = Depends(optional_agent_api_key),
 ) -> RunResponse:
-    run, _ = await create_run_record(session, agent_id, body, trigger=RunTrigger.API)
+    run, _ = await create_run_record(
+        session, agent_id, body, trigger=RunTrigger.API,
+        api_key_id=api_key.id if api_key else None,
+    )
     await asyncio.to_thread(dispatch_run, str(run.id))
     deadline = asyncio.get_running_loop().time() + 60
     while asyncio.get_running_loop().time() < deadline:

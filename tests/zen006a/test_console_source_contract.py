@@ -369,7 +369,9 @@ def test_api_js_enums_match_api_contract() -> None:
 def test_contract_enums_still_say_what_this_test_asserts() -> None:
     """Guard against the contract moving underneath us without the Console noticing."""
     contract = _read(API_CONTRACT)
-    assert "| 契約版本 | `v0.3.1` |" in contract
+    # 這是絆線：契約版本一動就該有人回來看 Console 有沒有跟上。
+    # v0.4.0–v0.6.0 之間沒人更新它，所以它紅了好幾個版本都沒被當一回事。
+    assert "| 契約版本 | `v0.7.0` |" in contract
     for code in CONTRACT_ERROR_CODES:
         assert f"`{code}`" in contract, code
     for status in CONTRACT_RUN_STATUS:

@@ -25,7 +25,9 @@ SELECT
   (SELECT count(*) FROM agent_llm_credentials) AS credentials,
   (SELECT count(*) FROM runs)                  AS runs,
   (SELECT count(*) FROM run_events)            AS events,
-  (SELECT count(*) FROM llm_calls)             AS llm_calls;"
+  (SELECT count(*) FROM llm_calls)             AS llm_calls,
+  (SELECT count(*) FROM agent_containers)      AS containers,
+  (SELECT count(*) FROM agent_api_keys)        AS api_keys;"
 
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "=== --dry-run：會刪掉這些 Agent（保留 builtin-echo）==="
@@ -33,12 +35,29 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-# runs → run_events / llm_calls，agents → agent_llm_credentials，都靠 FK CASCADE
+# 常駐容器要先真的停掉再刪列（ZEN-015）。**順序不能反** ——
+# 先刪 DB 的話那些容器就沒人認得了，它們會繼續佔記憶體直到有人手動 docker ps 發現。
+STALE=$(psql -t -A -c "SELECT id FROM agent_containers WHERE agent_id <> '$BUILTIN';")
+if [[ -n "$STALE" ]]; then
+  echo "=== 停掉測試 Agent 的常駐容器 ==="
+  while read -r cid; do
+    [[ -z "$cid" ]] && continue
+    docker rm -f "zentra-serve-$cid" >/dev/null 2>&1 && echo "  已移除 zentra-serve-$cid" || true
+  done <<< "$STALE"
+fi
+
+# runs → run_events / llm_calls，agents → agent_llm_credentials / agent_api_keys，
+# 都靠 FK CASCADE。agent_containers 例外：它擋著 agent_versions（FK 沒有 CASCADE，
+# 因為「容器還在跑」本來就該擋住刪版本），所以自己先刪。
 psql <<SQL
 BEGIN;
 DELETE FROM runs;
-DELETE FROM agent_versions WHERE agent_id <> '$BUILTIN';
-DELETE FROM agents         WHERE id       <> '$BUILTIN';
+-- api key **全刪，含 builtin-echo 的**：那個 fixture 不會有真的下游應用在用，
+-- 掛在它身上的每一把都是開發時測出來的。留著等於下次開發要從一串測試 key 裡找。
+DELETE FROM agent_api_keys;
+DELETE FROM agent_containers WHERE agent_id <> '$BUILTIN';
+DELETE FROM agent_versions   WHERE agent_id <> '$BUILTIN';
+DELETE FROM agents           WHERE id       <> '$BUILTIN';
 COMMIT;
 SQL
 
@@ -50,5 +69,7 @@ SELECT
   (SELECT count(*) FROM agent_llm_credentials) AS credentials,
   (SELECT count(*) FROM runs)                  AS runs,
   (SELECT count(*) FROM run_events)            AS events,
-  (SELECT count(*) FROM llm_calls)             AS llm_calls;"
+  (SELECT count(*) FROM llm_calls)             AS llm_calls,
+  (SELECT count(*) FROM agent_containers)      AS containers,
+  (SELECT count(*) FROM agent_api_keys)        AS api_keys;"
 echo "留下的是 builtin-echo —— 冒煙測試需要它（ZEN-010）。"
