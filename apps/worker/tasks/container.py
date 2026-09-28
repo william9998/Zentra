@@ -99,7 +99,8 @@ def apply_container(self, container_uuid: str, action: str) -> dict:
         # 停止與重啟都要先拆掉現有的東西。撤銷 token 排在銷毀容器之前：
         # 先撤銷的話，就算銷毀失敗，那個容器也已經拿不到任何新工作了。
         if action in ("stop", "restart"):
-            containertoken.revoke_agent_sync(redis, row.agent_id)
+            # 只撤銷這一個容器的 token —— 照 agent 撤會把兄弟容器一起弄啞
+            containertoken.revoke_container_sync(redis, row.id)
             _destroy(manager, row.id, row.container_id)
             row.container_id = None
             if action == "stop":
@@ -138,7 +139,8 @@ def start_container(
     _destroy(manager, row.id, row.container_id)
 
     try:
-        token = containertoken.issue_sync(redis, row.agent_id, _TOKEN_TTL_SECONDS)
+        token = containertoken.issue_sync(
+            redis, row.agent_id, _TOKEN_TTL_SECONDS, container_uuid=row.id)
         manager.prepare_image(version.image_ref)
         handle = manager.create_serve(
             container_uuid=str(row.id),
@@ -149,8 +151,8 @@ def start_container(
         )
     except Exception as exc:                  # noqa: BLE001
         # 建不起來就撤銷剛發的 token —— 留著一把沒有容器在用的憑證沒有意義，
-        # 而且它會在 `container_tokens:` 裡累積成雜訊。
-        containertoken.revoke_agent_sync(redis, row.agent_id)
+        # 而且它會在索引裡累積成雜訊。
+        containertoken.revoke_container_sync(redis, row.id)
         row.status = "FAILED"
         row.error = f"{type(exc).__name__}: {exc}"[:2000]
         session.commit()
@@ -170,7 +172,7 @@ def start_container(
         row.status = "READY"
         row.last_health_at = datetime.now(UTC)
     else:
-        containertoken.revoke_agent_sync(redis, row.agent_id)
+        containertoken.revoke_container_sync(redis, row.id)
         row.status = "FAILED"
         row.error = detail[:2000]
         log.warning("container for agent %s exited immediately: %s", row.agent_id, detail)
@@ -221,7 +223,7 @@ def sweep_idle_containers() -> dict:
                 row = session.get(AgentContainer, container_uuid)
                 if row is None or row.status != "READY" or row.inflight_runs > 0:
                     continue          # 掃描與停止之間又有工作進來了
-                containertoken.revoke_agent_sync(redis, row.agent_id)
+                containertoken.revoke_container_sync(redis, row.id)
                 _destroy(manager, row.id, row.container_id)
                 row.status = "STOPPED"
                 row.container_id = None

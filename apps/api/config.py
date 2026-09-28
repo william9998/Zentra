@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     #    調 N 的時候要一起看記憶體，不能只調一個。
     sandbox_runs_per_container: int = Field(
         default=30, validation_alias="SANDBOX_RUNS_PER_CONTAINER")
+    # 一個 Agent 最多開幾個常駐容器（ADR-0012 選項 C 的溢出上限）。
+    #
+    # ⚠️ 這個數字乘上容器的 mem_limit 就是單一 Agent 的記憶體天花板：
+    #    3 × 2 GB = 6 GB。**開發機通常沒有那麼多** —— 這台實測 Docker 只有不到 2 GB，
+    #    所以真正跑得起來的是 1 個。調高之前先確認主機記憶體，不然多開的容器
+    #    會在啟動時就被 OOM killer 帶走，而畫面上只會看到 FAILED。
+    sandbox_max_containers_per_agent: int = Field(
+        default=3, validation_alias="SANDBOX_MAX_CONTAINERS_PER_AGENT")
+
     # 容器閒置多久回收（秒）。0 = 不自動回收，只能手動停止。
     #
     # **自動啟動之後這個值不能是 0。** 任何被呼叫過一次的 Agent 都會留下一個

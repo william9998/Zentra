@@ -101,13 +101,21 @@ async function main() {
     `));
 
     // 停止 → 狀態變成已停止
-    await evaluate(`
+    //
+    // **點擊要回報有沒有點到。** 這張卡在有容器 STARTING 時每 2 秒重繪一次，
+    // 抓到舊節點就會點了個寂寞 —— 而「點不到」跟「點了沒反應」是完全不同的故障，
+    // 沉默地當成後者會讓人去查元件，但問題在測試自己。
+    await sleep(500);
+    const clicked = await evaluate(`
       const rows = Array.from(document.querySelectorAll('[data-ctr-list] .data-row'));
       const row = rows.find((r) => (r.textContent || '').includes('服務中'));
-      const b = row && Array.from(row.querySelectorAll('button')).find((x) => x.textContent === '停止');
-      if (b) b.click();
-      return true;
+      if (!row) return 'no-serving-row';
+      const b = Array.from(row.querySelectorAll('button')).find((x) => x.textContent === '停止');
+      if (!b) return 'no-stop-button';
+      b.click();
+      return 'clicked';
     `);
+    record('card.stop_button_was_reachable', clicked === 'clicked', clicked);
     record('card.stop_reflects', await waitFor(`
       (document.querySelector('[data-ctr-list]').textContent || '').includes('已停止')
     `, 40000));

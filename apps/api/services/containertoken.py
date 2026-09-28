@@ -38,6 +38,7 @@ from redis.asyncio import Redis as AsyncRedis
 
 _PREFIX = "container_token:"
 _AGENT_PREFIX = "container_tokens:"
+_CONTAINER_PREFIX = "container_tokens_of:"
 
 
 def _text(value: str | bytes) -> str:
@@ -53,17 +54,39 @@ def key_for(token: str) -> str:
 
 
 def agent_key(agent_id: uuid.UUID | str) -> str:
-    """某個 Agent 目前所有有效的 container token。停止 Agent 時要一次撤銷。"""
+    """某個 Agent 目前所有有效的 container token。刪 Agent 時一次撤銷。"""
     return _AGENT_PREFIX + str(agent_id)
 
 
-async def resolve(redis: AsyncRedis, token: str) -> str | None:
-    """回傳這個 token 綁定的 agent_id，無效則 None。"""
+def container_key(container_uuid: uuid.UUID | str) -> str:
+    """**單一容器**的 token。停止一個容器時只撤銷它自己的。
+
+    一個 Agent 現在可以有多個容器（並發溢出，ADR-0012 選項 C）。
+    照 agent 撤銷會把兄弟容器一起弄啞 —— 它們還活著、還在 long-poll，
+    但每一次都拿到 401，而畫面上它們看起來完全正常。
+    """
+    return _CONTAINER_PREFIX + str(container_uuid)
+
+
+async def resolve(redis: AsyncRedis, token: str) -> tuple[str, str] | None:
+    """回傳 `(agent_id, container_id)`，無效則 None。
+
+    **要認得出是哪一個容器**，不只是哪一個 Agent：多容器時，
+    「誰取走了這筆工作」決定了 `inflight_runs` 該加在誰頭上。
+    """
     value = await redis.get(key_for(token))
-    return None if value is None else _text(value)
+    if value is None:
+        return None
+    agent_id, _, container_id = _text(value).partition(":")
+    return agent_id, container_id
 
 
-def issue_sync(redis: SyncRedis, agent_id: uuid.UUID | str, ttl_seconds: int) -> str:
+def issue_sync(
+    redis: SyncRedis,
+    agent_id: uuid.UUID | str,
+    ttl_seconds: int,
+    container_uuid: uuid.UUID | str = "",
+) -> str:
     """worker 建容器時發，所以是同步版。
 
     TTL 給得比預期壽命長 —— 容器還活著而 token 過期的話，它會取不到工作
@@ -72,15 +95,34 @@ def issue_sync(redis: SyncRedis, agent_id: uuid.UUID | str, ttl_seconds: int) ->
     """
     token = new_token()
     with redis.pipeline(transaction=True) as pipe:
-        pipe.set(key_for(token), str(agent_id), ex=ttl_seconds)
+        pipe.set(key_for(token), f"{agent_id}:{container_uuid}", ex=ttl_seconds)
         pipe.sadd(agent_key(agent_id), token)
         pipe.expire(agent_key(agent_id), ttl_seconds)
+        if container_uuid:
+            pipe.sadd(container_key(container_uuid), token)
+            pipe.expire(container_key(container_uuid), ttl_seconds)
         pipe.execute()
     return token
 
 
+def revoke_container_sync(redis: SyncRedis, container_uuid: uuid.UUID | str) -> None:
+    """只撤銷這一個容器的 token。**停止／重啟單一容器時用這個**，
+    不要用 `revoke_agent_sync` —— 那會把同一個 Agent 的其他容器一起弄啞。"""
+    index = container_key(container_uuid)
+    tokens = redis.smembers(index)
+    with redis.pipeline(transaction=True) as pipe:
+        for token in tokens:
+            pipe.delete(key_for(_text(token)))
+        pipe.delete(index)
+        pipe.execute()
+
+
 def revoke_agent_sync(redis: SyncRedis, agent_id: uuid.UUID | str) -> None:
-    """撤銷某個 Agent 的全部 container token。停止或重啟容器時呼叫。"""
+    """撤銷某個 Agent 的**全部** container token。
+
+    這是「這個 Agent 整個不再服務」時用的。停止單一容器請用
+    `revoke_container_sync` —— 多容器時這個函式會連兄弟一起撤掉。
+    """
     index = agent_key(agent_id)
     tokens = redis.smembers(index)
     with redis.pipeline(transaction=True) as pipe:

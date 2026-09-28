@@ -85,6 +85,12 @@ services:
       #    否則沙盒會拿到指向舊名字的 gateway，Run 會 FAILED 且沒有任何事件。
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
+      # 常駐容器（ZEN-015 / ADR-0012）。N × 容器 mem_limit 就是單一 Agent 的
+      # 記憶體天花板 —— 調 SANDBOX_MAX_CONTAINERS_PER_AGENT 前先看主機有多少記憶體。
+      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-30}
+      SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
+      CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
+      CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
       # ── LLM（ZEN-002 / P4）──────────────────────────────────────────
       # 真金鑰**只**出現在這裡，也就是 app 服務上。
       # worker 沒有這幾個變數，所以它不可能把金鑰注入沙盒 —— 這不是靠紀律，
@@ -127,6 +133,12 @@ services:
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
+      # 常駐容器（ZEN-015 / ADR-0012）。N × 容器 mem_limit 就是單一 Agent 的
+      # 記憶體天花板 —— 調 SANDBOX_MAX_CONTAINERS_PER_AGENT 前先看主機有多少記憶體。
+      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-30}
+      SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
+      CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
+      CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
       # Path only. Credential bytes are a read-only compose secret below.
       ZENTRA_REGISTRY_AUTH_FILE: /run/secrets/zentra_registry_auth
     # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。

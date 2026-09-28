@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.9.0` |
+| 契約版本 | `v0.10.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -294,6 +294,15 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
    而那件事在畫面上看起來跟「剛啟動」一模一樣。
 3. 容器綁定單一版本（P5）。發新版要新容器，切換期間兩個並存。
 4. 新增錯誤 code `AGENT_NOT_RUNNING`：呼叫了沒有 `READY` 容器的 Agent。
+5. **一個 Agent 可以有多個容器**（v0.10.0）。現有容器全部滿載
+   （每個 `inflight_runs` 都到 `max_concurrent_runs`）時，平台會在**背景**再開一個，
+   上限 `SANDBOX_MAX_CONTAINERS_PER_AGENT`（預設 3）。
+   - **這筆請求不會等新容器。** 工作已經排進佇列，先空出來的容器就會取走它；
+     再讓它等一次冷啟動只是白白多幾十秒。新容器是為了**後面**的請求擴容。
+   - 到達上限就只排隊，不再開。沒有上限的話一波尖峰會把主機的記憶體開光，
+     那比讓請求排隊糟得多。
+   - `inflight_runs` **永遠不會超過** `max_concurrent_runs`。滿載時進來的工作
+     不預留給任何容器，等到真的有容器取走才記到它頭上。
 
 ### 2.3 Agent 的下游 API key（v0.7.0 新增，ZEN-015）
 
@@ -652,6 +661,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.10.0 | 2026-09-28 | **並發溢出**（ADR-0012 選項 C 的後半）：容器全滿時背景加開下一個，上限 `SANDBOX_MAX_CONTAINERS_PER_AGENT`（預設 3）；§2.2 第 5 點。`inflight_runs` 保證不超過 `max_concurrent_runs`。**端點與回應形狀未變** | @architect |
 | v0.9.0 | 2026-09-28 | **常駐容器改為隨第一筆 Run 自動啟動、閒置自動停止**（§2.2）；`POST /containers` 語意變成預熱。Internal Gateway 的 bootstrap 新增 `default_model`（§4），讓 per-agent 預設 model 真的送得到沙盒。**公開端點的形狀未變** | @architect |
 | v0.8.0 | 2026-09-28 | **新增用量與除錯查詢**（ZEN-015 §3.3）：`GET /v1/agents/{id}/usage`、`GET /v1/agents/{id}/llm-calls` 與 §2.4。`GET /v1/runs` 新增 `api_key_id` 篩選。**既有回應形狀未變**，無新增錯誤 code | @architect |
 | v0.7.0 | 2026-09-28 | **新增 per-agent 下游 API key**（ZEN-015）：`POST`/`GET`/`DELETE /v1/agents/{id}/api-keys` 與 §2.3。認證是**有帶就驗、沒帶放行**（`ZENTRA_REQUIRE_AGENT_API_KEY` 可改成強制），REST 與 MCP 同一套規則。`runs` 新增 `api_key_id`，**回應形狀未變**，無新增錯誤 code | @architect |

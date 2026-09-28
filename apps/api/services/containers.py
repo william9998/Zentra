@@ -14,13 +14,13 @@ api 不掛 docker.sock，那條規則一個字都不改。
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.enums import AgentVersionStatus, ErrorCode
 from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
-from apps.api.models import AgentContainer, AgentVersion
+from apps.api.models import AgentContainer, AgentVersion, Run
 
 #: 這些狀態表示容器正在或應該在服務。
 LIVE_STATUSES = ("STARTING", "READY", "UNHEALTHY")
@@ -172,4 +172,47 @@ async def touch_health(session: AsyncSession, container_uuid: uuid.UUID) -> None
     container.last_health_at = datetime.now(UTC)
     if container.status in ("STARTING", "UNHEALTHY"):
         container.status = "READY"
+    await session.commit()
+
+
+async def attribute_run(
+    session: AsyncSession, taker_uuid: uuid.UUID, run_id: str | None,
+) -> None:
+    """把一筆 Run 的佔用從「派工端猜的容器」搬到「真正取走它的容器」（ZEN-015）。
+
+    ## 為什麼需要校正
+
+    工作佇列是 **per-agent** 的：同一個 Agent 的多個容器共用一條 FIFO，
+    誰先空出來誰先拿。派工端在推工作時已經先把 `inflight_runs` 記在某個容器上了
+    （它得挑一個來判斷容量），但實際取走的可能是另一個。
+
+    不校正的結果不是數字差一點，是**方向完全相反**：畫面會顯示一個閒著的容器滿載、
+    一個滿載的容器閒著，而擴容判斷就建立在那個數字上。
+
+    單容器時 `taker` 跟猜的是同一個，這裡什麼都不做。
+    """
+    if not run_id:
+        return
+    try:
+        rid = uuid.UUID(run_id)
+    except ValueError:
+        return
+
+    run = await session.get(Run, rid)
+    if run is None or run.container_id == taker_uuid:
+        return
+
+    previous = run.container_id
+    if previous is not None:
+        await session.execute(
+            update(AgentContainer)
+            .where(AgentContainer.id == previous, AgentContainer.inflight_runs > 0)
+            .values(inflight_runs=AgentContainer.inflight_runs - 1)
+        )
+    await session.execute(
+        update(AgentContainer)
+        .where(AgentContainer.id == taker_uuid)
+        .values(inflight_runs=AgentContainer.inflight_runs + 1)
+    )
+    run.container_id = taker_uuid
     await session.commit()

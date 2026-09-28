@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 import docker
 from redis import Redis
-from sqlalchemy import select, text, update
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import NoResultFound
@@ -220,11 +220,18 @@ def _sweep_timeouts(session: Session, redis: Redis) -> int:
     from datetime import timedelta
 
     now = datetime.now(UTC)
+    # 兩種都要掃：
+    #   container_id 有值 → 某個容器取走了但沒回報（卡住或崩潰）
+    #   兩個 id 都沒有   → 排進佇列後沒有任何容器取走（全滿且一直沒空出來）
+    # 一次性沙盒不會落入第二種：它一定有 sandbox_id，而且逾時由 driver.wait 抓。
     stale = session.execute(
         select(Run).where(
             Run.status == RunStatus.RUNNING,
-            Run.container_id.isnot(None),
             Run.started_at.isnot(None),
+            or_(
+                Run.container_id.isnot(None),
+                and_(Run.container_id.is_(None), Run.sandbox_id.is_(None)),
+            ),
         ).limit(50)
     ).scalars().all()
 
@@ -318,8 +325,8 @@ def _ready_container(session: Session, agent_id, version_id) -> AgentContainer |
     **必須同時比對版本** —— 容器綁定單一 `agent_version_id`（P5）。
     發新版之後舊容器還在跑舊版本，把新版的 Run 派進去會執行到錯的程式碼。
 
-    滿載（`inflight_runs >= N`）的容器不算 —— 那是 ADR-0012 選項 C 的「溢出」，
-    目前的行為是退回一次性沙盒，之後會改成開第二個容器。
+    滿載（`inflight_runs >= N`）的容器不算。回 `None` 不代表沒有容器 ——
+    可能是全都滿了，那是 `_live_containers` 要回答的問題（溢出，見 `_overflow`）。
     """
     limit = settings.sandbox_runs_per_container
     row = session.execute(
@@ -380,6 +387,56 @@ def _claim_container_slot(session: Session, agent_id, version) -> tuple[AgentCon
     session.add(row)
     session.commit()
     return row, True
+
+
+def _live_containers(session: Session, agent_id, version_id) -> list[AgentContainer]:
+    """這個版本目前**在服務**的容器，不管滿不滿。
+
+    跟 `_ready_container` 的差別就是容量條件 —— 有它才分得出
+    「一個容器都沒有」（要冷啟動，得等）與「都滿了」（排隊就好，不用等）。
+    """
+    return list(session.execute(
+        select(AgentContainer).where(
+            AgentContainer.agent_id == agent_id,
+            AgentContainer.agent_version_id == version_id,
+            AgentContainer.status.in_(("READY", "STARTING")),
+        )
+    ).scalars())
+
+
+def _overflow(session: Session, agent_id, version) -> None:
+    """全滿了就在**背景**再開一個容器（ADR-0012 選項 C 的後半）。
+
+    ## 為什麼不等它
+
+    冷啟動要等，是因為沒有容器就沒人能接這筆工作。溢出不一樣：
+    **工作已經排進佇列了**，現有容器一空出位子就會拿走它。
+    再讓這筆 Run 去等一個全新容器（含 image pull）只是無謂地加幾十秒延遲。
+    新容器是為了**後面**的請求擴容，不是為了這一筆。
+
+    所以這裡把啟動丟給 `q.build`（跟使用者按按鈕走同一條路），立刻返回。
+
+    ## 為什麼有上限
+
+    沒有上限的話，一波尖峰會讓平台一直開容器，每個 2 GB，直到主機被 OOM killer
+    清場 —— 那比讓請求排隊糟得多。排隊只是慢，OOM 是整台機器上的東西一起死。
+    """
+    from apps.api.tasks import dispatch_container_start
+
+    cap = settings.sandbox_max_containers_per_agent
+    live = _live_containers(session, agent_id, version.id)
+    if len(live) >= cap:
+        log.info("agent %s is at its container cap (%d); queueing instead", agent_id, cap)
+        return
+    if any(row.status == "STARTING" for row in live):
+        return          # 已經有一個在路上了，不要一筆工作開一個容器
+
+    container, mine = _claim_container_slot(session, agent_id, version)
+    if container is None or not mine:
+        return
+    log.info("agent %s containers are full; starting #%d in the background",
+             agent_id, len(live) + 1)
+    dispatch_container_start(str(container.id))
 
 
 def _wait_ready(session: Session, container_uuid, deadline: float) -> AgentContainer | None:
@@ -500,26 +557,57 @@ def execute_run(self, run_id: str) -> dict:
             session.rollback()
 
         container = _ready_container(session, run.agent_id, version.id)
+        #: True = 全部容器都滿了，這筆只是排進佇列，還沒有歸屬到任何容器。
+        queued_only = False
         if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
-            # 沒有現成的就開一個並等它 —— 常駐不再是「使用者記得按啟動」才有的東西。
             # ZEN-000 的內建 fixture 沒有 serve 模式，跳過它（ZEN-010 會退休它）。
-            container = _ensure_container(session, redis, run.agent_id, version)
+            #
+            # 「沒有可用容器」有兩種，處理方式相反：
+            #   全滿      → 工作排進佇列就好，先空出來的容器會拿走；背景加開下一個
+            #   一個都沒有 → 沒人能接，只能等一個起來（冷啟動）
+            serving = [
+                row for row in _live_containers(session, run.agent_id, version.id)
+                if row.status == "READY"
+            ]
+            if serving:
+                _overflow(session, run.agent_id, version)
+                # **不預留給任何容器。** 全都滿了，硬記在誰頭上都會讓
+                # `inflight_runs` 超過 N，畫面上變成「2 / 1」那種看起來像超收的數字。
+                # 這筆工作就是在排隊 —— 等某個容器空出來取走它，
+                # 那時 take_work 會把它記到真正執行的容器上。
+                queued_only = True
+                container = serving[0]
+            else:
+                container = _ensure_container(session, redis, run.agent_id, version)
         if container is not None:
-            work.push_sync(redis, run.agent_id, {
+            item = {
                 "run_id": run_id,
                 "run_token": token,                # ← P4：token 跟著工作項走
                 "entrypoint": run.entrypoint,
                 "input": run.input,
                 "manifest": version.manifest or {},
                 "default_model": _default_model(session, run.agent_id),
-            })
-            container.inflight_runs += 1
+            }
+            if not queued_only:
+                # 有空位才預留。`_ready_container` 只挑 inflight < N 的，
+                # 所以加一之後仍然不會超過 N。
+                container.inflight_runs += 1
             _transition(session, redis, rid, RunStatus.RUNNING,
                         started_at=datetime.now(UTC))
-            session.execute(
-                update(Run).where(Run.id == rid).values(container_id=container.id)
-            )
+            if not queued_only:
+                session.execute(
+                    update(Run).where(Run.id == rid).values(container_id=container.id)
+                )
             session.commit()
+
+            # **推工作一定要在 commit 之後。** 反過來的話，容器可能在 DB 寫完之前
+            # 就取走這筆工作並做歸屬校正 —— 那時它看到的 `run.container_id` 還是空的，
+            # 於是它加一次、派工端再加一次，`inflight_runs` 變成實際的兩倍。
+            # 實測踩過：一筆 Run 跑完，容器顯示 inflight=2。
+            #
+            # 反向的風險是「commit 了但沒推出去」（行程正好在這裡死掉），
+            # 那筆 Run 會停在 RUNNING 直到 _sweep_timeouts 收掉它 —— 慢，但帳是對的。
+            work.push_sync(redis, run.agent_id, item)
             # **不等結果就返回。** 常駐容器同時跑 N 個 Run，而 Celery worker 只有
             # 十個行程 —— 在這裡等會讓 Celery 變成新的瓶頸，N 就白設了。
             # 結果由容器自己回寫 /internal/runs/{id}/result，終態由 finalize_run 裁決。

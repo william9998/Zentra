@@ -14,7 +14,9 @@ LLM agent 幾乎全是 I/O 等待，閒置的容器佔著記憶體卻沒在算�
 ### 做
 
 - **Agent 生命週期**：`PUBLISHED` 的版本可以「啟動」，得到常駐容器；可停止、可重啟
-- **每容器並發上限 `N`**（`SANDBOX_RUNS_PER_CONTAINER`，預設 **30**），滿了溢出開新容器
+- **每容器並發上限 `N`**（`SANDBOX_RUNS_PER_CONTAINER`，預設 **30**），滿了在背景開新容器，
+  上限 `SANDBOX_MAX_CONTAINERS_PER_AGENT`（預設 3）。**溢出的請求不等新容器** ——
+  工作已經在佇列裡，先空出來的容器就會取走
 - **派工改為送進常駐容器**，不是每次 `containers.create`
 - **容器健康檢查與重啟**（Console 按鈕 + API 端點）
 - **每個 Agent 可發多把下游 API key**，呼叫 `/v1` 與 `/mcp` 時帶著
@@ -213,10 +215,17 @@ SPEC §8.1「容器內不開對外 HTTP port」與 L1 的「沙盒只有一個�
 4. ~~派工改走常駐容器~~ ✅ serve 模式 + long-poll 派工，單容器實測 10 併發
 5. ~~per-agent API key + 用量歸戶~~ ✅ api-contract v0.7.0 §2.3，REST 與 MCP 同一套規則
 6. ~~除錯查詢與畫面~~ ✅ api-contract v0.8.0 §2.4、ui-contract v0.6.0 §5.13–5.14
-7. N > 1 的並發與溢出（ADR-0012 選項 C 的後半）← **下一步**
-   （目前 `inflight_runs` 滿 N 時退回一次性沙盒，不會開第二個容器）
+7. ~~N > 1 的並發與溢出（ADR-0012 選項 C 的後半）~~ ✅ api-contract v0.10.0 §2.2
+
+**ZEN-015 交付完畢。**
 
 **4 與 5 可以平行**，但 3 必須先完成。
 
 > **6 的畫面在 Agent 詳情頁**，兩張卡：發 / 撤銷 key，以及用量與逐筆除錯。
 > key 卡片把清單推給用量面板，兩邊不各抓一次。
+>
+> **7 踩到的兩個地雷**（都已修，別再踩回去）：
+> 1. `revoke_agent_sync` 會撤掉整個 Agent 的 container token —— 多容器時停一個
+>    等於把兄弟一起弄啞。停單一容器要用 `revoke_container_sync`。
+> 2. 派工端「先推工作、後 commit」會讓容器在 DB 寫完前就取走並記帳，
+>    `inflight_runs` 變成實際的兩倍。**commit 一定要在 push 之前。**

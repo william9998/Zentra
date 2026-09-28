@@ -103,7 +103,7 @@ async def llm_proxy(
 @router.get("/agents/{agent_id}/work")
 async def take_work(
     agent_id: str,
-    bound_agent_id: str = Depends(require_container_token),
+    bound: tuple[str, str] = Depends(require_container_token),
     redis: Redis = Depends(get_redis),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -122,11 +122,25 @@ async def take_work(
     """
     import uuid as _uuid
 
-    await container_service.touch_health_by_agent(session, _uuid.UUID(bound_agent_id))
+    bound_agent_id, bound_container_id = bound
+    taker = _uuid.UUID(bound_container_id) if bound_container_id else None
+    if taker is not None:
+        await container_service.touch_health(session, taker)
+    else:
+        # 舊 token（v0.9.0 之前發的）沒帶容器 id。退回照 Agent 更新，
+        # 不要因此拒絕服務 —— 那會讓升級時所有在跑的容器一起變啞。
+        await container_service.touch_health_by_agent(session, _uuid.UUID(bound_agent_id))
 
     item = await work.pop(redis, bound_agent_id)
     if item is None:
         return Response(status_code=204)
+
+    # **記在真正取走它的容器頭上。** 佇列是 per-agent 的（多個容器共用一條，
+    # 先空出來的先拿），所以派工端猜的那個容器不一定就是執行的那個。
+    # 不校正的話，畫面會顯示一個閒著的容器滿載、一個滿載的容器閒著。
+    if taker is not None:
+        await container_service.attribute_run(session, taker, item.get("run_id"))
+
     return Response(
         content=json.dumps(item),
         status_code=200,

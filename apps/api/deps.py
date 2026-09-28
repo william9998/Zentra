@@ -144,8 +144,8 @@ async def require_container_token(
     agent_id: str,
     authorization: str = Header(default=""),
     redis: Redis = Depends(get_redis),
-) -> str:
-    """常駐容器取工作用的憑證（ZEN-015）。回傳它綁定的 agent_id。
+) -> tuple[str, str]:
+    """常駐容器取工作用的憑證（ZEN-015）。回傳 `(agent_id, container_id)`。
 
     **權限只有一件事**：取這個 agent 的工作。它讀不了 Run、呼叫不了 LLM、
     拿不到別的 Agent 的工作 —— 那些都要 run token，而 run token 跟著工作項才進來。
@@ -162,13 +162,14 @@ async def require_container_token(
         raise ZentraError(
             ErrorCode.UNAUTHENTICATED, "container token invalid or expired", 401
         )
-    if bound != agent_id:
+    bound_agent, bound_container = bound
+    if bound_agent != agent_id:
         # 跨 Agent 取工作是這個 token 唯一有意義的濫用方式，所以這條是重點。
         raise ZentraError(
             ErrorCode.PERMISSION_DENIED,
             "this container token belongs to a different agent", 403,
         )
-    return bound
+    return bound_agent, bound_container
 
 
 async def require_validation_token(
