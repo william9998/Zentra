@@ -607,7 +607,7 @@ def execute_run(self, run_id: str) -> dict:
             #
             # 反向的風險是「commit 了但沒推出去」（行程正好在這裡死掉），
             # 那筆 Run 會停在 RUNNING 直到 _sweep_timeouts 收掉它 —— 慢，但帳是對的。
-            work.push_sync(redis, run.agent_id, item)
+            work.push_sync(redis, run.agent_id, version.id, item)
             # **不等結果就返回。** 常駐容器同時跑 N 個 Run，而 Celery worker 只有
             # 十個行程 —— 在這裡等會讓 Celery 變成新的瓶頸，N 就白設了。
             # 結果由容器自己回寫 /internal/runs/{id}/result，終態由 finalize_run 裁決。

@@ -133,6 +133,19 @@ runs
 
 常駐容器**不開任何 port**。它 long-poll Internal Gateway 取工作：
 
+佇列是 **per (agent, version)**，不是 per agent：
+
+```
+LPUSH agent_work:{agent_id}:{agent_version_id}
+```
+
+容器綁定單一版本（P5），而切換版本時新舊容器會並存。共用一條佇列的話
+**舊容器會把新版本的工作撈走** —— 那筆 Run 說好跑新版，實際跑的是舊版，
+而畫面上完全看不出來。實測踩過（1.0.2 的請求被 1.0.0 的容器接走）。
+
+容器不知道自己的版本，也不需要知道：它照舊只打 `/work`，
+由 Gateway 從 container token 查出那一列容器綁哪個版本，再決定從哪一條取。
+
 ```
 容器 ──▶ GET /internal/agents/{agent_id}/work    （long-poll，等到有工作或逾時）
      ◀── {run_id, entrypoint, input, run_token, manifest}
@@ -229,3 +242,5 @@ SPEC §8.1「容器內不開對外 HTTP port」與 L1 的「沙盒只有一個�
 >    等於把兄弟一起弄啞。停單一容器要用 `revoke_container_sync`。
 > 2. 派工端「先推工作、後 commit」會讓容器在 DB 寫完前就取走並記帳，
 >    `inflight_runs` 變成實際的兩倍。**commit 一定要在 push 之前。**
+> 3. 工作佇列只按 Agent 分的話，舊版本的容器會撈走新版本的工作（違反 P5）。
+>    **key 必須含 `agent_version_id`**，見 §4.3。

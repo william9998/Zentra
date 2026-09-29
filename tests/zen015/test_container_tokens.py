@@ -132,3 +132,44 @@ def test_tokens_of_different_agents_never_collide(redis) -> None:
     assert asyncio.run(resolve_b())[0] == str(agent_b)
     assert token_a != token_b
     containertoken.revoke_agent_sync(redis, agent_b)
+
+
+# ── 工作佇列的版本隔離 ──────────────────────────────────────────────
+
+
+def test_work_queue_is_scoped_to_a_version(redis) -> None:
+    """一個版本一條佇列（P5）。
+
+    擋的是一個實際發生過的錯：切換版本時新舊容器並存，而佇列只按 Agent 分，
+    於是**舊容器把新版本的工作撈走了** —— 那筆 Run 說好跑 1.0.2，
+    實際跑的是 1.0.0，畫面上完全看不出來。
+    """
+    import asyncio
+
+    from redis.asyncio import Redis as AsyncRedis
+
+    from apps.api.services import work
+
+    agent_id = uuid.uuid4()
+    old_version, new_version = uuid.uuid4(), uuid.uuid4()
+    work.push_sync(redis, agent_id, new_version, {"run_id": "for-the-new-one"})
+
+    async def take(version):
+        client = AsyncRedis.from_url(REDIS_URL)
+        try:
+            return await work.pop(client, agent_id, version, timeout=1)
+        finally:
+            await client.aclose()
+
+    assert asyncio.run(take(old_version)) is None, "舊版本的容器不該拿得到新版本的工作"
+    assert asyncio.run(take(new_version)) == {"run_id": "for-the-new-one"}
+
+
+def test_queue_keys_of_two_versions_never_collide() -> None:
+    from apps.api.services import work
+
+    agent_id = uuid.uuid4()
+    first, second = uuid.uuid4(), uuid.uuid4()
+    assert work.queue_key(agent_id, first) != work.queue_key(agent_id, second)
+    # agent 仍然要在 key 裡：跨 Agent 的隔離不能因為加了版本就不見
+    assert str(agent_id) in work.queue_key(agent_id, first)

@@ -124,22 +124,25 @@ async def take_work(
 
     bound_agent_id, bound_container_id = bound
     taker = _uuid.UUID(bound_container_id) if bound_container_id else None
-    if taker is not None:
-        await container_service.touch_health(session, taker)
-    else:
-        # 舊 token（v0.9.0 之前發的）沒帶容器 id。退回照 Agent 更新，
-        # 不要因此拒絕服務 —— 那會讓升級時所有在跑的容器一起變啞。
-        await container_service.touch_health_by_agent(session, _uuid.UUID(bound_agent_id))
 
-    item = await work.pop(redis, bound_agent_id)
+    # **要知道這個容器綁哪個版本**：佇列是一個版本一條（P5）。
+    # 舊 token（沒帶容器 id）時退回「這個 Agent 只有一個活著的容器」那種情況 ——
+    # 那正是多版本並存還不會發生的狀態，所以退回去是安全的。
+    row = await container_service.resolve_for_work(session, _uuid.UUID(bound_agent_id), taker)
+    if row is None:
+        # 容器的那一列不見了（被停掉或清掉）。回 204 讓它繼續 poll，
+        # 平台側的狀態機會在下一次動作時收拾它。
+        return Response(status_code=204)
+    await container_service.touch_health(session, row.id)
+
+    item = await work.pop(redis, bound_agent_id, row.agent_version_id)
     if item is None:
         return Response(status_code=204)
 
     # **記在真正取走它的容器頭上。** 佇列是 per-agent 的（多個容器共用一條，
     # 先空出來的先拿），所以派工端猜的那個容器不一定就是執行的那個。
     # 不校正的話，畫面會顯示一個閒著的容器滿載、一個滿載的容器閒著。
-    if taker is not None:
-        await container_service.attribute_run(session, taker, item.get("run_id"))
+    await container_service.attribute_run(session, row.id, item.get("run_id"))
 
     return Response(
         content=json.dumps(item),

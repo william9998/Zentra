@@ -216,3 +216,23 @@ async def attribute_run(
     )
     run.container_id = taker_uuid
     await session.commit()
+
+
+async def resolve_for_work(
+    session: AsyncSession, agent_id: uuid.UUID, container_uuid: uuid.UUID | None,
+) -> AgentContainer | None:
+    """取工作時，把 container token 換成那一列容器。
+
+    要它是為了拿到 `agent_version_id` —— 佇列是**一個版本一條**（P5），
+    不知道版本就不知道該從哪一條取。
+
+    `container_uuid` 為 None 是舊 token（v0.9.0 之前發的，只綁 Agent）。
+    那時退回「這個 Agent 只有一個活著的容器」：那正是多版本並存還不會發生的狀態，
+    所以退回去不會取到別人的工作。有多個就回 None，寧可讓它空轉也不要跑錯版本。
+    """
+    if container_uuid is not None:
+        row = await session.get(AgentContainer, container_uuid)
+        return row if row is not None and row.status in LIVE_STATUSES else None
+
+    live = await live_containers(session, agent_id)
+    return live[0] if len(live) == 1 else None
