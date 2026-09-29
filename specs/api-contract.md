@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.10.0` |
+| 契約版本 | `v0.11.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.4.1` |
 
@@ -206,10 +206,13 @@ data: {"status":"SUCCEEDED"}
 僅在 `QUEUED` / `SCHEDULING` / `RUNNING` 有效，否則 `409`。沙盒立即銷毀。
 
 ### `GET /v1/runs` — 列表
-Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`、`limit`、`cursor`
+Query：`agent_id`、`api_key_id`、`status`、`trigger`、`created_after`、`created_before`、`limit`、`cursor`
 ```json
 { "items": [ /* Run 精簡物件，不含 input/output */ ], "next_cursor": null }
 ```
+
+每一列含 `agent_id` **與 `agent_name`**（v0.11.0）：只給 id，列表就得靠人肉比對 UUID；
+只給名稱又跳不到那個 Agent。兩個都要。
 
 ---
 
@@ -221,7 +224,7 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
 | `POST` | `/v1/agents` | 建立 Agent（只建 metadata，還沒有版本） |
 | `GET` | `/v1/agents/{id}` | 詳情，含 `endpoints` |
 | `PATCH` | `/v1/agents/{id}` | 改 metadata（**不可改已發布版本**，P5） |
-| `DELETE` | `/v1/agents/{id}` | 軟刪除 |
+| `DELETE` | `/v1/agents/{id}` | **硬刪除**，連容器與 image 一起（見 §2.5） |
 | `GET` | `/v1/agents/{id}/versions` | 版本列表 |
 | `POST` | `/v1/agents/{id}/versions` | **註冊 OCI image digest 並發布**（見下） |
 | `GET` | `/v1/agents/{id}/versions/{semver}` | 版本詳情，含 `entrypoints` 與 build 錯誤 |
@@ -343,6 +346,27 @@ Query：`agent_id`、`status`、`trigger`、`created_after`、`created_before`�
    硬刪會讓這把 key 過去的 Run 變成無主的帳。重複撤銷是冪等的。
 3. `GET` **含已撤銷的 key**。藏起來的話，用量查詢會出現一把查不到名字的 key。
 4. `runs.api_key_id` 記的是觸發那筆 Run 的 key。Console 發起的 Run 是 `NULL`。
+
+### 2.5 刪除 Agent（v0.11.0 改，ADR-0013）
+
+`DELETE /v1/agents/{id}` → `204`。**不可復原。**
+
+同步刪掉（回 `204` 時已經不在了）：Agent、所有版本、容器紀錄、Run、事件、
+LLM 呼叫紀錄、LLM 憑證、下游 API key。
+
+非同步清掉（交給 worker，它才碰得到 docker.sock 與 registry）：
+常駐容器、主機上的 image、**registry 裡的 manifest**。
+
+1. **稽核軌跡會一起消失。** SPEC §10 的「LLM 呼叫 100% 留存」在這個 Agent 上不再成立。
+   要留就在刪除前匯出。UI 的確認視窗必須把這件事講出來。
+2. **清理失敗不會讓刪除失敗。** Agent 已經不在了，回錯誤只會讓人以為沒刪成功、
+   再按一次。結果寫在 worker 日誌裡。
+3. **只有這條路徑會刪 manifest。** 沒有端點可以單獨刪掉某個版本的 image ——
+   那仍然違反 P5。
+4. 刪 manifest 只是標記可回收，**磁碟空間要 `registry garbage-collect` 才真的釋放**，
+   而那要停機做。畫面上不要說「已釋放空間」。
+5. 批次刪除由 Console 逐一呼叫這條端點，**沒有 bulk 端點** —— 一次刪一個的失敗
+   邊界比較清楚：哪一個沒刪掉說得出來。
 
 ### 2.4 用量與除錯查詢（v0.8.0 新增，ZEN-015）
 
@@ -661,6 +685,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.11.0 | 2026-09-29 | **`DELETE /v1/agents/{id}` 改為硬刪除**，一併清掉容器與 registry image（[ADR-0013](./adr/ADR-0013-hard-delete-agents-and-images.md)），見 §2.5。`GET /v1/runs` 的每一列新增 `agent_name`（只有 agent_id 的話列表得人肉比對 UUID） | @architect |
 | v0.10.0 | 2026-09-28 | **並發溢出**（ADR-0012 選項 C 的後半）：容器全滿時背景加開下一個，上限 `SANDBOX_MAX_CONTAINERS_PER_AGENT`（預設 3）；§2.2 第 5 點。`inflight_runs` 保證不超過 `max_concurrent_runs`。**端點與回應形狀未變** | @architect |
 | v0.9.0 | 2026-09-28 | **常駐容器改為隨第一筆 Run 自動啟動、閒置自動停止**（§2.2）；`POST /containers` 語意變成預熱。Internal Gateway 的 bootstrap 新增 `default_model`（§4），讓 per-agent 預設 model 真的送得到沙盒。**公開端點的形狀未變** | @architect |
 | v0.8.0 | 2026-09-28 | **新增用量與除錯查詢**（ZEN-015 §3.3）：`GET /v1/agents/{id}/usage`、`GET /v1/agents/{id}/llm-calls` 與 §2.4。`GET /v1/runs` 新增 `api_key_id` 篩選。**既有回應形狀未變**，無新增錯誤 code | @architect |

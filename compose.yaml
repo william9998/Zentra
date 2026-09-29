@@ -40,9 +40,16 @@ services:
   registry:
     image: registry:2                      # 上游原版，不要自己 build 或換基底
     environment:
-      # 寫死 false：連誤刪已發布版本的 manifest 都做不到（P5）。
-      # 清理是維運者用離線程序做的，不是 API 能碰的事。
-      REGISTRY_STORAGE_DELETE_ENABLED: "false"
+      # true（ADR-0013 改的，原本是 false）：刪 Agent 時要能一併刪掉它的 image，
+      # 否則「刪掉了」只是畫面上的字，磁碟繼續被佔著。
+      #
+      # ⚠️ 換來的風險是真的：manifest 刪掉就回不來了，而舊 Run 的 `image_ref`
+      #    會變成指向不存在的 image。**只有「刪整個 Agent」這條路徑會呼叫它** ——
+      #    沒有任何端點可以單獨刪一個版本的 manifest（那仍然違反 P5）。
+      #
+      # 刪 manifest 只是標記可回收，blob 要 `registry garbage-collect` 才真的消失，
+      # 而那要停機做。程序見 ADR-0009。
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
       - registrydata:/var/lib/registry
     # 只綁 loopback。這不是文件規定，是「只限同機」的執行手段本身 ——
@@ -139,6 +146,10 @@ services:
       SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
       CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
       CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
+      # 內部 Registry 的兩個視角：image_ref 寫的是主機看到的位址，
+      # worker 刪 manifest 時是從 zentra-net 裡面打（ADR-0013）。
+      INTERNAL_REGISTRY_HOST: ${INTERNAL_REGISTRY_HOST:-localhost:6000}
+      INTERNAL_REGISTRY_URL: ${INTERNAL_REGISTRY_URL:-http://registry:5000}
       # Path only. Credential bytes are a read-only compose secret below.
       ZENTRA_REGISTRY_AUTH_FILE: /run/secrets/zentra_registry_auth
     # .env 是選用的：ZEN-000 沒有任何機密要放。ZEN-002 要 LLM 金鑰時再建。

@@ -173,6 +173,7 @@ function viewRun(raw) {
   return {
     runId: raw.run_id,
     agentId: raw.agent_id,
+    agentName: raw.agent_name,
     agentVersion: raw.agent_version,
     status: raw.status,
     trigger: raw.trigger,

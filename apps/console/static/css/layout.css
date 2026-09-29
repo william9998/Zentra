@@ -456,6 +456,7 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
 /* ---- Agent Registry / OCI registration（ui-contract v0.5.1）---- */
 .list-toolbar {
   display: flex;
+  align-items: center;
   gap: var(--space-3);
 }
 
@@ -494,7 +495,12 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.data-row--run-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+/* 六欄：狀態／Agent 名稱／Agent ID／版本／入口／建立時間。
+   id 欄給寬一點，UUID 斷行會讓每一列高度不一樣。 */
+.data-row--run-list {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.6fr)
+                         minmax(0, 0.8fr) minmax(0, 0.6fr) minmax(0, 1fr);
+}
 
 .list-identity {
   display: flex;
@@ -875,3 +881,30 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   padding-top: var(--space-2);
   overflow-wrap: anywhere;
 }
+
+/* ── Agent 批次選取與刪除 ───────────────────────────────────────────── */
+
+/* 多一個 checkbox 欄。寬度用 --control-sm，不是寫死的數字。 */
+.data-row--agents {
+  grid-template-columns: var(--control-sm) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.sel-box {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  align-self: center;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.sel-list {
+  max-height: var(--space-16);
+  overflow-y: auto;
+  padding-left: var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  list-style: disc;
+}
+
+/* 刪除鈕靠右，跟搜尋框分開 —— 它作用在選取，不是搜尋 */
+.list-toolbar > .btn-danger { margin-left: auto; flex: none; }

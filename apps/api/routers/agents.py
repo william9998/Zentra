@@ -39,6 +39,7 @@ from apps.api.services import agents as service
 from apps.api.services import containers as container_service
 from apps.api.services import usage as usage_service
 from apps.api.tasks import (
+    dispatch_agent_purge,
     dispatch_build, dispatch_container_restart,
     dispatch_container_start, dispatch_container_stop,
 )
@@ -99,7 +100,18 @@ async def delete_agent(
     agent_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    await service.delete_agent(session, await service.load_agent(session, agent_id))
+    """**硬刪**這個 Agent 與它的一切（ADR-0013）。不可復原。
+
+    DB 的部分（版本、容器紀錄、Run、事件、LLM 呼叫、憑證、API key）在這裡
+    同步刪完，所以回 `204` 時它真的不見了。
+
+    容器與 image 交給 worker 非同步收：那兩件事要碰 docker.sock 與 registry，
+    而 `app` 兩個都不該碰。**清理失敗不會讓刪除失敗** —— Agent 已經不在了，
+    再把錯誤丟回來只會讓使用者以為刪除沒成功，然後再按一次。
+    """
+    agent = await service.load_agent(session, agent_id)
+    payload = await service.delete_agent(session, agent)
+    await asyncio.to_thread(dispatch_agent_purge, payload)
     return Response(status_code=204)
 
 

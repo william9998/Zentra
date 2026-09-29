@@ -56,6 +56,9 @@ class RunResponse(BaseModel):
 class RunSummary(BaseModel):
     run_id: str
     agent_id: str
+    #: Agent 名稱。**跟 id 一起給** —— 只有 id 的話列表要人肉比對 UUID，
+    #: 只有名稱的話又跳不到那個 Agent。兩個都要。
+    agent_name: str
     agent_version: str
     status: str
     trigger: str

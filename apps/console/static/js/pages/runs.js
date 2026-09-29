@@ -94,7 +94,9 @@ function main() {
     } else {
       const list = el('div', 'data-list');
       const header = el('div', 'data-row data-row--run-list data-row--header');
-      for (const label of ['狀態', 'Agent', '版本', '入口', '建立時間']) header.appendChild(el('span', null, label));
+      for (const label of ['狀態', 'Agent', 'Agent ID', '版本', '入口', '建立時間']) {
+        header.appendChild(el('span', null, label));
+      }
       list.appendChild(header);
       for (const run of items) {
         const link = el('a', 'data-row data-row--run-list');
@@ -105,7 +107,9 @@ function main() {
         state.appendChild(dot);
         state.appendChild(el('span', 'status-label', STATUS_LABEL[run.status] || run.status));
         link.appendChild(state);
-        link.appendChild(el('span', 'mono text-xs', run.agentId || '—'));
+        // 名稱給人看，id 給機器看 —— 只給其中一個，就得在兩邊之間人肉對照
+        link.appendChild(el('span', 'list-title', run.agentName || '—'));
+        link.appendChild(el('span', 'mono text-2xs', run.agentId || '—'));
         link.appendChild(el('span', 'mono text-xs', run.agentVersion || '—'));
         link.appendChild(el('span', 'mono text-xs', run.trigger || '—'));
         link.appendChild(el('span', 'mono text-2xs', formatDateTime(run.createdAt)));

@@ -20,6 +20,9 @@ CONTAINER_TASK_NAME = "zentra.container.apply"
 # 常駐容器回寫結果後由 worker 裁決終態（ZEN-015）。走 q.run：它很快，
 # 而且跟 Run 的生命週期同一件事。
 FINALIZE_TASK_NAME = "zentra.run.finalize"
+# 刪 Agent 之後的平台外清理（ADR-0013）。走 q.build：它要停容器、刪 image，
+# 跟發布一樣慢，塞進 q.run 會卡住真正的 Run 派工。
+PURGE_TASK_NAME = "zentra.agent.purge"
 
 _producer = Celery("zentra-producer", broker=_settings.redis_url, backend=_settings.redis_url)
 _producer.conf.task_routes = {
@@ -27,6 +30,7 @@ _producer.conf.task_routes = {
     BUILD_TASK_NAME: {"queue": BUILD_QUEUE},
     CONTAINER_TASK_NAME: {"queue": BUILD_QUEUE},
     FINALIZE_TASK_NAME: {"queue": RUN_QUEUE},
+    PURGE_TASK_NAME: {"queue": BUILD_QUEUE},
 }
 
 
@@ -74,5 +78,18 @@ def dispatch_finalize(run_id: str) -> str:
     """
     result = _producer.send_task(
         FINALIZE_TASK_NAME, args=[run_id], task_id=f"finalize:{run_id}"
+    )
+    return result.id
+
+
+def dispatch_agent_purge(payload: dict) -> str:
+    """Agent 已經從 DB 刪掉了，請 worker 收掉容器與 image。
+
+    **payload 帶著要清的東西，不是 agent_id 而已** —— DB 裡已經查不到了，
+    worker 再去查只會查到空的。
+    """
+    result = _producer.send_task(
+        PURGE_TASK_NAME, args=[payload],
+        task_id=f"purge:{payload.get('agent_id')}",
     )
     return result.id

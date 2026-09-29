@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     container_start_timeout_seconds: int = Field(
         default=180, validation_alias="CONTAINER_START_TIMEOUT_SECONDS")
 
+    # 內部 Registry（ADR-0009 / ADR-0013）。
+    #
+    # 兩個值指的是**同一個 registry 的兩個視角**：`image_ref` 裡寫的是主機看得到的
+    # `localhost:6000`（執行 pull 的是主機的 Docker daemon，它不在 zentra-net 上），
+    # 而 worker 要刪 manifest 時是從 zentra-net 裡面打，位址是服務名。
+    # 少了這組對應就會出現「刪不到但也不報錯」——它去 localhost 找一個不存在的 registry。
+    internal_registry_host: str = Field(
+        default="localhost:6000", validation_alias="INTERNAL_REGISTRY_HOST")
+    internal_registry_url: str = Field(
+        default="http://registry:5000", validation_alias="INTERNAL_REGISTRY_URL")
+
     # ── LLM（ZEN-002 / P4）────────────────────────────────────────────
     # 真金鑰**只**存在這裡，也就是 app 服務的環境變數裡。
     # 它永遠不進沙盒：沙盒拿到的是綁定單一 run_id 的 run token，

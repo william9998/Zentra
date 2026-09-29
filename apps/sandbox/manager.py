@@ -60,6 +60,9 @@ class _BlockingDriverAdapter:
     def inspect_image(self, image_ref: str) -> ImageMetadata:
         return asyncio.run(self._driver.inspect_image(image_ref))
 
+    def remove_image(self, image_ref: str) -> None:
+        return asyncio.run(self._driver.remove_image(image_ref))
+
     def wait(self, handle: SandboxHandle, timeout: float) -> SandboxExit:
         return asyncio.run(self._driver.wait(handle, timeout))
 

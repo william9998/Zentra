@@ -15,6 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import docker
+import httpx
 from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -235,3 +236,88 @@ def sweep_idle_containers() -> dict:
         finally:
             redis.close()
     return {"swept": len(swept), "containers": swept}
+
+
+def _registry_target(image_ref: str) -> tuple[str, str] | None:
+    """把 `image_ref` 拆成 `(repository, digest)`，**只認我們自己的 registry**。
+
+    `localhost:6000/stock-agent@sha256:…` → `("stock-agent", "sha256:…")`
+
+    別人的 registry 一律回 None：平台沒有權限、也沒有立場去刪外部的 image。
+    只比對前綴而不是「有沒有 `@`」，是因為誤刪外部 registry 的 manifest
+    是那種會波及到平台以外的錯。
+    """
+    prefix = settings.internal_registry_host + "/"
+    if not image_ref.startswith(prefix) or "@" not in image_ref:
+        return None
+    repository, _, digest = image_ref[len(prefix):].partition("@")
+    return (repository, digest) if repository and digest else None
+
+
+def _delete_from_registry(image_ref: str) -> str:
+    """刪掉 registry 裡的 manifest。回一句話說結果，**絕不拋例外**。
+
+    ## 為什麼刪了還不會馬上釋放空間
+
+    `DELETE /v2/<repo>/manifests/<digest>` 只是把 manifest 標成可回收，
+    blob 要等 `registry garbage-collect` 才真的消失，而那要停機做
+    （ADR-0009 的維運程序）。**畫面上不要說「已釋放空間」** —— 沒有。
+
+    ## 為什麼失敗不算失敗
+
+    Agent 在 DB 裡已經刪掉了，這裡再怎麼樣都救不回來。刪不掉 manifest 的
+    後果是「多佔一點磁碟」，讓整個刪除任務失敗重試的後果是「一直重跑」。
+    """
+    target = _registry_target(image_ref)
+    if target is None:
+        return f"{image_ref}: 不是內部 registry 的 image，跳過"
+    repository, digest = target
+    url = f"{settings.internal_registry_url}/v2/{repository}/manifests/{digest}"
+    try:
+        response = httpx.delete(url, timeout=30)
+    except Exception as exc:                      # noqa: BLE001
+        return f"{image_ref}: 連不上 registry（{type(exc).__name__}）"
+    if response.status_code in (202, 404):
+        # 404 = 已經不在了，對「把它弄不見」這個目的來說跟成功一樣
+        return f"{image_ref}: manifest 已刪除"
+    if response.status_code == 405:
+        return (f"{image_ref}: registry 不允許刪除 —— "
+                "REGISTRY_STORAGE_DELETE_ENABLED 沒有設成 true")
+    return f"{image_ref}: registry 回 {response.status_code}"
+
+
+@celery_app.task(name="zentra.agent.purge", max_retries=0)
+def purge_agent(payload: dict) -> dict:
+    """刪掉 Agent 之後，把平台外的東西一起收掉（ADR-0013）。
+
+    **DB 的部分在 api 那側已經做完了**，這裡只處理碰得到 Docker 與 registry 的事：
+    停容器、刪主機上的 image、刪 registry 裡的 manifest。
+
+    每一步都獨立包起來：其中一步失敗不該讓其他步驟不做。
+    使用者已經看到「刪除成功」了，這裡再拋例外只會變成重試風暴。
+    """
+    redis = Redis.from_url(settings.redis_url)
+    manager = _manager(redis)
+    notes = []
+    try:
+        for container_uuid in payload.get("container_ids") or []:
+            try:
+                containertoken.revoke_container_sync(redis, container_uuid)
+                _destroy(manager, container_uuid, None)
+                notes.append(f"容器 {container_uuid} 已移除")
+            except Exception as exc:              # noqa: BLE001
+                notes.append(f"容器 {container_uuid} 移除失敗：{type(exc).__name__}")
+
+        for image_ref in dict.fromkeys(payload.get("image_refs") or []):
+            notes.append(_delete_from_registry(image_ref))
+            try:
+                manager.driver.remove_image(image_ref)
+                notes.append(f"{image_ref}: 主機上的 image 已移除")
+            except Exception as exc:              # noqa: BLE001
+                # 還有容器在用、或本來就沒 pull 過 —— 兩種都不是問題
+                notes.append(f"{image_ref}: 主機上的 image 沒移除（{type(exc).__name__}）")
+    finally:
+        redis.close()
+
+    log.info("purged agent %s: %s", payload.get("agent_id"), "; ".join(notes))
+    return {"agent_id": payload.get("agent_id"), "notes": notes}

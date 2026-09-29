@@ -14,7 +14,7 @@ from apps.api.db import get_session
 from apps.api.deps import get_redis, load_run, optional_agent_api_key
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
-from apps.api.models import AgentVersion, Run
+from apps.api.models import Agent, AgentVersion, Run
 from apps.api.schemas import (
     CreateRunRequest, CreateRunResponse, RunListResponse, RunResponse, RunSummary,
 )
@@ -96,9 +96,9 @@ async def list_runs(
     cursor: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> RunListResponse:
-    statement = select(Run, AgentVersion.semver).join(
+    statement = select(Run, AgentVersion.semver, Agent.name).join(
         AgentVersion, AgentVersion.id == Run.agent_version_id
-    )
+    ).join(Agent, Agent.id == Run.agent_id)
     if agent_id:
         try:
             statement = statement.where(Run.agent_id == uuid.UUID(agent_id))
@@ -137,10 +137,11 @@ async def list_runs(
     rows = rows[:limit]
     return RunListResponse(
         items=[RunSummary(
-            run_id=str(run.id), agent_id=str(run.agent_id), agent_version=semver,
+            run_id=str(run.id), agent_id=str(run.agent_id), agent_name=name,
+            agent_version=semver,
             status=run.status, trigger=run.trigger, created_at=run.created_at,
             started_at=run.started_at, finished_at=run.finished_at,
-        ) for run, semver in rows],
+        ) for run, semver, name in rows],
         next_cursor=(
             pagination.encode(rows[-1][0].created_at, rows[-1][0].id)
             if has_more and rows else None

@@ -60,15 +60,32 @@ def test_registry_publishes_loopback_only(compose) -> None:
     )
 
 
-def test_registry_cannot_delete_anything(compose) -> None:
-    """Z9-A4：`delete.enabled=false` 寫死 —— 連誤刪都做不到。"""
+def test_registry_deletion_is_enabled_but_only_for_purging_agents(compose) -> None:
+    """Z9-A4（ADR-0013 改）：可以刪，但**只有刪整個 Agent 那一條路徑會刪**。
+
+    原本這條守的是 `delete.enabled=false`（ADR-0009 R1：連誤刪都做不到）。
+    ADR-0013 推翻了它 —— 軟刪讓使用者以為刪掉了，而容器與 image 還在吃資源。
+
+    所以現在守的是新的那條線：**沒有任何端點可以單獨刪掉某個版本的 image**。
+    那仍然違反 P5，而它正是 R1 當初真正擔心的事。
+    """
     registry = compose_service(compose, "registry")
     environment = registry.get("environment") or {}
     if isinstance(environment, list):                      # compose 允許 list 形式
         environment = dict(item.split("=", 1) for item in environment if "=" in item)
     value = environment.get("REGISTRY_STORAGE_DELETE_ENABLED")
-    assert str(value).lower() == "false", (
-        f"REGISTRY_STORAGE_DELETE_ENABLED 必須是 \"false\"，實際 {value!r}"
+    assert str(value).lower() == "true", (
+        f"ADR-0013 需要 registry 可刪，實際 {value!r}"
+    )
+
+    # 刪 manifest 的程式碼只准出現在一個地方
+    from tests.zen009.conftest import PY, REPO_ROOT, grep_tree
+
+    hits = grep_tree(REPO_ROOT / "apps", r"""manifests/""", suffixes=PY)
+    files = {hit.split(":")[0] for hit in hits}
+    assert files <= {"apps/worker/tasks/container.py"}, (
+        "刪 manifest 只准由 Agent purge 做。多一個呼叫點就是多一條繞過 P5 的路：\n"
+        + "\n".join(hits)
     )
 
 

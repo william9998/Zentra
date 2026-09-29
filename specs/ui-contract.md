@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.7.0` |
+| 契約版本 | `v0.8.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -586,6 +586,18 @@ Run 觀測頁的第二種版面。時間軸上方一組 `role="group"` 的切換
 | Partial / Streaming | 已有 items、載入下一 cursor 時保留現有列，底部顯示一列骨架 |
 | Success | 顯示 items；next cursor 非 null 時提供「載入更多」，不做無限捲動 |
 
+**批次選取與刪除（v0.8.0 新增，ADR-0013）。** 每一列左邊一個 checkbox，
+表頭一個全選，工具列右邊一顆 `.btn-danger`。
+
+1. **全選只作用在目前看得到的那些。** 搜尋過濾之後還去勾看不見的列，
+   是那種按下去才發現刪多了的錯。表頭的 checkbox 在部分選取時用 `indeterminate`。
+2. **選取記的是 `agentId`，不是列的索引。** 搜尋會換掉可見的列，記索引會刪到別人。
+3. **確認視窗要列出名字，並講明代價**：不可復原，連 Run 紀錄、用量與 registry 裡的
+   image 一起刪（api-contract §2.5）。只說「確定刪除嗎」不夠 —— 使用者不會知道
+   自己同時放棄了稽核軌跡。
+4. **一個失敗不要停下來。** 逐一呼叫 `DELETE`，全部試完再一起回報哪些沒刪掉；
+   停在中間會留下「刪了一半」而使用者無從得知刪到哪裡。
+
 ### 5.8 `agent-version-list.js` — 版本驗證與 artifact 摘要
 
 Agent 詳情的版本列顯示 `semver`、§2.1 狀態、`version_id` 短碼、platform、size 與 `created_at`。
@@ -807,6 +819,7 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.8.0 | 2026-09-29 | **§5.7 加批次選取與刪除**（ADR-0013）；Runs 列表拆成 Agent 名稱與 Agent ID 兩欄 | @architect |
 | v0.7.0 | 2026-09-29 | **新增淺色模式**：§1.1 加 `:root[data-theme="light"]` 覆寫區塊（只覆寫顏色，29 個 token 全部有值）與 `color-scheme`；§5.1 加頂部列的切換鈕。深色仍是預設，沒存過偏好時跟隨作業系統 | @architect |
 | v0.6.1 | 2026-09-28 | **新增 §5.15 `containers-card.js`**（ZEN-015）：常駐容器的預熱／重啟／停止與狀態。§6.1 檔案清單同步 | @architect |
 | v0.6.0 | 2026-09-28 | **新增 §5.13 `api-keys-card.js` 與 §5.14 `usage-panel.js`**（ZEN-015）：下游 API key 的發放／撤銷，以及 per-key 用量與逐筆除錯。§6.1 檔案清單同步。沒有新 token | @architect |

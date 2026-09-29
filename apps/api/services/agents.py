@@ -10,14 +10,14 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
-from sqlalchemy import and_, desc, or_, select
+from sqlalchemy import and_, delete, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.enums import AgentSourceType, AgentVersionStatus, ErrorCode
 from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
-from apps.api.models import Agent, AgentVersion
+from apps.api.models import Agent, AgentContainer, AgentVersion, Run
 from apps.api.schemas import (
     AgentDetail,
     AgentEndpoints,
@@ -108,19 +108,47 @@ async def update_agent(session: AsyncSession, agent: Agent, body: UpdateAgentReq
     return agent
 
 
-async def delete_agent(session: AsyncSession, agent: Agent) -> None:
-    """軟刪除 Agent，但**硬刪它的 LLM 憑證**。
+async def delete_agent(session: AsyncSession, agent: Agent) -> dict:
+    """**硬刪** Agent 與它的一切，並回傳還需要在平台外清理的東西。
 
-    軟刪是為了保留 metadata 的稽核軌跡，不是為了讓機密留著。
-    被刪掉的 Agent 沒有任何理由還握著一把能用的金鑰。
+    ## 為什麼是硬刪（ADR-0013 改的）
+
+    原本是軟刪，為了留稽核軌跡。但實際使用下來，被刪掉的 Agent 留下的是
+    **佔著記憶體的容器與佔著磁碟的 image**，而使用者以為自己已經刪掉了它。
+    「看不到但還在吃資源」比「查不到歷史」糟。要保留軌跡請在刪除前先匯出。
+
+    ## 刪除順序不能反
+
+    `runs.agent_id` 與 `agent_containers.agent_version_id` 的外鍵**沒有 CASCADE**
+    （那是刻意的：正在跑的東西本來就該擋住刪版本）。所以要由下往上刪，
+    否則第一個 DELETE 就會被外鍵擋掉，而錯誤訊息只會說「違反約束」。
+
+    回傳的 dict 給 worker 用：容器要停、image 要刪，那兩件事都碰不到 DB，
+    而且**必須在 DB 刪掉之前先收集**——刪完就沒有人記得該清哪些東西了。
     """
-    from apps.api.services import agent_credentials
+    payload = {
+        "agent_id": str(agent.id),
+        "container_ids": [
+            str(row) for row in (await session.execute(
+                select(AgentContainer.id).where(AgentContainer.agent_id == agent.id)
+            )).scalars()
+        ],
+        "image_refs": [
+            ref for ref in (await session.execute(
+                select(AgentVersion.image_ref).where(AgentVersion.agent_id == agent.id)
+            )).scalars() if ref
+        ],
+    }
 
-    now = datetime.now(UTC)
-    agent.deleted_at = now
-    agent.updated_at = now
+    for statement in (
+        delete(Run).where(Run.agent_id == agent.id),
+        delete(AgentContainer).where(AgentContainer.agent_id == agent.id),
+        delete(AgentVersion).where(AgentVersion.agent_id == agent.id),
+    ):
+        await session.execute(statement)
+    await session.delete(agent)          # 憑證與 api key 靠 CASCADE 跟著走
     await session.commit()
-    await agent_credentials.delete_credential(session, agent.id)
+    return payload
 
 
 async def list_agents(

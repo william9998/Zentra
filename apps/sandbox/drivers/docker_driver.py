@@ -225,6 +225,17 @@ class DockerSandboxDriver:
             ) from exc
         return self._inspect_object(image, image_ref)
 
+    async def remove_image(self, image_ref: str) -> None:
+        return await asyncio.to_thread(self._remove_image, image_ref)
+
+    def _remove_image(self, image_ref: str) -> None:
+        """移除主機上快取的 image（刪 Agent 時用，ADR-0013）。
+
+        **不用 force**：還有容器在用它就該失敗，而不是把那個容器連根拔掉。
+        呼叫端把失敗當成「這次沒清到」，不是錯誤 —— image 隨時可以再 pull 回來。
+        """
+        self._client.images.remove(image_ref)
+
     def _inspect_object(self, image: Any, image_ref: str) -> ImageMetadata:
         _, expected_digest = parse_digest_reference(image_ref)
         try:
