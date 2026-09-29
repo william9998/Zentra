@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.6.1` |
+| 契約版本 | `v0.7.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.3.1` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -68,10 +68,12 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 > 它從第一天就是純 CSS custom properties，所以換掉 Tailwind 沒有任何遷移成本。
 > **所有其他 CSS 只准引用變數，不准出現字面值色碼、間距、字級。**
 
-### 1.1 色彩（深色，MVP 不做淺色模式）
+### 1.1 色彩（深色為預設，v0.7.0 起可切換淺色）
 
 ```css
 :root {
+  color-scheme: dark;
+
   /* 底層 */
   --bg-base:          #0d0d0d;   /* 頁面底色 */
   --bg-sidebar:       #131313;
@@ -114,9 +116,69 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
   --warning: #c9a04a;
   --success: #4a9070;
 }
+
+/* 淺色模式（v0.7.0 新增）。**只覆寫顏色**，字級、間距、幾何一律共用 ——
+   那些跟明暗無關，複製一份只會多一個會漂掉的地方。
+
+   為什麼疊加值要換成黑：深色的表面靠「疊白」提亮，淺色底疊白等於什麼都沒做。
+   為什麼狀態色要加深：深色版刻意降過飽和度以貼合近黑底，那些值放到白底上
+   對比不足，會變成「看得到但讀不出來」。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* 底層 */
+  --bg-base:          #fbfbfb;
+  --bg-sidebar:       #f3f3f3;
+  --bg-elevated:      #ffffff;
+  --bg-code:          #f1f1f1;
+
+  /* 表面（疊加式）—— 淺色疊黑，不是疊白 */
+  --surface-1:        rgba(0, 0, 0, 0.02);
+  --surface-2:        rgba(0, 0, 0, 0.03);
+  --surface-3:        rgba(0, 0, 0, 0.04);
+  --surface-hover:    rgba(0, 0, 0, 0.05);
+  --surface-active:   rgba(0, 0, 0, 0.08);
+
+  /* 邊框 */
+  --border-subtle:    rgba(0, 0, 0, 0.07);
+  --border-default:   #dcdcdc;
+  --border-strong:    #c0c0c0;
+  --border-focus:     #4a4a4a;
+
+  /* 文字 */
+  --text-primary:     #1f1f1f;
+  --text-secondary:   #6b6b6b;
+  --text-disabled:    #a6a6a6;
+
+  /* 主色 —— 與深色互為反相：`.btn-primary` 的字用 --bg-base，兩邊都會有對比 */
+  --accent:           #3a3a3a;
+  --accent-hover:     #1f1f1f;
+  --accent-subtle:    rgba(58, 58, 58, 0.08);
+
+  /* 狀態色 —— 加深以貼合淺底 */
+  --status-queued:     #8a8a8a;
+  --status-scheduling: #6b6b6b;
+  --status-running:    #2b6cb0;
+  --status-waiting:    #8a6516;
+  --status-succeeded:  #2c6b4f;
+  --status-failed:     #b03a34;
+  --status-cancelled:  #9a9a9a;
+
+  --danger:  #b03a34;
+  --warning: #8a6516;
+  --success: #2c6b4f;
+}
 ```
 
 > **只有 §2 的狀態指示器可以用狀態色。** 其他地方一律單色。
+
+> **淺色是覆寫，不是第二套系統。** 只有 `:root[data-theme="light"]` 這一個區塊，
+> 而且只放顏色。新增顏色 token 時**兩邊都要加** —— 只加深色的話，它在淺色模式下
+> 會保持深色，而那在畫面上看起來像一塊莫名其妙的暗色，不像少了設定。
+> `test_light_theme_covers_every_colour_token` 就是擋這件事的。
+>
+> `color-scheme` 一定要跟著設：它決定原生元件（`select`、`checkbox`、捲軸）的外觀。
+> 少了它，淺色模式的下拉選單會是深色的。
 
 ### 1.2 字體與字級
 
@@ -325,6 +387,17 @@ export function mount(el, props) {
 | Error | page error 留在內容 slot；側欄與麵包屑仍可導航 |
 | Partial / Streaming | 內容更新不重畫 shell；側欄收合狀態保持 |
 | Success | 顯示完整 header、sidebar 與 page slot |
+
+**色彩模式切換（v0.7.0 新增）。** 頂部列最右邊一顆 `.btn-ghost`，只改
+`<html data-theme>`，不碰任何元件 —— 顏色全是 token，所以切換是一個屬性的事。
+
+1. 按鈕文字說的是**按下去會變成什麼**（深色時顯示「淺色」），不是現在是什麼；
+   現在是什麼畫面本身已經在說了。`aria-label` 寫完整句。
+2. 沒存過偏好就跟隨作業系統（`prefers-color-scheme`），存過就以使用者的選擇為準。
+3. 偏好放 `localStorage`，與側欄摺疊同類。§6.4 禁的是**憑證**，不是偏好。
+4. **不使用內嵌 `<script>` 消除初次載入的閃動** —— HTML 不准有內嵌 script（§6.3）。
+   代價誠實講：偏好與系統設定不同時，首次繪製會有一瞬間的舊色。Console 的內容
+   本來就是 JS 繪製的，閃的只有底色。
 
 ### 5.2 `streaming-output.js` — 串流輸出
 
@@ -734,6 +807,7 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.7.0 | 2026-09-29 | **新增淺色模式**：§1.1 加 `:root[data-theme="light"]` 覆寫區塊（只覆寫顏色，29 個 token 全部有值）與 `color-scheme`；§5.1 加頂部列的切換鈕。深色仍是預設，沒存過偏好時跟隨作業系統 | @architect |
 | v0.6.1 | 2026-09-28 | **新增 §5.15 `containers-card.js`**（ZEN-015）：常駐容器的預熱／重啟／停止與狀態。§6.1 檔案清單同步 | @architect |
 | v0.6.0 | 2026-09-28 | **新增 §5.13 `api-keys-card.js` 與 §5.14 `usage-panel.js`**（ZEN-015）：下游 API key 的發放／撤銷，以及 per-key 用量與逐筆除錯。§6.1 檔案清單同步。沒有新 token | @architect |
 | v0.1.0 | 2026-09-20 | 初版 | @ui-designer |

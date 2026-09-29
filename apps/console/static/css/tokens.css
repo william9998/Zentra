@@ -3,6 +3,8 @@
    要新增 token → 開 SPEC-QUESTION，不要在這裡自己加。 */
 
 :root {
+  color-scheme: dark;
+
   /* ---- §1.1 色彩（深色，MVP 不做淺色模式）---- */
 
   /* 底層 */
@@ -101,4 +103,56 @@
   --header-height:   52px;
 
   --transition: 0.2s;
+}
+
+/* 淺色模式（v0.7.0 新增）。**只覆寫顏色**，字級、間距、幾何一律共用 ——
+   那些跟明暗無關，複製一份只會多一個會漂掉的地方。
+
+   為什麼疊加值要換成黑：深色的表面靠「疊白」提亮，淺色底疊白等於什麼都沒做。
+   為什麼狀態色要加深：深色版刻意降過飽和度以貼合近黑底，那些值放到白底上
+   對比不足，會變成「看得到但讀不出來」。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* 底層 */
+  --bg-base:          #fbfbfb;
+  --bg-sidebar:       #f3f3f3;
+  --bg-elevated:      #ffffff;
+  --bg-code:          #f1f1f1;
+
+  /* 表面（疊加式）—— 淺色疊黑，不是疊白 */
+  --surface-1:        rgba(0, 0, 0, 0.02);
+  --surface-2:        rgba(0, 0, 0, 0.03);
+  --surface-3:        rgba(0, 0, 0, 0.04);
+  --surface-hover:    rgba(0, 0, 0, 0.05);
+  --surface-active:   rgba(0, 0, 0, 0.08);
+
+  /* 邊框 */
+  --border-subtle:    rgba(0, 0, 0, 0.07);
+  --border-default:   #dcdcdc;
+  --border-strong:    #c0c0c0;
+  --border-focus:     #4a4a4a;
+
+  /* 文字 */
+  --text-primary:     #1f1f1f;
+  --text-secondary:   #6b6b6b;
+  --text-disabled:    #a6a6a6;
+
+  /* 主色 —— 與深色互為反相：`.btn-primary` 的字用 --bg-base，兩邊都會有對比 */
+  --accent:           #3a3a3a;
+  --accent-hover:     #1f1f1f;
+  --accent-subtle:    rgba(58, 58, 58, 0.08);
+
+  /* 狀態色 —— 加深以貼合淺底 */
+  --status-queued:     #8a8a8a;
+  --status-scheduling: #6b6b6b;
+  --status-running:    #2b6cb0;
+  --status-waiting:    #8a6516;
+  --status-succeeded:  #2c6b4f;
+  --status-failed:     #b03a34;
+  --status-cancelled:  #9a9a9a;
+
+  --danger:  #b03a34;
+  --warning: #8a6516;
+  --success: #2c6b4f;
 }

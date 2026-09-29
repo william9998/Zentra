@@ -7,6 +7,11 @@
 import { el } from './dom.js';
 
 const SIDEBAR_KEY = 'zentra.console.sidebar';   // 只存 UI 偏好，永遠不存憑證（§6.4）
+const THEME_KEY = 'zentra.console.theme';       // 同上：偏好而已
+
+// 深色是產品的預設樣貌（ui-contract §1.1），`data-theme` 只在使用者明講時才出現。
+const DARK = 'dark';
+const LIGHT = 'light';
 
 // 固定結構，沒有任何動態字串 —— 唯一允許使用樣板字串的情況（§6.3 規則 3）。
 const FRAME = `
@@ -33,6 +38,9 @@ const FRAME = `
         <span class="visually-hidden">切換側欄</span>
       </button>
       <nav class="breadcrumb" aria-label="麵包屑"></nav>
+      <button type="button" class="btn-ghost btn-sm shell-theme" data-shell-theme>
+        <span data-shell-theme-label></span>
+      </button>
     </header>
   </div>
 `;
@@ -50,6 +58,8 @@ export function mount(root, props = {}) {
 
   const breadcrumb = shell.querySelector('.breadcrumb');
   const toggle = shell.querySelector('.shell-toggle');
+  const themeButton = shell.querySelector('[data-shell-theme]');
+  const themeLabel = shell.querySelector('[data-shell-theme-label]');
 
   const markActive = () => {
     for (const link of shell.querySelectorAll('[data-nav]')) {
@@ -70,6 +80,49 @@ export function mount(root, props = {}) {
     collapsed = false;   // 隱私模式可能整個丟例外，側欄預設展開即可
   }
   applyCollapsed(collapsed);
+
+  /**
+   * 色彩模式（ui-contract §1.1 / §5.1）。
+   *
+   * **只有一個屬性在動**：`<html data-theme>`。所有顏色都是 token，所以切換不必碰
+   * 任何元件 —— 反過來說，新增顏色 token 時兩邊都要加，不然它在淺色下會留在深色。
+   *
+   * 沒存過偏好就跟隨作業系統。這裡用 JS 判斷而不是 CSS 的 `prefers-color-scheme`，
+   * 是因為那需要把整組淺色值再寫一遍（媒體查詢的選擇器不同，純 CSS 無法共用區塊），
+   * 而零建置（ADR-0006）沒有前處理器可以幫忙去重。多一份會漂掉的值不划算。
+   */
+  const applyTheme = (theme) => {
+    document.documentElement.setAttribute('data-theme', theme);
+    // 按鈕講的是**按下去會變成什麼**，不是現在是什麼 —— 後者畫面本身已經在說了。
+    themeLabel.textContent = theme === LIGHT ? '深色' : '淺色';
+    themeButton.setAttribute('aria-label',
+      theme === LIGHT ? '切換為深色模式' : '切換為淺色模式');
+  };
+
+  const preferredTheme = () => {
+    try {
+      const stored = localStorage.getItem(THEME_KEY);
+      if (stored === LIGHT || stored === DARK) return stored;
+    } catch (_) {
+      // 隱私模式讀不到就當沒存過
+    }
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+      ? LIGHT : DARK;
+  };
+
+  let theme = preferredTheme();
+  applyTheme(theme);
+
+  const onTheme = () => {
+    theme = theme === LIGHT ? DARK : LIGHT;
+    applyTheme(theme);
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch (_) {
+      // 存不進去就算了，這一頁仍然是切好的
+    }
+  };
+  themeButton.addEventListener('click', onTheme);
 
   const onToggle = () => {
     collapsed = !collapsed;
@@ -108,6 +161,7 @@ export function mount(root, props = {}) {
     },
     destroy() {
       toggle.removeEventListener('click', onToggle);
+      themeButton.removeEventListener('click', onTheme);
       // #app 留在原地：Console 是多頁架構，沒有客戶端切頁，不需要把外框拆回去。
     },
   };

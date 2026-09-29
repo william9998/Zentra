@@ -254,17 +254,67 @@ def _css_tokens(text: str) -> dict:
     return tokens
 
 
-def test_tokens_css_matches_ui_contract_section_1() -> None:
+LIGHT_SELECTOR = ':root[data-theme="light"]'
+
+
+def _contract_tokens_section() -> str:
     contract = _read(UI_CONTRACT)
-    section = contract[contract.index("## 1. 設計 Token"):contract.index("## 2. Run 狀態")]
-    expected = _css_tokens(section)
-    actual = _css_tokens(_read(CONSOLE / "static/css/tokens.css"))
+    return contract[contract.index("## 1. 設計 Token"):contract.index("## 2. Run 狀態")]
+
+
+def _without_light(text: str) -> str:
+    """去掉淺色覆寫區塊。
+
+    `_css_tokens` 是扁平的（後面的同名 token 會蓋掉前面的），所以不先拿掉淺色區塊
+    的話，深色的值就完全沒有被比對到 —— 改壞了也不會有人發現。
+    """
+    return re.sub(re.escape(LIGHT_SELECTOR) + r"\s*\{[^{}]*\}", "", text, flags=re.S)
+
+
+def _css_block(text: str, selector: str) -> dict:
+    """取出某一個 `selector { … }` 區塊的 token。CSS 與 markdown 圍欄都吃得下。"""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    match = re.search(re.escape(selector) + r"\s*\{([^{}]*)\}", text)
+    assert match, f"block {selector!r} not found"
+    return {
+        name: value.strip()
+        for name, value in re.findall(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", match.group(1))
+    }
+
+
+def test_tokens_css_matches_ui_contract_section_1() -> None:
+    expected = _css_tokens(_without_light(_contract_tokens_section()))
+    actual = _css_tokens(_without_light(_read(CONSOLE / "static/css/tokens.css")))
     assert expected, "failed to parse ui-contract §1 tokens"
     assert set(actual) == set(expected), (
         f"missing={set(expected) - set(actual)} extra={set(actual) - set(expected)}"
     )
     mismatched = {k: (expected[k], actual[k]) for k in expected if expected[k] != actual[k]}
     assert mismatched == {}
+
+
+def test_light_theme_block_matches_the_contract() -> None:
+    expected = _css_block(_contract_tokens_section(), LIGHT_SELECTOR)
+    actual = _css_block(_read(CONSOLE / "static/css/tokens.css"), LIGHT_SELECTOR)
+    assert expected and actual == expected
+
+
+def test_light_theme_covers_every_colour_token() -> None:
+    """每一個顏色 token 都要有淺色的值。
+
+    少了一個不會壞掉，它只是**保持深色** —— 在淺色版面上那看起來像一塊莫名其妙的
+    暗色，不像少了設定，所以不會有人去找設定。這條就是替那件事出聲。
+    """
+    css = _read(CONSOLE / "static/css/tokens.css")
+    dark = _css_block(css, ":root")
+    light = _css_block(css, LIGHT_SELECTOR)
+    colours = {
+        name for name, value in dark.items()
+        if re.match(r"^(#|rgba?\()", value)
+    }
+    assert colours, "沒有解析到任何顏色 token —— 是解析壞了，不是程式對了"
+    assert colours - set(light) == set(), f"缺少淺色值：{sorted(colours - set(light))}"
+    assert set(light) - colours == set(), f"淺色多定義了非顏色 token：{sorted(set(light) - colours)}"
 
 
 def test_non_token_css_has_no_literal_colors_or_sizes() -> None:
@@ -573,7 +623,8 @@ def test_console_stores_no_long_lived_credentials() -> None:
     for path in JS_FILES:
         source = _read(path)
         storage_keys.update(re.findall(r"(?:local|session)Storage\.\w+\(\s*([A-Z_]+|'[^']*')", source))
-    assert storage_keys <= {"SIDEBAR_KEY", "STASH_KEY"}, storage_keys
+    # THEME_KEY 與 SIDEBAR_KEY 同類：UI 偏好，不是憑證。§6.4 禁的是憑證。
+    assert storage_keys <= {"SIDEBAR_KEY", "STASH_KEY", "THEME_KEY"}, storage_keys
 
 
 def test_the_credential_card_keeps_no_copy_of_the_key() -> None:
@@ -598,7 +649,9 @@ def test_localstorage_run_stash_has_been_removed() -> None:
     for path in JS_FILES:
         storage_keys.update(re.findall(
             r"(?:local|session)Storage\.\w+\(\s*([A-Z_]+|'[^']*')", _read(path)))
-    assert storage_keys <= {"SIDEBAR_KEY"}, storage_keys
+    # SIDEBAR_KEY / THEME_KEY 都是 UI 偏好。這條守的是「Run 資料不准進瀏覽器儲存」，
+    # 不是「不准用 localStorage」。
+    assert storage_keys <= {"SIDEBAR_KEY", "THEME_KEY"}, storage_keys
 
 
 def test_root_redirect_deviation_is_resolved() -> None:
