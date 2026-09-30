@@ -39,7 +39,7 @@ const FRAME = `
       </button>
       <nav class="breadcrumb" aria-label="麵包屑"></nav>
       <button type="button" class="btn-ghost btn-sm shell-theme" data-shell-theme>
-        <span data-shell-theme-label></span>
+        <svg class="icon icon-md" aria-hidden="true"><use data-shell-theme-icon href="/console/static/icons.svg#i-sun"/></svg>
       </button>
     </header>
   </div>
@@ -59,7 +59,7 @@ export function mount(root, props = {}) {
   const breadcrumb = shell.querySelector('.breadcrumb');
   const toggle = shell.querySelector('.shell-toggle');
   const themeButton = shell.querySelector('[data-shell-theme]');
-  const themeLabel = shell.querySelector('[data-shell-theme-label]');
+  const themeIcon = shell.querySelector('[data-shell-theme-icon]');
 
   const markActive = () => {
     for (const link of shell.querySelectorAll('[data-nav]')) {
@@ -93,10 +93,13 @@ export function mount(root, props = {}) {
    */
   const applyTheme = (theme) => {
     document.documentElement.setAttribute('data-theme', theme);
-    // 按鈕講的是**按下去會變成什麼**，不是現在是什麼 —— 後者畫面本身已經在說了。
-    themeLabel.textContent = theme === LIGHT ? '深色' : '淺色';
-    themeButton.setAttribute('aria-label',
-      theme === LIGHT ? '切換為深色模式' : '切換為淺色模式');
+    // 圖示講的是**按下去會變成什麼**，不是現在是什麼 —— 後者畫面本身已經在說了。
+    // 沒有可見文字，所以完整句放 aria-label（讀屏）與 title（滑鼠停留）。
+    themeIcon.setAttribute('href',
+      `/console/static/icons.svg#${theme === LIGHT ? 'i-moon' : 'i-sun'}`);
+    const label = theme === LIGHT ? '切換為深色模式' : '切換為淺色模式';
+    themeButton.setAttribute('aria-label', label);
+    themeButton.setAttribute('title', label);
   };
 
   const preferredTheme = () => {

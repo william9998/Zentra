@@ -98,8 +98,9 @@
   border-bottom: 1px solid var(--border-default);
 }
 
-/* 色彩模式切換：靠右，跟麵包屑分開 —— 它是全站設定，不屬於這一頁的路徑。 */
-.shell-theme { margin-left: auto; flex: none; }
+/* 色彩模式切換：靠右，跟麵包屑分開 —— 它是全站設定，不屬於這一頁的路徑。
+   只有圖示，所以做成正方形（寬 = 高），不讓 .btn-sm 的左右 padding 把它拉成長條。 */
+.shell-theme { margin-left: auto; flex: none; width: var(--control-sm); padding: 0; }
 
 .breadcrumb {
   display: flex;

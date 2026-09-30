@@ -83,10 +83,11 @@ CONTRACT_STATUS_LABELS = {
     "QUEUED": "排隊中", "SCHEDULING": "配置中", "RUNNING": "執行中",
     "SUCCEEDED": "已完成", "FAILED": "失敗", "CANCELLED": "已取消",
 }
-# ui-contract §3 sprite: exactly these ten symbols, "不要多抓".
+# ui-contract §3 sprite: exactly these symbols, "不要多抓".
 CONTRACT_ICON_IDS = {
     "i-bot", "i-activity", "i-box", "i-upload", "i-copy",
     "i-chevron-right", "i-chevron-down", "i-rotate-cw", "i-square", "i-search",
+    "i-sun", "i-moon",
 }
 # Values removed in SPEC/api-contract v0.2.0; nobody may render or assert them.
 REMOVED_VALUES = ["WAITING_INPUT", "tool.call", "tool.result", "interrupt", "CONSOLE"]

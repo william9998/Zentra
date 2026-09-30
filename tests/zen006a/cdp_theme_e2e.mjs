@@ -94,7 +94,7 @@ async function main() {
       `return getComputedStyle(document.body).backgroundColor;`);
     record('dark.body_is_dark', darkBg === 'rgb(13, 13, 13)', darkBg);
     record('dark.button_offers_light', await evaluate(`
-      return (document.querySelector('[data-shell-theme]').textContent || '').trim() === '淺色';
+      return (document.querySelector('[data-shell-theme-icon]').getAttribute('href') || '').endsWith('#i-sun');
     `), '按鈕說的是按下去會變成什麼');
     await shoot('01-dark');
 
@@ -109,7 +109,7 @@ async function main() {
       return getComputedStyle(document.body).color === 'rgb(31, 31, 31)';
     `), await evaluate(`return getComputedStyle(document.body).color;`));
     record('light.button_offers_dark', await evaluate(`
-      return (document.querySelector('[data-shell-theme]').textContent || '').trim() === '深色';
+      return (document.querySelector('[data-shell-theme-icon]').getAttribute('href') || '').endsWith('#i-moon');
     `));
     record('light.color_scheme_is_set', await evaluate(`
       return getComputedStyle(document.documentElement).colorScheme === 'light';
