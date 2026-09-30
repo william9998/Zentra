@@ -175,6 +175,19 @@ def test_static_asset_is_served_byte_identical(client, asset: str, content_type:
     )
 
 
+@pytest.mark.parametrize("path", [
+    "/console/static/js/api.js", "/console/static/icons.svg", "/console/runs",
+])
+def test_console_files_are_revalidated_every_time(client, path: str) -> None:
+    """沒有 hash 檔名可以打破快取，只能叫瀏覽器每次回來問。
+
+    少了這個，瀏覽器會拿新版 runs.js 配舊版 api.js —— 欄位出現了、內容卻是 `—`。
+    """
+    response = client.get(path)
+    assert response.status_code == 200, response.text
+    assert response.headers.get("cache-control") == "no-cache"
+
+
 @pytest.mark.parametrize("attempt", [
     "/console/static/../runs.html",
     "/console/static/..%2Fruns.html",

@@ -20,11 +20,20 @@ from pathlib import Path
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from apps.api.config import get_settings
 from apps.api.errors import not_found
 
 router = APIRouter(include_in_schema=False)
+
+# **每次都回來問一聲**（有 ETag，沒變就是 304，幾乎不花什麼）。
+#
+# 沒有這個標頭，瀏覽器會自己「啟發式」決定快取多久 —— 而 ES module 用 `import`
+# 拉進來的檔案特別容易被留著。零建置（ADR-0006）沒有檔名 hash 可以打破快取，
+# 結果就是新版 runs.js 配上舊版 api.js：新欄位出現了，資料卻是 `—`。
+CACHE_CONTROL = "no-cache"
 
 
 class _OptionalStaticFiles(StaticFiles):
@@ -41,6 +50,11 @@ class _OptionalStaticFiles(StaticFiles):
     async def check_config(self) -> None:
         return None
 
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = CACHE_CONTROL
+        return response
+
 
 async def _page(filename: str) -> FileResponse:
     """回 apps/console 下的一個 HTML 檔。
@@ -51,7 +65,7 @@ async def _page(filename: str) -> FileResponse:
     path: Path = get_settings().console_dir / filename
     if not await asyncio.to_thread(path.is_file):
         raise not_found("console page")
-    return FileResponse(path)
+    return FileResponse(path, headers={"Cache-Control": CACHE_CONTROL})
 
 
 @router.get("/")

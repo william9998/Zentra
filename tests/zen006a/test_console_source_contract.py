@@ -688,3 +688,15 @@ def test_no_stray_json_config_in_console() -> None:
         _rel(path) for path in _files(".json")
     ] == [], "Console is zero-build; no JSON config belongs here"
     json.dumps({})  # keep the import meaningful for linters
+
+
+def test_run_list_rows_carry_agent_name() -> None:
+    """api-contract v0.11.0：`GET /v1/runs` 每一列有 `agent_name`，Runs 列表要讀得到。
+
+    列表走的是 viewRunSummary，不是 viewRun（單一 Run 的回應根本沒有這個欄位）。
+    曾經加錯地方：欄位標題出現了，每一列卻都是 `—`。
+    """
+    api = _strip_js_comments(_read(CONSOLE / "static/js/api.js"))
+    summary = re.search(r"function viewRunSummary\(raw\) \{.*?\n\}", api, flags=re.S)
+    assert summary, "api.js 找不到 viewRunSummary"
+    assert "agentName: raw.agent_name" in summary.group(0)
