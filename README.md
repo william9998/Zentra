@@ -275,7 +275,8 @@ which one, only that it can pull the digest.
 In the Console at `http://localhost:8000/console/agents`, or over the API:
 
 ```bash
-AID=$(curl -s -X POST http://localhost:8000/v1/agents   -H 'Content-Type: application/json'   -d '{"name":"my-agent","description":"..."}' | jq -r .agent_id)
+AID=$(curl -s -X POST http://localhost:8000/v1/agents   -H 'Content-Type: application/json'   -d '{"name":"my-agent","description":"..."}' \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["agent_id"])')
 
 curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions"   -H 'Content-Type: application/json'   -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:6000/my-agent@sha256:58b16bb2…\"}"
 ```
@@ -285,7 +286,7 @@ runs `zentra-agent validate` **inside a throwaway sandbox** to extract the entry
 is never imported by the platform (P1). Poll until it settles:
 
 ```bash
-curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | jq .status
+curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])'
 ```
 
 `PUBLISHED` means it is runnable. `FAILED` puts the validation container's full traceback in
@@ -305,7 +306,8 @@ curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs:invoke" \
 # Asynchronous, with the event stream
 RID=$(curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs" \
   -H 'Content-Type: application/json' \
-  -d '{"entrypoint":"default","input":{"question":"hello"}}' | jq -r .run_id)
+  -d '{"entrypoint":"default","input":{"question":"hello"}}' \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["run_id"])')
 curl -sN "http://localhost:8000/v1/runs/$RID/events"
 
 # MCP — same agent, same schema, generated from the same entrypoints
@@ -641,7 +643,8 @@ docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
 ```bash
 AID=$(curl -s -X POST http://localhost:8000/v1/agents \
   -H 'Content-Type: application/json' \
-  -d '{"name":"my-agent","description":"..."}' | jq -r .agent_id)
+  -d '{"name":"my-agent","description":"..."}' \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["agent_id"])')
 
 curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" \
   -H 'Content-Type: application/json' \
@@ -652,7 +655,7 @@ curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" \
 `zentra-agent validate` 抽出 entrypoint schema —— 使用者程式碼永遠不會被平台 import（P1）。輪詢到終態：
 
 ```bash
-curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | jq .status
+curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])'
 ```
 
 `PUBLISHED` 就能跑。`FAILED` 會把驗證容器的完整 traceback 放進 `error.message` ——
@@ -672,7 +675,8 @@ curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs:invoke" \
 # 非同步 + 事件流
 RID=$(curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs" \
   -H 'Content-Type: application/json' \
-  -d '{"entrypoint":"default","input":{"question":"哈囉"}}' | jq -r .run_id)
+  -d '{"entrypoint":"default","input":{"question":"哈囉"}}' \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["run_id"])')
 curl -sN "http://localhost:8000/v1/runs/$RID/events"
 
 # MCP —— 同一個 agent、同一份 schema，都從同一份 entrypoints 生成
