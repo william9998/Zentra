@@ -1,0 +1,287 @@
+{
+  "info": {
+    "_postman_id": "40a5868e-26d2-5192-9edd-a302e632e35c",
+    "name": "Zentra · demo-echo",
+    "description": "examples/demo-echo 的 REST 與 MCP 測試。先到 Variables 填 agent_id。說明見同目錄 README.md 的「測試：REST 與 MCP」。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{api_key}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "agent_id",
+      "value": ""
+    },
+    {
+      "key": "api_key",
+      "value": ""
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "REST",
+      "item": [
+        {
+          "name": "1 同步呼叫 (runs:invoke)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/v1/agents/{{agent_id}}/runs:invoke",
+            "description": "等到終態才回，上限 60 秒。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entrypoint\": \"default\",\n  \"input\": {\n    \"question\": \"哈囉\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2 非同步建立 (runs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/v1/agents/{{agent_id}}/runs",
+            "description": "回 202 與 run_id，Tests 會把 run_id 存進 collection 變數。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entrypoint\": \"default\",\n  \"input\": {\n    \"question\": \"哈囉\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.collectionVariables.set('run_id', body.run_id);",
+                  "console.log('run_id =', body.run_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3 查 Run",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/v1/runs/{{run_id}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "4 事件流 (SSE)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": "{{base_url}}/v1/runs/{{run_id}}/events",
+            "description": "Run 結束後連線會自己關。"
+          }
+        },
+        {
+          "name": "5 OpenAPI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/v1/agents/{{agent_id}}/openapi.json",
+            "description": ""
+          }
+        },
+        {
+          "name": "6 驗證錯誤 (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/v1/agents/{{agent_id}}/runs:invoke",
+            "description": "少了必填的 question",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entrypoint\": \"default\",\n  \"input\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 VALIDATION_ERROR', () => {",
+                  "  pm.response.to.have.status(422);",
+                  "  pm.expect(pm.response.json().error.code).to.equal('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "MCP",
+      "item": [
+        {
+          "name": "1 tools/list",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "url": "{{base_url}}/mcp/agents/{{agent_id}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/list\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2 tools/call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "url": "{{base_url}}/mcp/agents/{{agent_id}}",
+            "description": "回應是 SSE 原文，結果在 data: 那一行。上限 60 秒。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"default\",\n    \"arguments\": {\n      \"question\": \"哈囉\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const line = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const msg = JSON.parse(line.slice(6));",
+                  "pm.test('沒有 isError', () => pm.expect(msg.result.isError).to.not.equal(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3 tools/call 非同步 (_async)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "url": "{{base_url}}/mcp/agents/{{agent_id}}",
+            "description": "立刻回 run_id，接著用 REST 3、4 追。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"default\",\n    \"arguments\": {\n      \"question\": \"哈囉\",\n      \"_async\": true\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// MCP 回的是 SSE：取 data: 那一行再解析",
+                  "const line = pm.response.text().split('\\n').find(l => l.startsWith('data: '));",
+                  "const msg = JSON.parse(line.slice(6));",
+                  "const runId = msg.result && msg.result.structuredContent && msg.result.structuredContent.run_id;",
+                  "pm.test('拿到 run_id', () => pm.expect(runId).to.be.a('string'));",
+                  "pm.collectionVariables.set('run_id', runId);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
