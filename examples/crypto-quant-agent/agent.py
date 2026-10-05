@@ -49,6 +49,18 @@ DEFAULT_SOURCES = ["binance", "okx"]
 #: 寄信要用到的機密名字。**只檢查名字在不在，拿不到值。**
 SMTP_SECRET = "SMTP_PASSWORD"
 
+#: **這一層自己吃掉的設定鍵。**
+#:
+#: `signals.merge_config()` 只認得指標參數，其餘一律回報成「不認得的鍵」——
+#: 不把這些扣掉的話，每一筆 Run 都會警告「symbols / interval 打錯了」，
+#: 而那是使用者**照 README 寫對**的鍵。實測踩過：第一次端到端跑就看到
+#: 「設定裡有不認得的鍵：interval, limit, notify_to, symbols」。
+#:
+#: 會狼來了的警告比沒有警告更糟 —— 真的打錯字時沒有人會再看它。
+AGENT_CONFIG_KEYS = frozenset({
+    "symbols", "interval", "limit", "sources", "notify_to", "notify_on_flat",
+})
+
 
 class State(TypedDict, total=False):
     symbols: list[str]
@@ -99,7 +111,11 @@ def _decision_view(decision) -> dict[str, Any]:
         "reasons": list(decision.reasons or []),
         "warnings": list(decision.warnings or []),
         "factors": [
-            {"name": f.name, "score": round(f.score, 4), "why": f.why}
+            # `Factor` 的欄位是 name / score / weight / detail —— **不是 `why`**。
+            # 寫錯的話整筆 Run 會在輸出時才炸（AttributeError），
+            # 而那時所有分析都已經做完了。實測踩過一次。
+            {"name": f.name, "score": round(f.score, 4),
+             "weight": f.weight, "detail": f.detail}
             for f in (decision.factors or [])
         ],
     }
@@ -115,7 +131,8 @@ def _email_body(triggered: list[dict[str, Any]]) -> str:
             lines.append(f"  進場 {item['entry']}　停損 {item['stop']}"
                          f"　目標 {', '.join(str(t) for t in item['targets'])}")
         for factor in item["factors"][:5]:
-            lines.append(f"  · {factor['name']} {factor['score']:+.2f} {factor['why']}")
+            lines.append(
+                f"  · {factor['name']} {factor['score']:+.2f} {factor['detail']}")
         lines.append("")
     lines.append("—— 這封信由 Zentra 上的 crypto-quant-agent 寄出。")
     lines.append("訊號是研究輸出，不是投資建議。")
@@ -168,7 +185,9 @@ def build(ctx):
     # **打錯字要出聲**：使用者在 Console 上把 `rsi_period` 打成 `rsi_perio`
     # 而沒有任何提示的話，他會以為設定生效了。
     cfg = signals.merge_config(raw_config)
-    unknown_keys = cfg.pop("_unknown_config_keys", [])
+    # 扣掉這一層自己認得的鍵，剩下的才是真的打錯字。
+    unknown_keys = [key for key in cfg.pop("_unknown_config_keys", [])
+                    if key not in AGENT_CONFIG_KEYS]
 
     default_symbols = raw_config.get("symbols") or DEFAULT_SYMBOLS
     default_interval = raw_config.get("interval") or DEFAULT_INTERVAL
@@ -310,6 +329,17 @@ def build(ctx):
             return {"notified": False, "warnings": warnings}
 
     def summarise(state: State) -> State:
+        """收尾，並**清掉中途用的大物件**。
+
+        LangGraph 的最終狀態就是這個 Run 的 output，而平台會把它整份序列化成
+        JSON 回寫。`snapshots` 裡放的是 `Snapshot` dataclass，
+        **它不可序列化** —— 不清掉的話整筆 Run 會在最後一步炸
+        `TypeError: Object of type Snapshot is not JSON serializable`，
+        而那時所有分析都已經做完了。實測踩過一次。
+
+        `candles` 雖然可序列化，但一個 symbol 就是三萬多個位元組的 K 棒；
+        留著只會讓每一筆 Run 的 output 又大又沒人看。
+        """
         decisions = state.get("decisions") or []
         triggered = state.get("triggered") or []
         parts = [f"{len(decisions)} 個交易對，{len(triggered)} 個觸發"]
@@ -319,6 +349,8 @@ def build(ctx):
             "summary": "；".join(parts),
             "notified": bool(state.get("notified")),
             "warnings": list(state.get("warnings") or []),
+            "candles": {},
+            "snapshots": {},
         }
 
     def should_notify(state: State) -> str:

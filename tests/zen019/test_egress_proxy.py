@@ -29,13 +29,18 @@ import pytest
 from sqlalchemy import select
 
 from tests.zen019.conftest import (
-    auth, issue_run_token, make_published_version, make_run, new_id, requires_db,
+    auth, issue_run_token, make_published_version, make_run, new_id, purge_agent,
+    requires_db,
 )
 
-pytestmark = [requires_db, pytest.mark.anyio]
+pytestmark = requires_db
 
 HOST = "api.example-exchange.com"
-PUBLIC_IP = "203.0.113.10"      # TEST-NET-3，但 fake resolver 讓它不必真的存在
+#: 一個**真的是公網**的位址。
+#: ⚠️ 不要用 `203.0.113.x`／`192.0.2.x`（TEST-NET）：它們 `is_global` 是 False，
+#: 會被 `PRIVATE_ADDRESS` 正確地擋下來，然後整組成功路徑的測試都紅 ——
+#: 而那是實作對、測試錯。假 transport 讓它不必真的連得到。
+PUBLIC_IP = "93.184.216.34"
 URL = f"https://{HOST}/api/v3/klines?symbol=BTCUSDT&interval=1h"
 
 
@@ -115,10 +120,7 @@ async def setup_agent(session, redis_client, *, rules=None):
 
 
 async def cleanup(session, agent_id):
-    from sqlalchemy import text
-
-    await session.execute(text("DELETE FROM agents WHERE id = :id"), {"id": agent_id})
-    await session.commit()
+    await purge_agent(session, agent_id)
 
 
 async def audit_rows(session, run_id):
@@ -338,7 +340,14 @@ async def test_response_headers_are_a_whitelisted_subset(
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
         headers = response.json()["headers"]
-        assert set(headers) == {"content-type", "retry-after", "x-ratelimit-remaining"}
+        # 契約 §4.2 第 7 點的白名單：content-type / content-length / date /
+        # retry-after / x-ratelimit-*。`content-length` 由 httpx 自己補上。
+        assert set(headers) <= {"content-type", "content-length", "date",
+                                "retry-after"} | {
+            key for key in headers if key.startswith("x-ratelimit-")}
+        assert {"content-type", "retry-after", "x-ratelimit-remaining"} <= set(headers)
+        assert "set-cookie" not in headers and "authorization" not in headers
+        assert "x-internal" not in headers
         assert "leak" not in json.dumps(headers)
     finally:
         await cleanup(session, agent.id)

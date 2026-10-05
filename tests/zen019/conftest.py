@@ -46,9 +46,59 @@ if DB_URL:
         "ZENTRA_SECRET_KEY", "Zq2sV4jK8mN0pR3tW6yA9cE1gH5kL7nQ0sU2wX4zB6c=")
 
 
-@pytest.fixture(scope="session")
-def anyio_backend() -> str:
-    return "asyncio"
+# `pyproject.toml` 設了 `asyncio_mode = "auto"`，所以**不要**再掛
+# `pytest.mark.anyio` —— 兩個 plugin 會各自開一個 runner，
+# 症狀是 teardown 時 `Event loop is closed`，而測試本體明明過了。
+
+
+def _use_nullpool() -> None:
+    """每個測試一個 event loop，而 `apps.api.db` 的 engine 是 module 層的。
+
+    連線池會把上一個測試的連線留著，下一個測試拿到它時就會得到
+    `Future attached to a different loop` —— 那個錯訊息完全看不出跟連線池有關。
+    `NullPool` 讓每次都開新連線：慢一點，但測試之間真的隔離。
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from apps.api import db
+
+    if getattr(db, "_zen019_nullpool", False):
+        return
+    db.engine = create_async_engine(DB_URL, poolclass=NullPool, future=True)
+    db.SessionLocal = async_sessionmaker(
+        db.engine, expire_on_commit=False,
+        class_=__import__("sqlalchemy.ext.asyncio", fromlist=["AsyncSession"]).AsyncSession)
+    db._zen019_nullpool = True
+
+
+#: 刪除順序不能反：`runs.agent_id` 與 `agent_containers.agent_version_id` 的外鍵
+#: **沒有 CASCADE**（那是刻意的：正在跑的東西本來就該擋住刪版本）。
+#: 這串與 `services/agents.delete_agent()` 的順序一致。
+_PURGE = (
+    "DELETE FROM egress_calls WHERE agent_id = :id",
+    "DELETE FROM agent_egress_rules WHERE agent_id = :id",
+    "DELETE FROM agent_email_sender WHERE agent_id = :id",
+    "DELETE FROM agent_secrets WHERE agent_id = :id",
+    "DELETE FROM agent_settings WHERE agent_id = :id",
+    "DELETE FROM llm_calls WHERE run_id IN (SELECT id FROM runs WHERE agent_id = :id)",
+    "DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE agent_id = :id)",
+    "DELETE FROM runs WHERE agent_id = :id",
+    "DELETE FROM agent_containers WHERE agent_id = :id",
+    "DELETE FROM agent_versions WHERE agent_id = :id",
+    "DELETE FROM agents WHERE id = :id",
+)
+
+
+async def purge_agent(session, agent_id) -> None:
+    """**測完自己收。** 留著的話下一個人沒辦法用 Console 看東西
+    （實測累積到過 894 個 Agent）。"""
+    from sqlalchemy import text
+
+    await session.rollback()
+    for statement in _PURGE:
+        await session.execute(text(statement), {"id": agent_id})
+    await session.commit()
 
 
 @pytest.fixture
@@ -62,6 +112,7 @@ async def app_client():
     import httpx
     from redis.asyncio import Redis
 
+    _use_nullpool()
     from apps.api.main import app
 
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
@@ -74,9 +125,10 @@ async def app_client():
 
 @pytest.fixture
 async def session():
-    from apps.api.db import SessionLocal
+    _use_nullpool()
+    from apps.api import db
 
-    async with SessionLocal() as value:
+    async with db.SessionLocal() as value:
         yield value
 
 
@@ -101,16 +153,12 @@ async def agent_row(session):
     看東西（實測累積到過 894 個）。"""
     from apps.api.models import Agent
 
-    row = Agent(id=new_id(), name=f"zen019-{os.urandom(4).hex()}",
+    row = Agent(id=new_id(), name=f"zen019-{os.urandom(5).hex()}",
                 description="ZEN-019 test")
     session.add(row)
     await session.commit()
     yield row
-    await session.execute(
-        __import__("sqlalchemy").text("DELETE FROM agents WHERE id = :id"),
-        {"id": row.id},
-    )
-    await session.commit()
+    await purge_agent(session, row.id)
 
 
 async def make_published_version(session, agent_id, semver="1.0.0"):

@@ -14,6 +14,7 @@
 
 import {
   ApiError, deleteAgentSecret, listAgentSecrets, putAgentSecret,
+  viewSecretReferences,
 } from '../api.js';
 import { createErrorBox, el, formatDateTime } from '../dom.js';
 
@@ -103,22 +104,19 @@ export function mount(root, props = {}) {
       hint: '要刪它，先在「對外出口」把引用解除（改掉規則的認證機密，'
         + '或換掉寄件者的密碼機密），再回來刪。',
     });
-    const users = error.details && error.details.referenced_by;
-    if (Array.isArray(users) && users.length > 0) {
-      const heading = el('p', 'error-hint', '正在引用它的是：');
-      box.appendChild(heading);
+    // 契約欄位名只在 api.js 出現一次 —— 這裡拿到的是 view model。
+    const users = viewSecretReferences(error);
+    if (users.length > 0) {
+      box.appendChild(el('p', 'error-hint', '正在引用它的是：'));
       const items = el('ul', 'sel-list');
       for (const user of users) {
         const item = el('li');
-        const label = REFERENCE_LABEL[user && user.kind] || String(user && user.kind || '未知');
-        item.appendChild(el('span', null, label));
-        if (user && user.host) {
+        item.appendChild(el('span', null,
+          REFERENCE_LABEL[user.kind] || String(user.kind || '未知')));
+        if (user.label) {
           item.appendChild(el('span', null, ' · '));
-          item.appendChild(el('code', 'mono', user.host));
-        }
-        if (user && user.smtp_host) {
-          item.appendChild(el('span', null, ' · '));
-          item.appendChild(el('code', 'mono', user.smtp_host));
+          // **textContent** —— 主機名來自使用者輸入。
+          item.appendChild(el('code', 'mono', user.label));
         }
         items.appendChild(item);
       }

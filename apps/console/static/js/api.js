@@ -577,6 +577,23 @@ export const EGRESS_REASON = Object.freeze({
   TLS_REQUIRED: 'TLS_REQUIRED',
 });
 
+/**
+ * `409 VERSION_CONFLICT` 的 `details.referenced_by`（api-contract §2.7 第 6 點）。
+ *
+ * **錯誤的 details 也是契約的一部分**，所以它的欄位名也只能在這個檔案裡出現 ——
+ * 不然「刪不掉的機密被誰引用」那段畫面就繞過了這一層。
+ */
+export function viewSecretReferences(error) {
+  const raw = error && error.details && error.details.referenced_by;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => ({
+    kind: item && item.kind,
+    ruleId: item && item.rule_id,
+    // 出口規則顯示主機、寄件者顯示 SMTP 主機 —— 對使用者來說都是「哪一個」。
+    label: (item && (item.host || item.smtp_host)) || null,
+  }));
+}
+
 /** GET /v1/agents/{id}/config —— 未設定過時 `{}` 與 `null`（key 一定在）。 */
 export async function getAgentConfig(agentId) {
   const raw = await req('/agents/' + encodeURIComponent(agentId) + '/config');
