@@ -79,7 +79,7 @@ canonical image ref（含 digest）。等狀態變 `PUBLISHED`。
   "interval": "1h",
   "limit": 300,
   "sources": ["binance", "okx"],
-  "notify_to": "me@example.com",
+  "notify_to": ["me@example.com"],
   "rsi_oversold": 30,
   "rsi_overbought": 70,
   "signal_threshold": 0.35,
@@ -93,7 +93,7 @@ canonical image ref（含 digest）。等狀態變 `PUBLISHED`。
 | `interval` | `"1h"` | K 棒週期 |
 | `limit` | `300` | 抓幾根（OKX 上限 300） |
 | `sources` | `["binance","okx"]` | 主源與備援的順序 |
-| `notify_to` | 無 | 寄給誰。**必須也在寄件者的收件人白名單裡** |
+| `notify_to` | 無 | 寄給誰。一個地址或一串地址都收（`"a@b.com"` 與 `["a@b.com"]` 等價）。**每一個都必須也在寄件者的收件人白名單裡** —— 白名單是全有全無，有一個不在清單上，整封信都不寄 |
 | `notify_on_flat` | `false` | 方向明確但未觸發時也寄信 |
 | 其餘 | 見 `signals.DEFAULTS` | RSI / MACD / ATR / ADX / 布林 / 諧波 / 權重 / 門檻… |
 

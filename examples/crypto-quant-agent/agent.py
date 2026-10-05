@@ -64,6 +64,23 @@ class State(TypedDict, total=False):
     summary: str
 
 
+def _recipient_list(value: Any) -> list[str]:
+    """`notify_to` 收一個地址或一串地址，兩種都認。
+
+    設定是自由格式 JSON，而隔壁的 `symbols` 就是陣列 —— 使用者很自然會把
+    `notify_to` 也寫成 `["a@b.com"]`。只接受字串的話那會變成巢狀 list
+    `[["a@b.com"]]` 送進 `ctx.send_email()`，在平台那側才炸，
+    而錯誤訊息會指向寄信端，不是指向打錯的那一格設定。
+
+    空字串與非字串元素直接丟掉：寧可少寄給一個人，也不要把 `None`
+    當成地址送進去 —— 收件人白名單是全有全無的，一個壞地址會讓整封信不寄。
+    """
+    if value is None:
+        return []
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return [v.strip() for v in items if isinstance(v, str) and v.strip()]
+
+
 def _decision_view(decision) -> dict[str, Any]:
     """把 `signals.Decision` 攤平成可序列化的輸出。"""
     return {
@@ -157,7 +174,7 @@ def build(ctx):
     default_interval = raw_config.get("interval") or DEFAULT_INTERVAL
     default_limit = int(raw_config.get("limit") or DEFAULT_LIMIT)
     sources = raw_config.get("sources") or DEFAULT_SOURCES
-    notify_to = raw_config.get("notify_to")
+    notify_to = _recipient_list(raw_config.get("notify_to"))
     notify_on_flat = bool(raw_config.get("notify_on_flat", False))
 
     def http_fetch(url: str):
@@ -267,7 +284,7 @@ def build(ctx):
         """訊號成立才走這裡。收件人優先用 config 的 `notify_to`。"""
         triggered = state.get("triggered") or []
         warnings = list(state.get("warnings") or [])
-        recipients = [notify_to] if notify_to else []
+        recipients = list(notify_to)
         if not recipients:
             message = ("設定裡沒有 notify_to，改用寄件者設定的第一個收件人 —— "
                        "平台仍會用收件人白名單擋不在清單上的地址。")
