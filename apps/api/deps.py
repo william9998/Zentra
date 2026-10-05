@@ -73,9 +73,13 @@ async def require_run_token_only(
     OpenAI 相容，不能塞我們自己的路徑參數）。所以 token 同時是身分**與**歸屬：
     它綁定哪個 run，這次呼叫就記在那個 run 上，呼叫者無法指定別人的 run。
 
-    validation token 明確被擋掉 —— 契約 §4：「它不能存取 `/internal/runs/*`
-    或 `/internal/llm/*`」。驗證沙盒沒有任何理由呼叫 LLM。
+    validation token 與 container token 明確被擋掉 —— 契約 §4：它們不能存取
+    `/internal/runs/*`、`/internal/llm/*`、`/internal/egress/*` 或
+    `/internal/notify/*`。**出口與寄信都必須有 run token，稽核才綁得到 `run_id`**
+    （§2.10）；container token 一把服務整個 Agent，用它記帳會記不出是哪一筆 Run。
     """
+    from apps.api.services import containertoken
+
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "missing run token", 401)
@@ -84,7 +88,14 @@ async def require_run_token_only(
     if run_id is None:
         if await validationtoken.resolve(redis, token) is not None:
             raise ZentraError(
-                ErrorCode.PERMISSION_DENIED, "validation token cannot call the LLM gateway", 403
+                ErrorCode.PERMISSION_DENIED,
+                "a validation token cannot use this gateway route", 403,
+            )
+        if await containertoken.resolve(redis, token) is not None:
+            raise ZentraError(
+                ErrorCode.PERMISSION_DENIED,
+                "a container token can only take work; this route needs the run token "
+                "that arrives with the work item", 403,
             )
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token invalid or expired", 401)
 

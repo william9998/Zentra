@@ -909,3 +909,42 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
 
 /* 刪除鈕靠右，跟搜尋框分開 —— 它作用在選取，不是搜尋 */
 .list-toolbar > .btn-danger { margin-left: auto; flex: none; }
+
+/* ── ZEN-019：設定 / 機密 / 對外出口 / 出口稽核 ───────────────────────── */
+
+/* 設定編輯器是一個 textarea 裝 JSON（ui-contract §5.16 第 2 點）：
+   契約允許任何 JSON 值，動態鍵值表單做不到那個自由度。 */
+.credential-form textarea,
+.keys-form textarea {
+  width: 100%;
+  min-height: calc(var(--space-8) * 4);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  resize: vertical;
+}
+
+.credential-form textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+/* POST 是「能把東西寫出去」的那一個，所以用 --warning 標出來
+   （ui-contract §5.18 第 2 點）。**顏色來自 token，不是硬編碼色碼。** */
+.egress-method--write {
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+}
+
+/* 被擋下的那一列要顯眼：出口設定錯了，只有這張表看得出來
+   （ui-contract §5.19 第 2 點）。 */
+.egress-call--blocked {
+  border-left: 2px solid var(--danger);
+  padding-left: var(--space-3);
+}

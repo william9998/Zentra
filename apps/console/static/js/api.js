@@ -56,6 +56,7 @@ export const ERROR_CODE = Object.freeze({
   SANDBOX_ERROR: 'SANDBOX_ERROR',
   LLM_ERROR: 'LLM_ERROR',
   EGRESS_BLOCKED: 'EGRESS_BLOCKED',
+  EGRESS_FAILED: 'EGRESS_FAILED',
   USER_CODE_ERROR: 'USER_CODE_ERROR',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 });
@@ -544,6 +545,212 @@ export async function listAgentLlmCalls(agentId, query = {}) {
     + (suffix ? '?' + suffix : ''));
   return {
     items: (raw.items || []).map(viewLlmCall),
+    nextCursor: raw.next_cursor || null,
+  };
+}
+
+// ── ZEN-019：設定・機密・對外能力・稽核（api-contract §2.6–§2.10）────────
+//
+// 三層的界線在畫面上要看得出來，所以這裡刻意不共用 view model：
+//   設定  明文，會完整進沙盒
+//   機密  只回名字與尾四碼，值永遠讀不回來
+//   能力  平台願意替這個 Agent 送到哪裡去
+
+/** api-contract §4.3 的 `details.reason`。**這張表只服務 EGRESS_BLOCKED。** */
+export const EGRESS_REASON = Object.freeze({
+  NO_RULES: 'NO_RULES',
+  HOST_NOT_ALLOWED: 'HOST_NOT_ALLOWED',
+  METHOD_NOT_ALLOWED: 'METHOD_NOT_ALLOWED',
+  PATH_NOT_ALLOWED: 'PATH_NOT_ALLOWED',
+  SCHEME_NOT_ALLOWED: 'SCHEME_NOT_ALLOWED',
+  PRIVATE_ADDRESS: 'PRIVATE_ADDRESS',
+  REDIRECT: 'REDIRECT',
+  REQUEST_TOO_LARGE: 'REQUEST_TOO_LARGE',
+  RESPONSE_TOO_LARGE: 'RESPONSE_TOO_LARGE',
+  RUN_CALL_LIMIT: 'RUN_CALL_LIMIT',
+  SENDER_NOT_CONFIGURED: 'SENDER_NOT_CONFIGURED',
+  RECIPIENT_NOT_ALLOWED: 'RECIPIENT_NOT_ALLOWED',
+  BODY_TOO_LARGE: 'BODY_TOO_LARGE',
+  RUN_EMAIL_LIMIT: 'RUN_EMAIL_LIMIT',
+  HOURLY_EMAIL_LIMIT: 'HOURLY_EMAIL_LIMIT',
+  SMTP_AUTH: 'SMTP_AUTH',
+  TLS_REQUIRED: 'TLS_REQUIRED',
+});
+
+/** GET /v1/agents/{id}/config —— 未設定過時 `{}` 與 `null`（key 一定在）。 */
+export async function getAgentConfig(agentId) {
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/config');
+  return {
+    config: raw && raw.config ? raw.config : {},
+    updatedAt: toDate(raw && raw.updated_at),
+  };
+}
+
+/**
+ * PUT /v1/agents/{id}/config —— **整份取代**，沒有 PATCH。
+ *
+ * body 是 `{"config": {...}}`，不是裸物件。
+ */
+export async function putAgentConfig(agentId, config) {
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/config',
+    jsonPut({ config }));
+  return { config: raw.config || {}, updatedAt: toDate(raw.updated_at) };
+}
+
+/** 機密的 metadata。**契約保證這裡沒有值，也沒有密文。** */
+function viewSecret(raw) {
+  return {
+    name: raw.name,
+    // 唯一看得到的線索。值長度 < 4 時是等長的 `*` 遮罩（§2.7 第 7 點）。
+    lastFour: raw.last_four,
+    createdAt: toDate(raw.created_at),
+    updatedAt: toDate(raw.updated_at),
+  };
+}
+
+export async function listAgentSecrets(agentId) {
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/secrets');
+  return (raw && raw.items ? raw.items : []).map(viewSecret);
+}
+
+/** PUT /v1/agents/{id}/secrets/{name} —— 新建與覆寫都回 200。 */
+export async function putAgentSecret(agentId, name, value) {
+  return viewSecret(await req('/agents/' + encodeURIComponent(agentId)
+    + '/secrets/' + encodeURIComponent(name), jsonPut({ value })));
+}
+
+/** DELETE —— 還被引用時後端回 409，`details.referenced_by` 說得出是誰。 */
+export async function deleteAgentSecret(agentId, name) {
+  await req('/agents/' + encodeURIComponent(agentId)
+    + '/secrets/' + encodeURIComponent(name), { method: 'DELETE' });
+}
+
+function viewEgressRule(raw) {
+  return {
+    ruleId: raw.rule_id,
+    agentId: raw.agent_id,
+    host: raw.host,
+    methods: raw.methods || [],
+    pathPrefix: raw.path_prefix,
+    // 帶認證時顯示的是**名字**，值不存在於任何回應裡。
+    authSecretName: raw.auth_secret_name,
+    authHeader: raw.auth_header,
+    description: raw.description,
+    createdAt: toDate(raw.created_at),
+    updatedAt: toDate(raw.updated_at),
+  };
+}
+
+function egressRuleBody(values) {
+  return {
+    host: values.host,
+    methods: values.methods,
+    path_prefix: values.pathPrefix || null,
+    auth_secret_name: values.authSecretName || null,
+    auth_header: values.authHeader || null,
+    description: values.description || null,
+  };
+}
+
+/** GET /v1/agents/{id}/egress-rules —— **空清單表示一個外部主機都連不到。** */
+export async function listEgressRules(agentId) {
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/egress-rules');
+  return (raw && raw.items ? raw.items : []).map(viewEgressRule);
+}
+
+export async function createEgressRule(agentId, values) {
+  return viewEgressRule(await req('/agents/' + encodeURIComponent(agentId)
+    + '/egress-rules', jsonPost(egressRuleBody(values))));
+}
+
+export async function updateEgressRule(agentId, ruleId, values) {
+  return viewEgressRule(await req('/agents/' + encodeURIComponent(agentId)
+    + '/egress-rules/' + encodeURIComponent(ruleId), jsonPut(egressRuleBody(values))));
+}
+
+export async function deleteEgressRule(agentId, ruleId) {
+  await req('/agents/' + encodeURIComponent(agentId)
+    + '/egress-rules/' + encodeURIComponent(ruleId), { method: 'DELETE' });
+}
+
+/** 寄件者。**沒有密碼欄位** —— 只有指向機密的名字。 */
+function viewEmailSender(raw) {
+  if (!raw || typeof raw !== 'object') return { configured: false };
+  return {
+    configured: Boolean(raw.configured),
+    smtpHost: raw.smtp_host,
+    smtpPort: raw.smtp_port,
+    username: raw.username,
+    fromAddress: raw.from_address,
+    passwordSecretName: raw.password_secret_name,
+    allowedRecipients: raw.allowed_recipients || [],
+    updatedAt: toDate(raw.updated_at),
+  };
+}
+
+export async function getEmailSender(agentId) {
+  return viewEmailSender(await req('/agents/' + encodeURIComponent(agentId)
+    + '/email-sender'));
+}
+
+export async function putEmailSender(agentId, values) {
+  return viewEmailSender(await req('/agents/' + encodeURIComponent(agentId)
+    + '/email-sender', jsonPut({
+      smtp_host: values.smtpHost,
+      smtp_port: Number(values.smtpPort),
+      username: values.username,
+      from_address: values.fromAddress,
+      password_secret_name: values.passwordSecretName,
+      allowed_recipients: values.allowedRecipients,
+    })));
+}
+
+export async function deleteEmailSender(agentId) {
+  await req('/agents/' + encodeURIComponent(agentId) + '/email-sender',
+    { method: 'DELETE' });
+}
+
+/** 一列出口稽核（§2.10）。HTTP 與寄信共用，用 `kind` 分。 */
+function viewEgressCall(raw) {
+  return {
+    callId: raw.call_id,
+    runId: raw.run_id,
+    kind: raw.kind,
+    ruleId: raw.rule_id,
+    method: raw.method,
+    host: raw.host,
+    // **不含 query string。** kind=EMAIL 時這裡是收件人。
+    path: raw.path,
+    statusCode: raw.status_code,
+    requestBytes: raw.request_bytes,
+    responseBytes: raw.response_bytes,
+    latencyMs: raw.latency_ms,
+    // 形狀是 `EGRESS_BLOCKED: <reason>` / `VALIDATION_ERROR: …` / `EGRESS_FAILED: …`，
+    // 送出去了則是 null（即使上游回 4xx）。
+    error: raw.error,
+    createdAt: toDate(raw.created_at),
+  };
+}
+
+export async function listEgressCalls(agentId, query = {}) {
+  const params = new URLSearchParams();
+  const set = (key, value) => {
+    if (value !== null && value !== undefined && value !== '') params.set(key, value);
+  };
+  set('kind', query.kind);
+  set('run_id', query.runId);
+  set('since', query.since);
+  set('until', query.until);
+  set('host', query.host);
+  set('status_code', query.statusCode);
+  if (query.errorsOnly) params.set('errors_only', 'true');
+  set('limit', query.limit);
+  set('cursor', query.cursor);
+  const suffix = params.toString();
+  const raw = await req('/agents/' + encodeURIComponent(agentId) + '/egress-calls'
+    + (suffix ? '?' + suffix : ''));
+  return {
+    items: (raw.items || []).map(viewEgressCall),
     nextCursor: raw.next_cursor || null,
   };
 }

@@ -67,9 +67,54 @@ class ErrorCode(StrEnum):
     SANDBOX_TIMEOUT = "SANDBOX_TIMEOUT"
     SANDBOX_ERROR = "SANDBOX_ERROR"
     LLM_ERROR = "LLM_ERROR"
+    #: 出口請求被平台政策擋下（v0.12.0 語意擴充：涵蓋 §4.2 的 HTTP proxy 與
+    #: §4.4 的寄信）。HTTP 403，**不可重試** —— 政策不會因為再打一次就改變。
+    #: 具體原因在 `details.reason`（枚舉 `EgressReason`）。
     EGRESS_BLOCKED = "EGRESS_BLOCKED"
+    #: 政策放行了，但上游打不通（DNS、連線被拒、逾時、SMTP 連不上）。
+    #: HTTP 502，可重試。與 EGRESS_BLOCKED 的分界是「該不該重試」。
+    EGRESS_FAILED = "EGRESS_FAILED"
     USER_CODE_ERROR = "USER_CODE_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+class EgressReason(StrEnum):
+    """`EGRESS_BLOCKED` 的 `details.reason`（api-contract §4.3）。
+
+    **錯誤 code 是公開契約、發布後要長期相容；會成長的那一維放在這裡。**
+    之後加原因時不用改 `ErrorCode`。
+    """
+
+    # ── HTTP（§4.2）──────────────────────────────────────────────────
+    NO_RULES = "NO_RULES"
+    HOST_NOT_ALLOWED = "HOST_NOT_ALLOWED"
+    METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
+    PATH_NOT_ALLOWED = "PATH_NOT_ALLOWED"
+    SCHEME_NOT_ALLOWED = "SCHEME_NOT_ALLOWED"
+    #: **這裡沒有 HEADER_NOT_ALLOWED**（v0.12.1，U1）：沙盒自帶 header 是
+    #: 「這個請求本身寫錯了」→ `422 VALIDATION_ERROR` + `details.header`，
+    #: 不是「一個格式正確的請求被政策擋下」。這張表只服務 EGRESS_BLOCKED/403。
+    PRIVATE_ADDRESS = "PRIVATE_ADDRESS"
+    REDIRECT = "REDIRECT"
+    REQUEST_TOO_LARGE = "REQUEST_TOO_LARGE"
+    RESPONSE_TOO_LARGE = "RESPONSE_TOO_LARGE"
+    RUN_CALL_LIMIT = "RUN_CALL_LIMIT"
+    # ── 寄信（§4.4）──────────────────────────────────────────────────
+    SENDER_NOT_CONFIGURED = "SENDER_NOT_CONFIGURED"
+    RECIPIENT_NOT_ALLOWED = "RECIPIENT_NOT_ALLOWED"
+    BODY_TOO_LARGE = "BODY_TOO_LARGE"
+    RUN_EMAIL_LIMIT = "RUN_EMAIL_LIMIT"
+    HOURLY_EMAIL_LIMIT = "HOURLY_EMAIL_LIMIT"
+    #: 密碼錯了重試一百次還是錯，而且 Gmail 會因此鎖帳號 —— 所以歸在 blocked。
+    SMTP_AUTH = "SMTP_AUTH"
+    TLS_REQUIRED = "TLS_REQUIRED"
+
+
+class EgressKind(StrEnum):
+    """`egress_calls.kind`。HTTP 與寄信共用一張稽核表（ADR-0014 M4）。"""
+
+    HTTP = "HTTP"
+    EMAIL = "EMAIL"
 
 
 class EventType(StrEnum):

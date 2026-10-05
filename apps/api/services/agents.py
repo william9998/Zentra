@@ -17,7 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.enums import AgentSourceType, AgentVersionStatus, ErrorCode
 from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
-from apps.api.models import Agent, AgentContainer, AgentVersion, Run
+from apps.api.models import (
+    Agent, AgentContainer, AgentEgressRule, AgentEmailSender, AgentSecret,
+    AgentSettings, AgentVersion, EgressCall, Run,
+)
 from apps.api.schemas import (
     AgentDetail,
     AgentEndpoints,
@@ -141,6 +144,15 @@ async def delete_agent(session: AsyncSession, agent: Agent) -> dict:
     }
 
     for statement in (
+        # ZEN-019 的五張表。**明著刪，不只靠 CASCADE**：這串就是 §2.5 那份
+        # 「刪 Agent 會一起消失什麼」的清單，寫在這裡才不會有人加了新表卻
+        # 忘了它，而漏掉的那張表裡放的可能是機密。
+        # egress_calls 要排在 runs 與 egress_rules 之前：它同時指向兩者。
+        delete(EgressCall).where(EgressCall.agent_id == agent.id),
+        delete(AgentEgressRule).where(AgentEgressRule.agent_id == agent.id),
+        delete(AgentEmailSender).where(AgentEmailSender.agent_id == agent.id),
+        delete(AgentSecret).where(AgentSecret.agent_id == agent.id),
+        delete(AgentSettings).where(AgentSettings.agent_id == agent.id),
         delete(Run).where(Run.agent_id == agent.id),
         delete(AgentContainer).where(AgentContainer.agent_id == agent.id),
         delete(AgentVersion).where(AgentVersion.agent_id == agent.id),

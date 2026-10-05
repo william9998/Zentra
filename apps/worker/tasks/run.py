@@ -23,7 +23,9 @@ from sqlalchemy.exc import NoResultFound
 from apps.api.config import get_settings
 from apps.api.ids import uuid7
 from apps.api.enums import BUILTIN_AGENT_VERSION_ID, AgentVersionStatus, ErrorCode, RunStatus
-from apps.api.models import AgentContainer, AgentLlmCredential, AgentVersion, Run
+from apps.api.models import (
+    AgentContainer, AgentLlmCredential, AgentSecret, AgentSettings, AgentVersion, Run,
+)
 from apps.api.services import agent_credentials, runtoken, work
 from apps.api.services import events as async_events
 from apps.sandbox.drivers.base import SandboxHandle, SandboxPlatformError
@@ -319,6 +321,36 @@ def _default_model(session: Session, agent_id) -> str:
     return agent_credentials.pick_default_model(row)
 
 
+def _agent_config(session: Session, agent_id) -> dict:
+    """這個 Agent 的可變設定，送進常駐容器的工作項（ZEN-019 / 契約 §4.1）。
+
+    **每個工作項都重算一次**，跟 `_default_model` 同一條規則：設定可以中途被改
+    （改了所有版本立刻一起變），而容器可能已經跑了好幾天 ——
+    啟動時算一次會讓那個承諾在常駐模式下悄悄失效。
+
+    ⚠️ **這裡漏掉就等於整個功能沒做。** 常駐容器是預設路徑，只改 bootstrap 那條
+    的話畫面上看起來跟「設定沒存進去」一模一樣。ZEN-012 的 `default_model` 與
+    ZEN-017 的 `ctx.llm()` 都踩過同一個坑。
+    """
+    row = session.execute(
+        select(AgentSettings.config).where(AgentSettings.agent_id == agent_id)
+    ).scalar_one_or_none()
+    return dict(row or {})
+
+
+def _secret_names(session: Session, agent_id) -> list[str]:
+    """機密的**名字**，排序過。沒有值、沒有長度、沒有尾四碼（契約 §4.1 第 5 點）。
+
+    給名字是為了讓 agent 能 fail fast 說出「缺 SMTP_PASSWORD」，
+    而不是跑完整段分析才在最後一步失敗。
+    """
+    rows = session.execute(
+        select(AgentSecret.name).where(AgentSecret.agent_id == agent_id)
+        .order_by(AgentSecret.name)
+    ).scalars().all()
+    return list(rows)
+
+
 def _ready_container(session: Session, agent_id, version_id) -> AgentContainer | None:
     """這個 Agent 有沒有還有空位的 READY 容器（ZEN-015）。
 
@@ -587,6 +619,11 @@ def execute_run(self, run_id: str) -> dict:
                 "input": run.input,
                 "manifest": version.manifest or {},
                 "default_model": _default_model(session, run.agent_id),
+                # ZEN-019：**頂層欄位，不得塞進 manifest**（契約 §4.1 第 1 點）。
+                # manifest 是版本的不可變內容；把可變設定攪進去，P5 在 runtime
+                # 這一側就沒有實體了。
+                "config": _agent_config(session, run.agent_id),
+                "secret_names": _secret_names(session, run.agent_id),
             }
             if not queued_only:
                 # 有空位才預留。`_ready_container` 只挑 inflight < N 的，

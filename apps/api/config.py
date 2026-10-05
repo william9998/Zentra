@@ -104,6 +104,27 @@ class Settings(BaseSettings):
     # 換掉這把金鑰會讓既有的憑證全部解不開（那是設計如此：它就是那些憑證的鎖）。
     secret_key: str = Field(default="", validation_alias="ZENTRA_SECRET_KEY")
 
+    # ── 對外出口與寄信（ZEN-019 / ADR-0014 E6、M3）─────────────────────
+    #
+    # 這幾個上限不是效能調校，是**防止被封 IP 與被鎖 Gmail 帳號**的閘門。
+    # 被封的是整台主機、被鎖的是使用者本人的帳號 —— 兩者都不是這支 agent
+    # 自己承擔後果，所以預設值要小，調大要有具體理由。
+    # 這幾個**刻意不寫 validation_alias**：這個 Settings 沒有 env_prefix，
+    # 欄位名本身就是環境變數名（大小寫不敏感），例如
+    # `EGRESS_MAX_CALLS_PER_RUN` → `egress_max_calls_per_run`。
+    # SPEC §10 要求全部可由環境變數調整，測試也要把上限調到 1–2 才驗得了。
+    egress_max_calls_per_run: int = 100
+    #: request body 與 response 的硬上限。**超量不截斷、不夾值，直接當錯誤** ——
+    #: 截斷過的 JSON 解析失敗時，錯誤訊息會指向 agent 的解析程式碼。
+    egress_max_request_bytes: int = 64 * 1024
+    egress_max_response_bytes: int = 1024 * 1024
+    email_max_per_run: int = 5
+    #: **滾動 60 分鐘窗口，不是整點桶**（契約 §4.4 第 3 點）：整點桶允許
+    #: `:59` 寄 60 封、`:01` 再寄 60 封，兩分鐘 120 封 —— 那正是這條上限要擋的。
+    email_max_per_hour: int = 60
+    email_max_body_bytes: int = 256 * 1024
+    email_timeout_seconds: float = 30.0
+
     # 每百萬 token 的美金單價，用來算 `usage.cost_usd`。
     # 形狀：{"<model>": {"input": "0.15", "output": "0.60"}}
     # 沒設定的 model → 成本記 "0"。SPEC §11 把「計費出帳」列在範圍外，

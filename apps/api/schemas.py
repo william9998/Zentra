@@ -186,6 +186,14 @@ class BootstrapResponse(BaseModel):
     #: **平台算好再送進沙盒** —— SDK 自己猜一個的話，使用者在 Console 上設的值
     #: 永遠到不了，而且「沒生效」看起來跟「生效了」一模一樣。
     default_model: str = ""
+    #: ZEN-019：§2.6 的設定，**原封不動**。
+    #: **頂層欄位，不得合併進 `manifest`**（契約 §4.1 第 1 點）——
+    #: manifest 是版本的不可變內容，把可變設定攪進去會讓 P5 在 runtime
+    #: 這一側失去實體。SDK 的 `ctx.config` 讀這個欄位。
+    config: dict[str, Any] = Field(default_factory=dict)
+    #: ZEN-019：排序後的機密名字。**沒有值、沒有長度、沒有尾四碼。**
+    #: 給名字是為了讓 agent 能 fail fast 說出「缺 SMTP_PASSWORD」。
+    secret_names: list[str] = Field(default_factory=list)
 
 
 class ValidationPayload(StrictRequest):
@@ -401,3 +409,225 @@ class StartAgentContainerRequest(StrictRequest):
     """省略 `version` 就用最新的 `PUBLISHED`。"""
 
     version: str | None = None
+
+
+# ---- ZEN-019：per-agent 設定、機密、對外能力（api-contract §2.6–§2.10）----
+
+
+class AgentConfigRequest(StrictRequest):
+    """`PUT /v1/agents/{id}/config` —— **整份取代**（§2.6）。
+
+    body 必須是 `{"config": {...}}`，**不是裸物件**：留這一層是為了之後要加
+    `updated_by` 之類的欄位時不必改形狀。
+    """
+
+    config: dict[str, Any] = Field(
+        description="原封不動送進沙盒 ctx.config 的 JSON。**這裡不是放密碼的地方**，"
+                    "那是 §2.7 的機密。",
+    )
+
+
+class AgentConfigResponse(BaseModel):
+    """`config` 這個 key 一定在，不會是 `null`。未設定過時是 `{}` 且 `updated_at: null`。"""
+
+    config: dict[str, Any]
+    updated_at: datetime | None
+
+
+class SetAgentSecretRequest(StrictRequest):
+    """`PUT /v1/agents/{id}/secrets/{name}`（§2.7）。名字在路徑上，值在 body。"""
+
+    value: str = Field(min_length=1, max_length=4096,
+                       description="寫進去就讀不出來了。沙盒只拿得到名字。")
+
+
+class AgentSecretResponse(BaseModel):
+    """**永遠不含明文，連密文都沒有。** `last_four` 是唯一的線索。"""
+
+    name: str
+    last_four: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentSecretListResponse(BaseModel):
+    items: list[AgentSecretResponse]
+
+
+class EgressRuleRequest(StrictRequest):
+    """出口白名單的一條規則（§2.8）。欄位層級的規則在 `services/egress_rules.py`。
+
+    這裡刻意只做型別與長度，**語意檢查（`*`、scheme、port、IP 字面值、
+    method 白名單、auth 成對）全部在服務層**：那些錯誤要說出「哪裡不合法」，
+    而 pydantic 的欄位錯誤講不出那種話。
+    """
+
+    host: str = Field(min_length=1, max_length=253)
+    methods: list[str] | None = Field(default=None, max_length=2)
+    path_prefix: str | None = Field(default=None, max_length=1024)
+    auth_secret_name: str | None = Field(default=None, max_length=64)
+    auth_header: str | None = Field(default=None, max_length=64)
+    description: str | None = Field(default=None, max_length=200)
+
+
+class EgressRuleResponse(BaseModel):
+    rule_id: str
+    agent_id: str
+    host: str
+    methods: list[str]
+    path_prefix: str | None
+    auth_secret_name: str | None
+    auth_header: str | None
+    description: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EgressRuleListResponse(BaseModel):
+    items: list[EgressRuleResponse]
+
+
+class EmailSenderRequest(BaseModel):
+    """寄件者（§2.9）。**這裡沒有密碼欄位** —— 只能以 `password_secret_name` 指名。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    smtp_host: str = Field(min_length=1, max_length=253)
+    smtp_port: int
+    username: str = Field(min_length=1, max_length=320)
+    from_address: str = Field(min_length=3, max_length=320)
+    password_secret_name: str = Field(min_length=1, max_length=64)
+    allowed_recipients: list[str] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="before")
+    @classmethod
+    def no_password_here(cls, data):
+        """帶密碼進來時要說出**該去哪裡存**，不是只回一句「多了欄位」。
+
+        `extra="forbid"` 會擋下來，但它的訊息是 `extra_forbidden` ——
+        看到那個的人會以為欄位名打錯了，然後試 `smtp_password`、`pass`…
+        """
+        known = {
+            "smtp_host", "smtp_port", "username", "from_address",
+            "password_secret_name", "allowed_recipients",
+        }
+        if isinstance(data, dict):
+            for key in data:
+                lowered = str(key).lower()
+                if key in known:
+                    continue
+                if "password" in lowered or "secret" in lowered:
+                    raise ValueError(
+                        f"{key!r} does not belong here: this table has no password "
+                        "column on purpose. Store the password with "
+                        "PUT /v1/agents/{id}/secrets/{name} and point at it with "
+                        "password_secret_name -- one place to store secrets means "
+                        "one way to encrypt them and one way to leak them."
+                    )
+        return data
+
+
+class EmailSenderResponse(BaseModel):
+    """未設定時 `configured: false`，其餘欄位 `null`。"""
+
+    configured: bool
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    username: str | None = None
+    from_address: str | None = None
+    password_secret_name: str | None = None
+    allowed_recipients: list[str] | None = None
+    updated_at: datetime | None = None
+
+
+class EgressCallSummary(BaseModel):
+    """一列稽核（§2.10）。HTTP 與寄信共用，用 `kind` 分。"""
+
+    call_id: str
+    run_id: str
+    kind: str
+    rule_id: str | None
+    method: str | None
+    host: str
+    #: **不含 query string。** kind=EMAIL 時是收件人（以 `, ` 串接）。
+    path: str
+    status_code: int | None
+    request_bytes: int
+    response_bytes: int
+    latency_ms: int | None
+    error: str | None
+    created_at: datetime
+
+
+class EgressCallListResponse(BaseModel):
+    items: list[EgressCallSummary]
+    next_cursor: str | None = None
+
+
+# ---- Internal Gateway：出口代打與寄信（§4.2、§4.4）----
+
+
+class EgressRequest(StrictRequest):
+    """沙盒送來的代打請求（§4.2）。
+
+    `headers` **只准 Accept 與 Content-Type**，其餘在服務層回 422 並指名 ——
+    默默丟掉會讓「我的 key 怎麼沒生效」變成查半天的謎（E3）。
+    """
+
+    url: str = Field(min_length=1, max_length=4096)
+    method: str = "GET"
+    headers: dict[str, str] = Field(default_factory=dict)
+    body: str | None = None
+    #: **`> 15`、`<= 0`、非整數一律 `422`，不夾值**（v0.12.1，U4）。
+    #: 靜默夾值會讓「我設了 60 秒卻 15 秒就斷」變成查不出原因的怪事。
+    timeout_seconds: int = Field(default=10, ge=1, le=15, strict=True)
+
+    @field_validator("method")
+    @classmethod
+    def only_get_or_post(cls, value: str) -> str:
+        if value not in ("GET", "POST"):
+            raise ValueError("only GET and POST are proxied")
+        return value
+
+    @model_validator(mode="after")
+    def body_needs_post(self):
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only POST may carry a body")
+        return self
+
+
+class EgressResponseEnvelope(BaseModel):
+    """**信封語意**：只要請求真的送出去了，Gateway 回 200，上游狀態碼在 `status`。
+
+    上游回 418／429／500 不是平台錯誤 —— agent 要看得到狀態碼才切得了備援。
+    """
+
+    status: int
+    headers: dict[str, str]
+    body: str
+
+
+class NotifyEmailRequest(StrictRequest):
+    """沙盒送來的寄信請求（§4.4）。
+
+    **不能指定 `from`、SMTP 主機或密碼** —— 那些由平台決定（§2.9）。
+    `extra="forbid"` 讓那些欄位直接回 422。
+    """
+
+    to: list[str] = Field(min_length=1, max_length=10)
+    subject: str = Field(min_length=1, max_length=200)
+    text: str | None = None
+    html: str | None = None
+
+    @model_validator(mode="after")
+    def needs_a_body(self):
+        if not self.text and not self.html:
+            raise ValueError("provide text, html, or both")
+        return self
+
+
+class NotifyEmailResponse(BaseModel):
+    """`202` 表示 SMTP 伺服器**收下了**，不表示對方讀到了。"""
+
+    accepted: bool
+    message_id: str

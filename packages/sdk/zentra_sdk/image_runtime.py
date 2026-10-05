@@ -170,6 +170,14 @@ async def validate() -> None:
         try:
             build, marker = _load_build()
             manifest, entrypoints = _manifest(marker)
+            # ZEN-019 / 契約 §4.1 第 4 點（v0.12.1 U2）：**validation 一律用空的
+            # config 與 secret_names**，而且不去跟平台要。
+            #
+            # 這不是將就，它比帶當下設定更嚴格：契約要求 `build()` 不得對 config
+            # 做硬性要求（`.get()` 帶預設值，或在節點裡讀），而用空 config 去 build
+            # 正好就是在驗這條。一個空 config 就 build 不起來的 agent **應該**
+            # 發布失敗 —— 否則等使用者哪天清掉設定，它的每一筆 Run 都會死在
+            # build 階段，而版本狀態仍是 `PUBLISHED`。
             context = ZentraContext(version_id, manifest, lambda *_: None)
             graph = build(context)
             if not _is_uncompiled_state_graph(graph):
@@ -204,6 +212,8 @@ async def _execute(
     run_input: dict[str, Any],
     manifest: dict[str, Any],
     default_model: str = "",
+    config: dict[str, Any] | None = None,
+    secret_names: list[str] | None = None,
 ) -> None:
     """跑完一個 Run：驗輸入 → compile → 串事件 → 回寫結果。
 
@@ -234,6 +244,11 @@ async def _execute(
     context = ZentraContext(
         run_id, manifest, lambda kind, payload: pending.append((kind, payload)),
         default_model=default_model, run_token=token,
+        # ZEN-019：**頂層欄位，不是從 manifest 挖出來的**（契約 §4.1 第 1 點）。
+        # 兩條執行路徑（一次性沙盒／常駐容器）都要送進來 —— 漏掉哪一條，
+        # 那條路徑的 ctx.config 就永遠是空的，而畫面上看起來跟「設定沒存進去」
+        # 一模一樣。
+        config=config or {}, secret_names=secret_names or [],
     )
     graph = build(context)
     if not _is_uncompiled_state_graph(graph):
@@ -283,6 +298,8 @@ async def run() -> None:
             # 平台解析好的預設 model。舊平台沒有這個欄位 → 空字串，
             # 那時 ctx.llm() 會要求呼叫端明寫，而不是默默用別的 model。
             bootstrap.get("default_model") or "",
+            bootstrap.get("config") or {},
+            bootstrap.get("secret_names") or [],
         )
 
 
@@ -322,6 +339,10 @@ async def serve() -> None:
                 item.get("entrypoint") or "default", item.get("input") or {},
                 item.get("manifest") or {},
                 item.get("default_model") or "",
+                # **常駐容器是預設路徑。** 這兩行漏掉的話，絕大多數 Run 的
+                # ctx.config 都是空的 —— 而症狀跟「設定沒存進去」長得一樣。
+                item.get("config") or {},
+                item.get("secret_names") or [],
             )
         except Exception as exc:                  # noqa: BLE001
             # **一定要印出來。** 常駐容器不會退出，所以「容器的 exit code 與輸出」
