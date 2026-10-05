@@ -6,7 +6,8 @@
 > 三個角色：`@architect`（規格與契約）· `@builder`（全部產品程式碼）· `@reviewer`（驗收與稽核）。
 > 舊的七角色名只出現在歷史紀錄裡，對照見 [`AGENTS.md`](../AGENTS.md)。
 >
-> **對齊 SPEC `v0.3.1`。** OCI image 發布依 ADR-0008 取代尚未實作的 bundle/venv 路徑；
+> **對齊 SPEC `v0.5.0`**（api-contract `v0.12.0` · ui-contract `v0.9.0`）。
+> OCI image 發布依 ADR-0008 取代尚未實作的 bundle/venv 路徑；
 > 舊編號 ZEN-001～ZEN-011 的歷史對照見 §已作廢。
 
 ## 八週路線圖
@@ -118,6 +119,7 @@
 | **ZEN-014** | **Run 流程圖版面**：時間軸旁加切換鈕，用手寫 SVG 畫「這次實際走過的路」，回頭的邊 = retry 迴圈 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | ZEN-006A | ui-contract v0.5.4 §5.7 |
 | **ZEN-015** | **常駐 Agent 容器**：一 Agent 一容器取代一 Run 一沙盒；容器生命週期、per-agent 下游 API key、用量歸戶與除錯查詢 | `REVIEW` | @builder（已交付，1–7 全部完成）；@reviewer 驗收。[ADR-0012](../specs/adr/ADR-0012-resident-agent-container.md) **選項 C / N=30**。容器隨第一筆 Run 自動啟動、滿載背景加開（上限 3）、閒置 30 分自動停止 | — | [spec](../specs/features/ZEN-015/spec.md)（分支 `feat/resident-agent-container`） · api-contract v0.9.0 §2.2–2.4 · ui-contract v0.6.1 §5.13–5.15 |
 | ZEN-018 | **Agent 刪除改為硬刪 + 清容器與 image**（[ADR-0013](../specs/adr/ADR-0013-hard-delete-agents-and-images.md)）：`DELETE /v1/agents/{id}` 連版本、Run、事件、用量、憑證、API key 一起刪，並請 worker 停容器、刪主機 image、刪 registry manifest。`REGISTRY_STORAGE_DELETE_ENABLED` 改 true（推翻 ADR-0009 R1）。Console 加批次勾選與刪除 | `REVIEW` | @builder（已交付）；@reviewer 驗收 | — | api-contract v0.11.0 §2.5 · ui-contract v0.8.0 §5.7。**磁碟要 `registry garbage-collect` 才真的釋放**，那要停機做 |
+| **ZEN-019** | **每個 Agent 自己的設定、機密與對外能力**（[ADR-0014](../specs/adr/ADR-0014-per-agent-config-secrets-and-egress.md)）：三層 —— 設定（明文、進 `ctx.config`）／機密（Fernet、**永不進沙盒**）／能力（白名單 HTTP 代打 + 寄信）。五張新表、四組公開 CRUD、兩條 Gateway 路由、SDK 三個新 ctx 能力、Console 四個新元件、`examples/crypto-quant-agent/`（三支運算模組已存在且未進版控，只缺 `agent.py` / Dockerfile / README） | `SPEC_READY` | @builder；@reviewer 驗收 | ZEN-015（工作項那條路）· ZEN-012（沿用 Fernet 原語） | [spec](../specs/features/ZEN-019/spec.md) · api-contract **v0.12.0** §2.6–2.10 / §4.1–4.4 · ui-contract **v0.9.0** §5.16–5.19 · SPEC **v0.5.0** §7.4 |
 | ZEN-017 | **`ctx.llm()` 在常駐容器裡曾經完全不能用**：它從 env 讀 `ZENTRA_RUN_TOKEN`，但常駐模式的 token 是跟著工作項進來的，env 裡只有 container token。已修（token 改掛在 context 上），但**這代表 serve 模式的驗收沒有涵蓋會打 LLM 的 agent** —— 驗收案例要補一個 | `BACKLOG` | @reviewer | — | 做 ZEN-015 第 6 項時才發現，從步驟 4 交付起就壞著 |
 | ZEN-016 | **`response_model_exclude_none` 吃掉契約規定的 null 欄位**：`GET /v1/agents` 最後一頁沒有 `next_cursor`、`GET /v1/agents/{id}` 沒有 `description` / `latest_published_version`。契約 §0 說「無下一頁則 `null`」，前端只能靠 key 在不在去猜。`tests/zen008/test_contract_registry.py` 兩條早就紅著 | `BACKLOG` | @builder | — | 做 ZEN-015 時發現，**不在該範圍內所以沒順手改**（鐵則 5）。修法是拿掉那兩條路由的 `response_model_exclude_none=True`，但要先確認 Console 讀 `undefined` 的地方有沒有依賴現行行為 |
 | ZEN-011 | **測試 fixture 不清理**：`tests/zen008` 每跑一次留下數十個 agent，累積到 894 筆才被發現。加 teardown 或改用可辨識的前綴 + 套件結束時批次清 | `BACKLOG` | @reviewer | — | 見下方說明 |
@@ -481,6 +483,35 @@
 > `422 VALIDATION_ERROR: agent name already exists`，而使用者在 Console 上完全看不到那個 Agent。
 > 修法要 migration（改成 `deleted_at IS NULL` 的 partial unique index）＋ @architect 裁決刪除語意，
 > 屬 `apps/api/**`，不在本次授權範圍內。
+
+> **ZEN-019 的由來與三條硬邊界（2026-09-30，使用者裁決四個取捨）**
+>
+> 使用者要在 `examples/` 放一支加密貨幣量化指標 agent（抓 K 棒 → 算指標與諧波型態 →
+> 觸發訊號寄 email），並要求「平台應該要能非常自由地儲存每個 agent 的環境變數」。
+> 拆開來是三件性質完全不同的事，所以 [ADR-0014](../specs/adr/ADR-0014-per-agent-config-secrets-and-egress.md)
+> 做成三層而不是一張表。**已查證的起點**：`ctx.config` 有 property 但
+> **全專案沒有任何一行程式碼往裡面放東西**，它永遠回 `{}`。
+>
+> 使用者已裁決、**不再開放討論**的四點：四項全做（含 Console UI）；
+> 出口做**通用白名單 proxy** 而不是窄的專用端點（架構師原本推薦後者）；
+> 寄信用 Gmail SMTP + 應用程式密碼；行情主源 Binance、備援 OKX（**平台不做交易所端點、不做快取**）。
+>
+> **實作時的三條硬邊界**（違反就是這個 feature 的 bug，不是捷徑）：
+> 1. **不准放寬 `apps/sandbox/drivers/base.py` 的 `_validate_environment()`。**
+>    這次**不新增任何沙盒環境變數**。設定走 `ctx.config`，不走 env。
+> 2. **bootstrap 與工作項兩條路都要帶 `config`／`secret_names`。**
+>    只改 bootstrap 的話，常駐容器（預設路徑）永遠拿不到設定，而症狀看起來像「設定沒存進去」——
+>    ZEN-012 的 `default_model` 與 ZEN-017 的 `ctx.llm()` 已經各踩過一次同型的坑。
+> 3. **機密的值永遠不進沙盒。** 沙盒只拿得到名字清單。沒有 `ctx.secrets`。
+>
+> **誠實記下代價**（ADR-0014 §6 展開）：通用 proxy 是一條真正的外洩通道 ——
+> 白名單擋得住「送到哪」，擋不住「送了什麼」。它成立的前提是交付條件的
+> 「只跑自己信得過的程式碼」。那條變了就要回頭改 ADR。
+>
+> **順帶記下的待辦（不在 ZEN-019 範圍，不要順手做）**：
+> - `egress_calls` 沒有保留期。一支每分鐘抓一次行情的 agent 一天上千列。要做保留期與彙總。
+> - **平台不做排程**（SPEC §11 的「排程觸發（Beat）」仍在 MVP 外）。
+>   這支 agent 由外部 cron 打 REST 觸發，範例的 README 要寫清楚。真的要平台內建排程要開新 ADR。
 
 > **順序說明**：ZEN-000 刻意排第一，目的是**盡早證偽架構假設**而非交付功能。
 > 它一次碰到沙盒生命週期、Celery 冪等、平台注入 compile、事件串流四個高風險點。
