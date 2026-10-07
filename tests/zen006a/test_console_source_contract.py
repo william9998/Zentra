@@ -39,6 +39,11 @@ EXPECTED_FILES = {
     "static/css/tokens.css",
     "static/icons.svg",
     "static/js/api.js",
+    # ZEN-019（ui-contract §5.16–§5.19）
+    "static/js/components/agent-config-card.js",
+    "static/js/components/agent-secrets-card.js",
+    "static/js/components/egress-card.js",
+    "static/js/components/egress-calls-panel.js",
     "static/js/components/agent-list.js",
     "static/js/components/agent-version-list.js",
     "static/js/components/api-keys-card.js",
@@ -76,6 +81,8 @@ CONTRACT_ERROR_CODES = {
     "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "VALIDATION_ERROR",
     "QUOTA_EXCEEDED", "AGENT_NOT_PUBLISHED", "VERSION_CONFLICT", "BUILD_FAILED",
     "SANDBOX_TIMEOUT", "SANDBOX_ERROR", "LLM_ERROR", "EGRESS_BLOCKED",
+    # ZEN-019：政策放行了但上游打不通。與 EGRESS_BLOCKED 的分界是「該不該重試」。
+    "EGRESS_FAILED",
     "USER_CODE_ERROR", "INTERNAL_ERROR",
 }
 # ui-contract §2 status labels, character for character.
@@ -109,6 +116,14 @@ ALLOWED_V1_PATTERNS = [
     re.compile(r"^/agents/\{?[^/]*\}?/containers$"),
     re.compile(r"^/agents/\{?[^/]*\}?/containers/\{?[^/]*\}?$"),
     re.compile(r"^/agents/\{?[^/]*\}?/containers/\{?[^/]*\}?/restart$"),
+    # ZEN-019：設定／機密／出口白名單／寄件者／稽核（api-contract v0.12.0 §2.6–§2.10）
+    re.compile(r"^/agents/\{?[^/]*\}?/config$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/secrets$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/secrets/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/egress-rules$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/egress-rules/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/email-sender$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/egress-calls$"),
     re.compile(r"^/runs$"),
     re.compile(r"^/runs/\{?[^/]*\}?$"),
     re.compile(r"^/runs/\{?[^/]*\}?/events$"),
@@ -436,7 +451,7 @@ def test_contract_enums_still_say_what_this_test_asserts() -> None:
     contract = _read(API_CONTRACT)
     # 這是絆線：契約版本一動就該有人回來看 Console 有沒有跟上。
     # v0.4.0–v0.6.0 之間沒人更新它，所以它紅了好幾個版本都沒被當一回事。
-    assert "| 契約版本 | `v0.11.0` |" in contract
+    assert "| 契約版本 | `v0.12.1` |" in contract
     for code in CONTRACT_ERROR_CODES:
         assert f"`{code}`" in contract, code
     for status in CONTRACT_RUN_STATUS:
@@ -532,6 +547,10 @@ def test_only_whitelisted_v1_endpoints_are_referenced() -> None:
         "/agents/{}/usage", "/agents/{}/llm-calls",              # ZEN-015
         "/agents/{}/containers", "/agents/{}/containers/{}",     # ZEN-015
         "/agents/{}/containers/{}/restart",
+        "/agents/{}/config",                                     # ZEN-019
+        "/agents/{}/secrets", "/agents/{}/secrets/{}",           # ZEN-019
+        "/agents/{}/egress-rules", "/agents/{}/egress-rules/{}", # ZEN-019
+        "/agents/{}/email-sender", "/agents/{}/egress-calls",    # ZEN-019
         "/runs", "/runs/{}", "/runs/{}/events",
         "/runs/{}/cancel",   # ZEN-008-D5：死碼，見下方 xfail
     }, paths
@@ -594,10 +613,16 @@ def test_console_stores_no_long_lived_credentials() -> None:
 
     `api_key` 在 ZEN-012 之後變成「可以傳，不可以留」——
     所以字串檢查對兩個明列的檔案放行，**真正的規則由下面的儲存斷言守著**。
-    其餘的憑證字眼（`Authorization` / `Bearer` / `access_token` / `secret` / `password`）
+    其餘的憑證字眼（`Authorization` / `Bearer` / `access_token`）
     一個檔案都不准出現：Console 是同源呼叫，它本來就不該自己組認證標頭。
+
+    **ZEN-019 之後 `secret` 是一個端點的名字**（`/v1/agents/{id}/secrets`），
+    不再是「這裡有一把憑證」的訊號 —— 那一層的設計正好相反：
+    Console 只看得到機密的**名字**與尾四碼，值讀不回來（api-contract §2.7）。
+    所以把它從字眼清單移除，真正的規則由下面的儲存斷言與
+    `test_the_secrets_card_never_shows_a_value` 守著。
     """
-    always_banned = ["Authorization", "Bearer", "secret", "access_token"]
+    always_banned = ["Authorization", "Bearer", "access_token"]
     credential_fields = ["api_key", "apiKey"]
 
     for path in JS_FILES + HTML_FILES:
@@ -609,6 +634,11 @@ def test_console_stores_no_long_lived_credentials() -> None:
         # 禁的是把密碼當資料處理。檢查前先拿掉註解與那個型別宣告 ——
         # 稽核的是程式碼，不是散文。
         code = _strip_js_comments(source).replace('type="password"', "")
+        # `password_secret_name` 是**機密的名字**，不是密碼（ADR-0014 M2：
+        # 寄件者那張表沒有密碼欄位）。名字本來就該出現在前端，值永遠不會。
+        code = code.replace("password_secret_name", "").replace(
+            "passwordSecretName", "").replace("passwordSecret", "").replace(
+            "passwordHint", "")
         assert "password" not in code, (
             f"{_rel(path)}: 出現 password，且不是 input 型別宣告"
         )

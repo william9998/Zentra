@@ -172,7 +172,7 @@ export function mount(root, props = {}) {
     }
     if (rows.length === 0) {
       list.appendChild(el('p', 'empty-text',
-        '這個 Agent 還沒有任何出口紀錄。跑一筆會用到 ctx.http 或 ctx.send_email() 的 Run 之後，'
+        '這個 Agent 還沒有任何出口紀錄。跑一筆會用到 ctx 的 http 或 send_email() 的 Run 之後，'
         + '每一次嘗試（含被擋下的）都會出現在這裡。'));
       return;
     }

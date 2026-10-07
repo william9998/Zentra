@@ -128,12 +128,12 @@ const FRAME = `
         </div>
       </div>
       <div class="field">
-        <label for="egress-password-secret">密碼（以機密名字引用）</label>
-        <select id="egress-password-secret" name="password_secret_name"
-                aria-describedby="egress-password-hint">
+        <label for="egress-smtp-secret">密碼（以機密名字引用）</label>
+        <select id="egress-smtp-secret" name="password_secret_name"
+                aria-describedby="egress-smtp-hint">
           <option value="">選一個機密</option>
         </select>
-        <p class="field-hint" id="egress-password-hint" data-egress-password-hint>
+        <p class="field-hint" id="egress-smtp-hint" data-egress-smtp-hint>
           先在上面的機密卡存一個 <code class="mono">SMTP_PASSWORD</code>，這裡才選得到。
         </p>
       </div>
@@ -191,8 +191,8 @@ export function mount(root, props = {}) {
   const smtpPort = root.querySelector('#egress-smtp-port');
   const username = root.querySelector('#egress-username');
   const fromAddress = root.querySelector('#egress-from');
-  const passwordSecret = root.querySelector('#egress-password-secret');
-  const passwordHint = root.querySelector('[data-egress-password-hint]');
+  const passwordSecret = root.querySelector('#egress-smtp-secret');
+  const passwordHint = root.querySelector('[data-egress-smtp-hint]');
   const recipients = root.querySelector('#egress-recipients');
   const senderSubmit = root.querySelector('[data-egress-sender-submit]');
   const senderRemove = root.querySelector('[data-egress-sender-remove]');
@@ -313,7 +313,7 @@ export function mount(root, props = {}) {
     senderSummary.replaceChildren();
     if (!sender.configured) {
       senderSummary.append('還沒有寄件者設定。');
-      senderSummary.appendChild(el('code', 'mono', 'ctx.send_email()'));
+      senderSummary.appendChild(el('code', 'mono', 'ctx 的 send_email()'));
       senderSummary.append(' 會被擋下並回 SENDER_NOT_CONFIGURED —— 不是靜默不寄。');
       senderRemove.hidden = true;
       return;

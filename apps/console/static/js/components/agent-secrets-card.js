@@ -26,7 +26,7 @@ const FRAME = `
     </p>
     <p class="field-hint">
       <strong>這些值不會進到沙盒。</strong> agent 拿得到的只有名字清單
-      （<code class="mono">ctx.secret_names</code>），用來在第一個節點就說出
+      （<code class="mono">ctx</code> 上的 <code class="mono">secret_names</code>），用來在第一個節點就說出
       「缺 SMTP_PASSWORD」。要真的用到值，在下面的
       <a href="#agent-egress" data-secret-egress-link>對外出口</a>
       規則或寄件者設定裡<strong>以名字引用</strong>它，平台會在送出的那一刻解密注入。
@@ -48,7 +48,7 @@ const FRAME = `
       </div>
       <div class="field">
         <label for="secret-value">值</label>
-        <input type="password" id="secret-value" name="value" autocomplete="new-password"
+        <input type="password" id="secret-value" name="value" autocomplete="off"
                spellcheck="false" aria-describedby="secret-value-hint">
         <p class="field-hint" id="secret-value-hint">
           1–4096 字元。同名再存一次就是覆寫。
