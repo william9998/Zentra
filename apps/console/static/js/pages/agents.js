@@ -11,7 +11,7 @@ const PAGE = `
       </div>
       <button type="button" class="btn-primary btn-lg" data-create>建立 Agent</button>
     </div>
-    <section class="card" data-list></section>
+    <section class="agent-overview" data-list aria-label="Agent 總覽"></section>
     <div data-dialog></div>
   </div>
 `;

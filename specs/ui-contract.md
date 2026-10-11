@@ -2,7 +2,7 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.10.0` |
+| 契約版本 | `v0.11.0` |
 | 擁有者 | `@architect` |
 | 對齊 Spec | `specs/SPEC.md v0.5.0` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
@@ -28,7 +28,7 @@
 >
 > | # | 網址 | 檔案 | 畫面 |
 > |---|---|---|---|
-> | 1 | `/console/agents` | `agents.html` | Agent 列表；以頁內 `<dialog>` 建立 Agent metadata |
+> | 1 | `/console/agents` | `agents.html` | Agent 總覽（卡片格子，§5.7）；以頁內 `<dialog>` 建立 Agent metadata |
 > | 2 | `/console/agents/{agent_id}` | `agent.html` | Agent 詳情：版本列表、呼叫區、`endpoints`（REST / MCP / OpenAPI）、最近 Runs |
 > | 3 | `/console/agents/{agent_id}/versions/new` | `version-new.html` | 註冊 canonical OCI image digest，輪詢 `BUILDING → PUBLISHED / FAILED` |
 > | 4 | `/console/runs` | `runs.html` | Run 列表（篩選 + cursor 分頁） |
@@ -233,8 +233,10 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 /* 版面 */
 --sidebar-width:   260px;
 --sidebar-collapsed: 0;
---content-max:     1200px;   /* 列表、表格 */
+--content-max:     1200px;   /* 列表、表格、卡片格子 */
 --reading-max:     768px;    /* 表單、文件、LLM 輸出 */
+--card-min-width:  280px;    /* 卡片格子單欄的最小寬度（v0.11.0，§5.7） */
+--monogram-size:   40px;     /* 名稱首字方塊的邊長（v0.11.0，§5.7） */
 --row-height:      44px;     /* 列表列 */
 --row-height-compact: 36px;  /* 事件流、log */
 --header-height:   52px;
@@ -244,6 +246,7 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 
 **比例規則（避免版面失衡）**：
 - 卡片內距 `--space-4`，卡片之間 `--space-3`
+- 卡片格子的欄數由寬度決定，不寫斷點：每欄不窄於 `--card-min-width`，容器比它還窄時退成一欄滿寬（§5.7）
 - 頁面左右留白至少 `--space-6`，行動裝置 `--space-4`
 - 圖示與文字間距固定 `--space-2`
 - 任何區塊的內距不得小於其內部元素間距
@@ -571,35 +574,102 @@ Run 觀測頁的第二種版面。時間軸上方一組 `role="group"` 的切換
 | 狀態 | 呈現與動作 |
 |---|---|
 | Loading | 送出後兩欄 disabled，按鈕文字「建立中」；保留輸入值 |
-| Empty | 初始空表單；name 未填時 primary CTA disabled，取消回到列表 |
+| Empty | 初始空表單；name 未填時 primary CTA disabled，取消回到總覽 |
 | Error | 顯示 `error.code`、訊息與欄位 `details`；保留輸入，focus 第一個錯誤欄 |
 | Partial / Streaming | name 已填而 description 未填是合法 partial；顯示下一步說明「建立後註冊 image 版本」 |
-| Success | 關閉 dialog 並導向新 Agent 詳情；不在列表頁複製成功 toast 與 redirect 兩套結果 |
+| Success | 關閉 dialog 並導向新 Agent 詳情；不在總覽頁複製成功 toast 與 redirect 兩套結果 |
 
-### 5.7 `agent-list.js` — Agent 列表與選擇入口
+### 5.7 `agent-list.js` — Agent 總覽（卡片格子）與選擇入口
 
-列表列顯示 `name`、截斷 description、`latest_published_version`、`updated_at`；整列標題連到 Agent 詳情。
-`agent_id` 可在展開的次要資訊中完整複製。最新版本為 `null` 時顯示文字「尚無已發布版本」，不可顯示假狀態。
+**v0.11.0 起由「一列一列的清單」改成卡片格子，直接取代，不提供卡片／清單切換**（多一種版面就多一套要測、要維護的
+DOM 與五態）。每個 Agent 一張卡，整張卡點下去進入 `/console/agents/{agent_id}`。資料來源不變：仍是
+`GET /v1/agents` 的 items 與 cursor，**不新增任何 API 欄位**。
+
+**卡片內容（由上而下）**
+
+| 區塊 | 內容與規則 |
+|---|---|
+| 名稱首字方塊 | 取 `name` 的第一個字母或數字（`\p{L}` / `\p{N}`，以 code point 計，拉丁字母轉大寫）；整個 name 都沒有字母數字時顯示 `—`。**不用 emoji、不配色**（§0）。方塊 `--monogram-size` 正方形、`--surface-3` 底、1px `--border-default`、`--radius-md`、`--font-display` `--text-lg` `--text-secondary`，文字置中。純裝飾，`aria-hidden="true"` |
+| 名稱 | `--text-md` `--weight-medium` `--text-primary`，單行，超出以省略號截斷；完整名稱放 `title` |
+| 描述 | `--text-sm` `--text-secondary`，**最多兩行**，超出截斷（`line-clamp: 2`）。保留兩行高（`calc(2 * var(--text-sm) * var(--leading-normal))`），讓同一列的卡片底部對齊。`null` 或空字串時顯示「沒有描述」 |
+| 最新版本 | `latest_published_version`，`--font-mono` `--text-xs`。`null` 時顯示「尚無已發布版本」（`--text-secondary`、非 mono），**不可顯示假狀態** |
+| 更新時間 | `updated_at`，`--text-xs` `--text-secondary`，格式沿用 `formatDateTime` |
+
+**卡片上不放 Agent ID。** 完整 `agent_id` 與它的 Copy 鈕在 Agent 詳情頁的 metadata 區（§5.12 第 4 點，現行
+`pages/agent.js` 已有「Agent ID + Copy」）。卡片上若另放一顆複製鈕，等於在「整張卡可點」的區域裡再塞一個
+互動元素 —— 點偏一點就從「複製」變成「離開頁面」。要複製 ID 的人多走一步進詳情頁，代價可接受。
+
+**DOM 與無障礙語意（§7）**
+
+- 每張卡是一個 `<article class="agent-card">`（`position: relative`），名稱是 `<h3>` 裡的 `<a href="/console/agents/{agent_id}">`。
+  **一般模式下這個 `<a>` 是整張卡唯一的互動元素。**
+- 整張卡可點靠 CSS 擴大點擊範圍：`a::after { content: ""; position: absolute; inset: 0; }`。
+  **不准把整張卡包進 `<a>`**，也不准在 `<article>` 上掛 click handler 假裝連結 —— 前者會讓螢幕報讀器把
+  整張卡的文字念成一個超長連結，後者鍵盤進不去。
+- 鍵盤：Tab 依序停在每張卡的名稱連結，Enter 導頁。focus 樣式畫在擴大後的整張卡上：
+  `a:focus-visible::after` 用 2px `--border-focus` outline + 2px offset、圓角 `--radius-lg`；
+  連結本身不另畫 outline（避免一張卡出現兩個 focus 框）。
+- 首字方塊 `aria-hidden="true"`；描述被截斷的部分仍在 DOM 中，報讀器念得到全文。
+
+**卡片外觀與 hover / focus**
+
+- 卡片：`--surface-2` 底、1px `--border-subtle`、`--radius-lg`、內距 `--space-4`，內部元素間距 `--space-3`；
+  內部用 flex 直排，版本與更新時間那一行 `margin-top: auto` 貼底。**不准陰影、漸層、彩色**。
+- hover（一般模式）：底色換 `--surface-hover`、邊框換 `--border-default`。
+  只有明度疊加與髮絲邊框變化，不位移、不放大、不加陰影。
+- `transition: background-color var(--transition), border-color var(--transition)`；
+  `prefers-reduced-motion: reduce` 時取消 transition。
+
+**格子版面（RWD）**
+
+- 容器 `display: grid`，`grid-template-columns: repeat(auto-fill, minmax(min(var(--card-min-width), 100%), 1fr))`，
+  欄距與列距都是 `--space-3`，寬度上限 `--content-max`。欄數隨寬度自適應，**不寫 media query 斷點**；
+  容器窄於 `--card-min-width` 時 `min(…, 100%)` 讓卡片縮成一欄滿寬（手機一欄）。
+  頁面左右留白依 §1.3：桌面 `--space-6`、行動裝置 `--space-4`。
+- **格子不放在 `.card` 面板裡**（卡片套卡片會出現兩層表面與兩種圓角）。工具列、格子、頁尾「載入更多」
+  直接排在頁面內容區，彼此間距 `--space-4`。
+
+**工具列**
+
+- 一般模式：搜尋框（`<input type="search">`，有可見或 visually-hidden 的 `<label>`「搜尋 Agent」，
+  placeholder「搜尋名稱或描述」，`--control-lg`）＋右側 `.btn-secondary`「選取」。
+  搜尋沿用現行行為：只在已載入的 items 中比對 `name` 與 `description`，不呼叫 API。
+- 選取模式：搜尋框保留可用；「選取」換成 `.btn-ghost`「取消」，並顯示
+  「全選」checkbox（`<label>` 文字「全選目前顯示的」）、已選數量「已選 N 個」（`aria-live="polite"`）、
+  `.btn-danger`「刪除所選」（N = 0 時 disabled）。
+- 頁首「建立 Agent」仍是全頁唯一的 primary（§5.12），選取模式不改變它。
 
 | 狀態 | 呈現與動作 |
 |---|---|
-| Loading | 表頭與 5 列骨架；不顯示假資料 |
-| Empty | 「建立第一個 Agent，接著註冊 OCI image 版本」+「建立 Agent」secondary CTA |
-| Error | 顯示 `error.code`、訊息與「重新載入」；頁首建立 CTA 仍可用 |
-| Partial / Streaming | 已有 items、載入下一 cursor 時保留現有列，底部顯示一列骨架 |
-| Success | 顯示 items；next cursor 非 null 時提供「載入更多」，不做無限捲動 |
+| Loading | 工具列照常顯示（搜尋框與「選取」disabled），格子內 6 張**骨架卡**：與真卡同尺寸，首字方塊、名稱、兩行描述、底行各一條 `--surface-2` 微光條。**不顯示假資料**（不放假名稱、假版本號） |
+| Empty | 沒有任何 Agent：格子位置改成置中說明「建立第一個 Agent，接著註冊 OCI image 版本」+「建立 Agent」secondary CTA；「選取」disabled。搜尋後零筆（但有 items）：顯示「沒有符合搜尋條件的 Agent。」，不給 CTA |
+| Error | 顯示 `error.code`（mono）、訊息與「重新載入」；頁首建立 CTA 仍可用；不留下看似可點的舊卡片 |
+| Partial / Streaming | 已有 items、載入下一 cursor 時保留現有卡片，格子末端追加一排骨架卡（數量 = 目前欄數，至少 1 張）；「載入更多」改「載入中」並 disabled |
+| Success | 顯示卡片格子；next cursor 非 null 時格子下方置中提供 `.btn-secondary`「載入更多」，**不做無限捲動** |
 
-**批次選取與刪除（v0.8.0 新增，ADR-0013）。** 每一列左邊一個 checkbox，
-表頭一個全選，工具列右邊一顆 `.btn-danger`。
+**批次選取與刪除（v0.8.0 新增，ADR-0013；v0.11.0 改為「選取模式」）。** 勾選框平常**不顯示**。
+按工具列「選取」進入選取模式後，每張卡左上角才出現 checkbox；按「取消」離開選取模式並**清空選取**。
 
-1. **全選只作用在目前看得到的那些。** 搜尋過濾之後還去勾看不見的列，
-   是那種按下去才發現刪多了的錯。表頭的 checkbox 在部分選取時用 `indeterminate`。
-2. **選取記的是 `agentId`，不是列的索引。** 搜尋會換掉可見的列，記索引會刪到別人。
+- 選取模式下，名稱不再是 `<a>`：每張卡的唯一互動元素換成 `<input type="checkbox">`，它的 `<label>` 包住
+  名稱並以同樣的 `::after { position: absolute; inset: 0; }` 擴大到整張卡 —— **點卡片任何地方 = 切換勾選，不導頁**，
+  這是原生 label 行為，不另寫 click handler。checkbox 的可及名稱就是 Agent 名稱。
+  Tab 停在 checkbox，Space 切換；focus 樣式同一般模式（畫在整張卡上）。
+- checkbox 與 label 不准包進任何 `<a>`；選取模式下卡片內不存在連結，也就不會有「點到連結還是點到勾選」的歧義。
+- 已勾選的卡：底色 `--surface-active`、邊框 `--border-strong`，加上 checkbox 本身的勾選狀態
+  （**不只靠顏色**，§0 第 4 條）。checkbox 位置在卡片內距內的左上角，首字方塊往右讓位，不與內容重疊。
+- 按「取消」離開選取模式或重新載入時，選取一律清空；刪除完成後只移除刪掉的，失敗的保留勾選（見第 4 條）。
+
+以下四條規則照舊，換成卡片後一條都不放寬：
+
+1. **全選只作用在目前看得到的那些。** 搜尋過濾之後還去勾看不見的卡，
+   是那種按下去才發現刪多了的錯。部分選取時「全選」checkbox 用 `indeterminate`。
+2. **選取記的是 `agentId`，不是卡片的索引或位置。** 搜尋會換掉可見的卡，欄數也會隨寬度變，記位置會刪到別人。
+   搜尋前已勾、搜尋後被藏起來的 Agent 仍算已選，所以第 3 條的確認視窗要列出**全部**已選的名字。
 3. **確認視窗要列出名字，並講明代價**：不可復原，連 Run 紀錄、用量與 registry 裡的
    image 一起刪（api-contract §2.5）。只說「確定刪除嗎」不夠 —— 使用者不會知道
-   自己同時放棄了稽核軌跡。
+   自己同時放棄了稽核軌跡。確認視窗用原生 `<dialog>`。
 4. **一個失敗不要停下來。** 逐一呼叫 `DELETE`，全部試完再一起回報哪些沒刪掉；
-   停在中間會留下「刪了一半」而使用者無從得知刪到哪裡。
+   停在中間會留下「刪了一半」而使用者無從得知刪到哪裡。刪除成功的卡從格子移除，失敗的保留並維持勾選。
 
 ### 5.8 `agent-version-list.js` — 版本驗證與 artifact 摘要
 
@@ -779,16 +849,17 @@ Partial / Streaming 不適用；Success 以 `aria-live` 宣告「已取代，下
 
 ### 5.12 五頁組合與完整操作流程
 
-1. `/console/agents`：載入 `agent-list.js`；頁首「建立 Agent」開 `create-agent-dialog.js`。
+1. `/console/agents`：載入 `agent-list.js`（Agent 總覽，卡片格子）；頁首「建立 Agent」開 `create-agent-dialog.js`；整張卡點擊進入 Agent 詳情。
 2. 建立成功導向 `/console/agents/{agent_id}`。若尚無發布版本，頁面首先顯示註冊版本 CTA。
 3. `/console/agents/{agent_id}/versions/new`：`version-registration.js` 接收 semver + canonical image ref，
    確認後註冊並輪詢終態；PUBLISHED 後回 Agent 詳情。
 4. Agent 詳情由 `agent-version-list.js`、`endpoints-card.js`、`run-composer.js` 與 `recent-runs.js` 組成。
    首屏順序是 metadata → 版本 → 呼叫區 → endpoints → 最近 Runs；呼叫區只在有 PUBLISHED version 時可用。
+   metadata 區必須顯示完整 `agent_id` 並附 Copy —— v0.11.0 起總覽卡片不放 Agent ID，這裡是 Console 上唯一能複製它的地方。
 5. Run 建立成功導向 `/console/runs/{run_id}`，沿用 `streaming-output.js` 與 `run-timeline.js`；
    `/console/runs` 仍提供跨 Agent 查找與篩選。
 
-同一頁最多一個 primary CTA：Agent 列表是「建立 Agent」、version-new 是「註冊並驗證」、Agent 詳情有可呼叫
+同一頁最多一個 primary CTA：Agent 總覽是「建立 Agent」、version-new 是「註冊並驗證」、Agent 詳情有可呼叫
 版本時是「執行 Agent」。其他動作用 secondary / ghost，避免 metadata、發布與執行三種操作互相競爭。
 
 ---
@@ -901,6 +972,7 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.11.0 | 2026-10-08 | **§5.7 Agent 總覽由清單改為卡片格子**（直接取代，不做切換）：卡片 = 名稱首字方塊（灰階）+ name + 兩行描述 + 最新版本 + 更新時間；整張卡以名稱 `<a>` 加 `::after` 擴大點擊範圍，不把卡片包進 `<a>`。**Agent ID 從總覽拿掉**，只留在詳情頁 metadata（§5.12 第 4 點明文要求附 Copy）。批次刪除改成「選取模式」：勾選框平常隱藏，按「選取」才出現，選取模式下點卡片 = 切換勾選；ADR-0013 四條規則不變。五態改寫成卡片版（骨架卡、Partial 追加一排骨架卡）。**新增 token**（§1.3）：`--card-min-width: 280px`、`--monogram-size: 40px`。檔頭畫面表與 §5.6 / §5.12 的「列表」用語改為「總覽」。api-contract 不動 | @architect |
 | v0.10.0 | 2026-09-30 | **新增 §5.16–§5.19**（[ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) / ZEN-019）：`agent-config-card.js`（可變設定，整份取代）、`agent-secrets-card.js`（機密，只看得到尾四碼）、`egress-card.js`（主機白名單 + 寄件者）、`egress-calls-panel.js`（出口稽核）。§6.1 檔案清單同步。**沒有新 token**。最重要的兩條文案要求：設定卡要明說「這裡不是放密碼的地方」，白名單空狀態要說「連不到任何外部網站」而不是「沒有資料」 | @architect |
 | v0.9.0 | 2026-09-30 | §5.1 色彩模式切換鈕改為純圖示（`i-sun` / `i-moon`），§3 sprite 增加這兩個圖示 | @builder |
 | v0.8.0 | 2026-09-29 | **§5.7 加批次選取與刪除**（ADR-0013）；Runs 列表拆成 Agent 名稱與 Agent ID 兩欄 | @architect |

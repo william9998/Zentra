@@ -883,19 +883,180 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   overflow-wrap: anywhere;
 }
 
-/* ── Agent 批次選取與刪除 ───────────────────────────────────────────── */
+/* ── Agent 總覽：卡片格子與選取模式（ui-contract v0.11.0 §5.7，ADR-0013）─────── */
 
-/* 多一個 checkbox 欄。寬度用 --control-sm，不是寫死的數字。 */
-.data-row--agents {
-  grid-template-columns: var(--control-sm) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+/* 工具列、格子、頁尾彼此間距 --space-4；格子不放在 .card 裡（避免卡片套卡片）。 */
+.agent-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.agent-overview .list-footer { padding-top: 0; }
+
+.agent-toolbar { flex-wrap: wrap; }
+.agent-toolbar input[type="search"] { flex: 1 1 var(--card-min-width); }
+
+.agent-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+.sel-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 
 .sel-box {
   width: var(--icon-md);
   height: var(--icon-md);
-  align-self: center;
+  margin: 0;
+  flex: none;
   cursor: pointer;
   accent-color: var(--accent);
+}
+
+/* 欄數由寬度決定，不寫斷點；容器比 --card-min-width 窄時 min(…, 100%) 退成一欄滿寬。 */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--card-min-width), 100%), 1fr));
+  gap: var(--space-3);
+  width: 100%;
+  max-width: var(--content-max);
+}
+
+.agent-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  transition: background-color var(--transition), border-color var(--transition);
+}
+
+.agent-card:not(.agent-card--skeleton):hover {
+  background: var(--surface-hover);
+  border-color: var(--border-default);
+}
+
+.agent-card.is-selected,
+.agent-card.is-selected:hover {
+  background: var(--surface-active);
+  border-color: var(--border-strong);
+}
+
+/* checkbox 在內距內的左上角，首字方塊往右讓位 */
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.agent-card-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--monogram-size);
+  height: var(--monogram-size);
+  background: var(--surface-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
+.agent-card-name {
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-normal);
+}
+
+/* 名稱的 <a>（一般模式）或 <label>（選取模式）：單行截斷，::after 撐到整張卡 */
+.agent-card-hit {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.agent-card-hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+}
+
+/* focus 只畫在擴大後的整張卡上，一張卡不出現兩個框 */
+a.agent-card-hit:focus-visible { outline: none; }
+a.agent-card-hit:focus-visible::after,
+.agent-card:has(.sel-box:focus-visible) .agent-card-hit::after {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.agent-card .sel-box:focus-visible { outline: none; }
+
+/* 兩行截斷，但保留兩行高，讓同一列的卡片底部對齊；被截掉的字仍在 DOM 裡 */
+.agent-card-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-height: calc(2 * var(--text-sm) * var(--leading-normal));
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.agent-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: auto;
+  min-width: 0;
+}
+
+.agent-card-foot > .mono { overflow-wrap: anywhere; }
+
+/* 骨架卡：與真卡同尺寸，不放假資料 */
+.agent-card--skeleton .agent-card-monogram {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+.agent-card--skeleton .agent-card-desc { display: block; }
+.agent-card--skeleton .agent-card-name {
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--text-md) * var(--leading-normal));
+}
+.agent-card--skeleton .agent-card-foot { min-height: calc(var(--text-xs) * var(--leading-normal)); }
+.agent-card--skeleton .skeleton-line:last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-card { transition: none; }
 }
 
 .sel-list {
@@ -907,8 +1068,8 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   list-style: disc;
 }
 
-/* 刪除鈕靠右，跟搜尋框分開 —— 它作用在選取，不是搜尋 */
-.list-toolbar > .btn-danger { margin-left: auto; flex: none; }
+/* 確認視窗要列出**全部**已選的名字（ADR-0013 第 3 條），所以給高一點、可捲動 */
+.sel-list--tall { max-height: calc(var(--space-16) * 3); }
 
 /* ── ZEN-019：設定 / 機密 / 對外出口 / 出口稽核 ───────────────────────── */
 

@@ -731,3 +731,43 @@ def test_run_list_rows_carry_agent_name() -> None:
     summary = re.search(r"function viewRunSummary\(raw\) \{.*?\n\}", api, flags=re.S)
     assert summary, "api.js 找不到 viewRunSummary"
     assert "agentName: raw.agent_name" in summary.group(0)
+
+
+# ------------------------------------------- ui-contract v0.11.0 §5.7 卡片格子
+#
+# 瀏覽器 E2E（cdp_agent_bulk_delete_e2e.mjs）在容器裡會 skip，這兩條是容器裡也守得住的底線。
+
+
+def _css_rule(text: str, selector: str) -> str:
+    match = re.search(r"(?:^|\})\s*" + re.escape(selector) + r"\s*\{([^{}]*)\}", text, flags=re.M)
+    assert match, f"layout.css 找不到 {selector!r}"
+    return match.group(1)
+
+
+def test_agent_card_is_not_wrapped_in_a_link() -> None:
+    """§5.7：名稱 <a> 放在 <h3> 裡、是卡片唯一的連結；不准把整張 <article> 包進 <a>，
+    也不准在卡片上掛 click handler 假裝連結（鍵盤進不去）。"""
+    source = _strip_js_comments(_read(CONSOLE / "static/js/components/agent-list.js"))
+    assert len(re.findall(r"\bel\(\s*'a'", source)) == 1, "agent-list.js 應只建一個 <a>（卡片名稱）"
+    assert "<a" not in source, "agent-list.js 的樣板字串裡不該有 <a>"
+    assert re.search(r"\bel\(\s*'article'", source) and re.search(r"\bel\(\s*'h3'", source)
+    assert re.search(r"\bcard\.addEventListener\(\s*'click'", source) is None
+
+
+def test_agent_card_click_area_and_grid_follow_the_contract() -> None:
+    """§5.7：點卡片任何地方靠 `::after { position: absolute; inset: 0 }` 撐開；
+    格子欄數由 --card-min-width 決定、不寫斷點；卡片不准陰影或漸層。"""
+    css = re.sub(r"/\*.*?\*/", "", _read(CONSOLE / "static/css/layout.css"), flags=re.S)
+    card = _css_rule(css, ".agent-card")
+    assert re.search(r"position:\s*relative", card)
+    assert "shadow" not in card and "gradient" not in card
+    hit_after = _css_rule(css, ".agent-card-hit::after")
+    assert re.search(r"position:\s*absolute", hit_after) and re.search(r"inset:\s*0", hit_after)
+    grid = _css_rule(css, ".agent-grid")
+    assert re.search(
+        r"grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(var\(--card-min-width\),\s*100%\),\s*1fr\)\)",
+        grid)
+    for media in re.finditer(r"@media[^{]*\{(.*?)\n\}", css, flags=re.S):
+        assert ".agent-grid" not in media.group(1), "卡片格子不准用 media query 斷點"
+    agent_rules = re.findall(r"\.agent-card[^{]*\{([^{}]*)\}", css)
+    assert agent_rules and not any("shadow" in r or "gradient" in r for r in agent_rules)

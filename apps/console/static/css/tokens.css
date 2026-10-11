@@ -96,8 +96,10 @@
   /* 版面 */
   --sidebar-width:   260px;
   --sidebar-collapsed: 0;
-  --content-max:     1200px;   /* 列表、表格 */
+  --content-max:     1200px;   /* 列表、表格、卡片格子 */
   --reading-max:     768px;    /* 表單、文件、LLM 輸出 */
+  --card-min-width:  280px;    /* 卡片格子單欄的最小寬度（v0.11.0，§5.7） */
+  --monogram-size:   40px;     /* 名稱首字方塊的邊長（v0.11.0，§5.7） */
   --row-height:      44px;     /* 列表列 */
   --row-height-compact: 36px;  /* 事件流、log */
   --header-height:   52px;
