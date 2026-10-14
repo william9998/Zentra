@@ -99,7 +99,14 @@ async def test_gateway_requires_run_scoped_token_and_accepts_array_events() -> N
 
             bootstrap = await client.get(f"/internal/runs/{run_a}/bootstrap", headers=headers)
             assert bootstrap.status_code == 200, bootstrap.text
-            assert set(bootstrap.json()) == {"run_id", "entrypoint", "input", "manifest"}
+            # `default_model` 是 v0.9.0 加的：平台算好送進沙盒，SDK 不准自己補寫死值。
+            # `config` / `secret_names` 是 v0.12.0 加的（ZEN-019 §4.1）——
+            # **頂層欄位，不得合併進 manifest**：manifest 是版本的不可變內容，
+            # 把可變設定攪進去會讓 P5 在 runtime 這一側失去實體。
+            assert set(bootstrap.json()) == {
+                "run_id", "entrypoint", "input", "manifest", "default_model",
+                "config", "secret_names"}
+            assert "config" not in bootstrap.json()["manifest"]
             assert bootstrap.json()["input"] == {"question": "hello"}
 
             event_url = f"/internal/runs/{run_a}/events"

@@ -1,8 +1,6 @@
 """Public Run API from API contract v0.3.1."""
 
 import asyncio
-import base64
-import json
 import uuid
 from datetime import datetime
 
@@ -13,36 +11,19 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.db import get_session
-from apps.api.deps import get_redis, load_run
+from apps.api.deps import get_redis, load_run, optional_agent_api_key
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
-from apps.api.models import AgentVersion, Run
+from apps.api.models import Agent, AgentVersion, Run
 from apps.api.schemas import (
     CreateRunRequest, CreateRunResponse, RunListResponse, RunResponse, RunSummary,
 )
-from apps.api.services import events
+from apps.api.services import events, pagination
 from apps.api.services.runs import create_run as create_run_record
 from apps.api.services.streaming import event_stream
 from apps.api.tasks import dispatch_run
 
 router = APIRouter(prefix="/v1", tags=["runs"])
-
-
-def _cursor_encode(created_at: datetime, run_id: uuid.UUID) -> str:
-    raw = json.dumps([created_at.isoformat(), str(run_id)], separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _cursor_decode(cursor: str) -> tuple[datetime, uuid.UUID]:
-    try:
-        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
-        created_at, run_id = json.loads(raw)
-        return datetime.fromisoformat(created_at), uuid.UUID(run_id)
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise ZentraError(
-            ErrorCode.VALIDATION_ERROR, "cursor is invalid", 422,
-            details={"field": "cursor"},
-        ) from exc
 
 
 async def _to_response(run: Run, session: AsyncSession) -> RunResponse:
@@ -62,8 +43,12 @@ async def _to_response(run: Run, session: AsyncSession) -> RunResponse:
 async def create_run(
     agent_id: str, body: CreateRunRequest, response: Response,
     session: AsyncSession = Depends(get_session),
+    api_key = Depends(optional_agent_api_key),
 ) -> CreateRunResponse:
-    run, version = await create_run_record(session, agent_id, body, trigger=RunTrigger.API)
+    run, version = await create_run_record(
+        session, agent_id, body, trigger=RunTrigger.API,
+        api_key_id=api_key.id if api_key else None,
+    )
     # The worker publishes QUEUED along with subsequent events. Broker I/O is
     # synchronous, so never run send_task on FastAPI's event loop.
     await asyncio.to_thread(dispatch_run, str(run.id))
@@ -80,8 +65,12 @@ async def invoke_run(
     agent_id: str,
     body: CreateRunRequest,
     session: AsyncSession = Depends(get_session),
+    api_key = Depends(optional_agent_api_key),
 ) -> RunResponse:
-    run, _ = await create_run_record(session, agent_id, body, trigger=RunTrigger.API)
+    run, _ = await create_run_record(
+        session, agent_id, body, trigger=RunTrigger.API,
+        api_key_id=api_key.id if api_key else None,
+    )
     await asyncio.to_thread(dispatch_run, str(run.id))
     deadline = asyncio.get_running_loop().time() + 60
     while asyncio.get_running_loop().time() < deadline:
@@ -98,6 +87,7 @@ async def invoke_run(
 @router.get("/runs", response_model=RunListResponse)
 async def list_runs(
     agent_id: str | None = None,
+    api_key_id: str | None = None,
     status: RunStatus | None = None,
     trigger: RunTrigger | None = None,
     created_after: datetime | None = None,
@@ -106,9 +96,9 @@ async def list_runs(
     cursor: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> RunListResponse:
-    statement = select(Run, AgentVersion.semver).join(
+    statement = select(Run, AgentVersion.semver, Agent.name).join(
         AgentVersion, AgentVersion.id == Run.agent_version_id
-    )
+    ).join(Agent, Agent.id == Run.agent_id)
     if agent_id:
         try:
             statement = statement.where(Run.agent_id == uuid.UUID(agent_id))
@@ -116,6 +106,15 @@ async def list_runs(
             raise ZentraError(
                 ErrorCode.VALIDATION_ERROR, "agent_id is invalid", 422,
                 details={"field": "agent_id"},
+            ) from exc
+    if api_key_id:
+        # 「這把 key 打進來的哪幾筆失敗了」＝ api_key_id + status=FAILED（ZEN-015 §3.3）
+        try:
+            statement = statement.where(Run.api_key_id == uuid.UUID(api_key_id))
+        except ValueError as exc:
+            raise ZentraError(
+                ErrorCode.VALIDATION_ERROR, "api_key_id is invalid", 422,
+                details={"field": "api_key_id"},
             ) from exc
     if status is not None:
         statement = statement.where(Run.status == status)
@@ -126,7 +125,7 @@ async def list_runs(
     if created_before is not None:
         statement = statement.where(Run.created_at <= created_before)
     if cursor:
-        cursor_created_at, cursor_id = _cursor_decode(cursor)
+        cursor_created_at, cursor_id = pagination.decode(cursor)
         statement = statement.where(or_(
             Run.created_at < cursor_created_at,
             and_(Run.created_at == cursor_created_at, Run.id < cursor_id),
@@ -138,12 +137,13 @@ async def list_runs(
     rows = rows[:limit]
     return RunListResponse(
         items=[RunSummary(
-            run_id=str(run.id), agent_id=str(run.agent_id), agent_version=semver,
+            run_id=str(run.id), agent_id=str(run.agent_id), agent_name=name,
+            agent_version=semver,
             status=run.status, trigger=run.trigger, created_at=run.created_at,
             started_at=run.started_at, finished_at=run.finished_at,
-        ) for run, semver in rows],
+        ) for run, semver, name in rows],
         next_cursor=(
-            _cursor_encode(rows[-1][0].created_at, rows[-1][0].id)
+            pagination.encode(rows[-1][0].created_at, rows[-1][0].id)
             if has_more and rows else None
         ),
     )

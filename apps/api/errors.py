@@ -9,8 +9,10 @@ from fastapi.responses import JSONResponse
 
 from apps.api.enums import ErrorCode
 
+# EGRESS_BLOCKED 刻意**不在**這裡：政策不會因為再打一次就改變。
+# EGRESS_FAILED 在：那是上游打不通，重試有意義（api-contract §0）。
 _RETRYABLE = {ErrorCode.QUOTA_EXCEEDED, ErrorCode.SANDBOX_TIMEOUT, ErrorCode.SANDBOX_ERROR,
-              ErrorCode.LLM_ERROR, ErrorCode.INTERNAL_ERROR}
+              ErrorCode.LLM_ERROR, ErrorCode.EGRESS_FAILED, ErrorCode.INTERNAL_ERROR}
 
 
 class ZentraError(Exception):

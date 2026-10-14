@@ -60,8 +60,17 @@ class _BlockingDriverAdapter:
     def inspect_image(self, image_ref: str) -> ImageMetadata:
         return asyncio.run(self._driver.inspect_image(image_ref))
 
+    def remove_image(self, image_ref: str) -> None:
+        return asyncio.run(self._driver.remove_image(image_ref))
+
     def wait(self, handle: SandboxHandle, timeout: float) -> SandboxExit:
         return asyncio.run(self._driver.wait(handle, timeout))
+
+    def inspect_container(self, docker_id: str) -> dict:
+        return asyncio.run(self._driver.inspect_container(docker_id))
+
+    def container_logs(self, docker_id: str) -> str:
+        return asyncio.run(self._driver.container_logs(docker_id))
 
     def logs(self, handle: SandboxHandle, tail: int = 200) -> str:
         return asyncio.run(self._driver.logs(handle, tail))
@@ -148,6 +157,42 @@ class SandboxManager:
             network=self._network,
             gateway_url=self._gateway_url,
             validation_token=validation_token,
+        )
+        return self._blocking_driver.create(spec)
+
+    def driver_inspect(self, docker_id: str) -> dict:
+        """容器的原始 inspect 結果。生命週期管理要看 `State.Running` 與 `ExitCode`。"""
+        return self._blocking_driver.inspect_container(docker_id)
+
+    def driver_logs(self, docker_id: str) -> str:
+        """容器的輸出。它死掉時這是唯一的線索，所以不能吞掉。"""
+        return self._blocking_driver.container_logs(docker_id)
+
+    def driver_destroy(self, handle) -> None:
+        """同步銷毀。常駐容器的生命週期由 worker 管，它是同步的。"""
+        self._blocking_driver.destroy(handle)
+
+    def create_serve(
+        self,
+        container_uuid: str,
+        agent_id: str,
+        container_token: str,
+        image_ref: str,
+        max_concurrent_runs: int,
+    ) -> SandboxHandle:
+        """建立常駐容器（ZEN-015）。
+
+        **不佔併發配額** —— 配額算的是同時執行的 Run，而容器本身不是 Run。
+        容器內的並發由 `max_concurrent_runs` 控（ADR-0012 的 N）。
+        """
+        spec = SandboxSpec.for_serve(
+            container_uuid=container_uuid,
+            agent_id=agent_id,
+            image_ref=image_ref,
+            network=self._network,
+            gateway_url=self._gateway_url,
+            container_token=container_token,
+            max_concurrent_runs=max_concurrent_runs,
         )
         return self._blocking_driver.create(spec)
 

@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.5.5` |
+| 契約版本 | `v0.11.0` |
 | 擁有者 | `@architect` |
-| 對齊 Spec | `specs/SPEC.md v0.3.1` |
+| 對齊 Spec | `specs/SPEC.md v0.5.0` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
 
 > **`@frontend-dev` 只能引用這份文件的 token，不得寫死色碼、間距、字級。**
@@ -28,7 +28,7 @@
 >
 > | # | 網址 | 檔案 | 畫面 |
 > |---|---|---|---|
-> | 1 | `/console/agents` | `agents.html` | Agent 列表；以頁內 `<dialog>` 建立 Agent metadata |
+> | 1 | `/console/agents` | `agents.html` | Agent 總覽（卡片格子，§5.7）；以頁內 `<dialog>` 建立 Agent metadata |
 > | 2 | `/console/agents/{agent_id}` | `agent.html` | Agent 詳情：版本列表、呼叫區、`endpoints`（REST / MCP / OpenAPI）、最近 Runs |
 > | 3 | `/console/agents/{agent_id}/versions/new` | `version-new.html` | 註冊 canonical OCI image digest，輪詢 `BUILDING → PUBLISHED / FAILED` |
 > | 4 | `/console/runs` | `runs.html` | Run 列表（篩選 + cursor 分頁） |
@@ -68,10 +68,12 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 > 它從第一天就是純 CSS custom properties，所以換掉 Tailwind 沒有任何遷移成本。
 > **所有其他 CSS 只准引用變數，不准出現字面值色碼、間距、字級。**
 
-### 1.1 色彩（深色，MVP 不做淺色模式）
+### 1.1 色彩（深色為預設，v0.7.0 起可切換淺色）
 
 ```css
 :root {
+  color-scheme: dark;
+
   /* 底層 */
   --bg-base:          #0d0d0d;   /* 頁面底色 */
   --bg-sidebar:       #131313;
@@ -114,9 +116,69 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
   --warning: #c9a04a;
   --success: #4a9070;
 }
+
+/* 淺色模式（v0.7.0 新增）。**只覆寫顏色**，字級、間距、幾何一律共用 ——
+   那些跟明暗無關，複製一份只會多一個會漂掉的地方。
+
+   為什麼疊加值要換成黑：深色的表面靠「疊白」提亮，淺色底疊白等於什麼都沒做。
+   為什麼狀態色要加深：深色版刻意降過飽和度以貼合近黑底，那些值放到白底上
+   對比不足，會變成「看得到但讀不出來」。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* 底層 */
+  --bg-base:          #fbfbfb;
+  --bg-sidebar:       #f3f3f3;
+  --bg-elevated:      #ffffff;
+  --bg-code:          #f1f1f1;
+
+  /* 表面（疊加式）—— 淺色疊黑，不是疊白 */
+  --surface-1:        rgba(0, 0, 0, 0.02);
+  --surface-2:        rgba(0, 0, 0, 0.03);
+  --surface-3:        rgba(0, 0, 0, 0.04);
+  --surface-hover:    rgba(0, 0, 0, 0.05);
+  --surface-active:   rgba(0, 0, 0, 0.08);
+
+  /* 邊框 */
+  --border-subtle:    rgba(0, 0, 0, 0.07);
+  --border-default:   #dcdcdc;
+  --border-strong:    #c0c0c0;
+  --border-focus:     #4a4a4a;
+
+  /* 文字 */
+  --text-primary:     #1f1f1f;
+  --text-secondary:   #6b6b6b;
+  --text-disabled:    #a6a6a6;
+
+  /* 主色 —— 與深色互為反相：`.btn-primary` 的字用 --bg-base，兩邊都會有對比 */
+  --accent:           #3a3a3a;
+  --accent-hover:     #1f1f1f;
+  --accent-subtle:    rgba(58, 58, 58, 0.08);
+
+  /* 狀態色 —— 加深以貼合淺底 */
+  --status-queued:     #8a8a8a;
+  --status-scheduling: #6b6b6b;
+  --status-running:    #2b6cb0;
+  --status-waiting:    #8a6516;
+  --status-succeeded:  #2c6b4f;
+  --status-failed:     #b03a34;
+  --status-cancelled:  #9a9a9a;
+
+  --danger:  #b03a34;
+  --warning: #8a6516;
+  --success: #2c6b4f;
+}
 ```
 
 > **只有 §2 的狀態指示器可以用狀態色。** 其他地方一律單色。
+
+> **淺色是覆寫，不是第二套系統。** 只有 `:root[data-theme="light"]` 這一個區塊，
+> 而且只放顏色。新增顏色 token 時**兩邊都要加** —— 只加深色的話，它在淺色模式下
+> 會保持深色，而那在畫面上看起來像一塊莫名其妙的暗色，不像少了設定。
+> `test_light_theme_covers_every_colour_token` 就是擋這件事的。
+>
+> `color-scheme` 一定要跟著設：它決定原生元件（`select`、`checkbox`、捲軸）的外觀。
+> 少了它，淺色模式的下拉選單會是深色的。
 
 ### 1.2 字體與字級
 
@@ -171,8 +233,10 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 /* 版面 */
 --sidebar-width:   260px;
 --sidebar-collapsed: 0;
---content-max:     1200px;   /* 列表、表格 */
+--content-max:     1200px;   /* 列表、表格、卡片格子 */
 --reading-max:     768px;    /* 表單、文件、LLM 輸出 */
+--card-min-width:  280px;    /* 卡片格子單欄的最小寬度（v0.11.0，§5.7） */
+--monogram-size:   40px;     /* 名稱首字方塊的邊長（v0.11.0，§5.7） */
 --row-height:      44px;     /* 列表列 */
 --row-height-compact: 36px;  /* 事件流、log */
 --header-height:   52px;
@@ -182,6 +246,7 @@ Zentra Console 延續 Stock-Insight-Chat 的視覺語言：**深色、近乎單�
 
 **比例規則（避免版面失衡）**：
 - 卡片內距 `--space-4`，卡片之間 `--space-3`
+- 卡片格子的欄數由寬度決定，不寫斷點：每欄不窄於 `--card-min-width`，容器比它還窄時退成一欄滿寬（§5.7）
 - 頁面左右留白至少 `--space-6`，行動裝置 `--space-4`
 - 圖示與文字間距固定 `--space-2`
 - 任何區塊的內距不得小於其內部元素間距
@@ -273,6 +338,8 @@ MVP 只需要這幾個（**不要多抓**，sprite 要小）：
 | 重試 | `RotateCw` | `i-rotate-cw` |
 | 停止 | `Square` | `i-square` |
 | 搜尋 | `Search` | `i-search` |
+| 切到淺色（v0.9.0） | `Sun` | `i-sun` |
+| 切到深色（v0.9.0） | `Moon` | `i-moon` |
 
 ---
 
@@ -325,6 +392,18 @@ export function mount(el, props) {
 | Error | page error 留在內容 slot；側欄與麵包屑仍可導航 |
 | Partial / Streaming | 內容更新不重畫 shell；側欄收合狀態保持 |
 | Success | 顯示完整 header、sidebar 與 page slot |
+
+**色彩模式切換（v0.7.0 新增）。** 頂部列最右邊一顆 `.btn-ghost`，只改
+`<html data-theme>`，不碰任何元件 —— 顏色全是 token，所以切換是一個屬性的事。
+
+1. 按鈕是**只有圖示**的方形鈕（v0.9.0 起，原本是文字），圖示說的是**按下去會變成什麼**：
+   深色時顯示 `i-sun`，淺色時顯示 `i-moon`；現在是什麼畫面本身已經在說了。
+   沒有可見文字，所以 `aria-label` 與 `title` 都要寫完整句（「切換為淺色模式」）。
+2. 沒存過偏好就跟隨作業系統（`prefers-color-scheme`），存過就以使用者的選擇為準。
+3. 偏好放 `localStorage`，與側欄摺疊同類。§6.4 禁的是**憑證**，不是偏好。
+4. **不使用內嵌 `<script>` 消除初次載入的閃動** —— HTML 不准有內嵌 script（§6.3）。
+   代價誠實講：偏好與系統設定不同時，首次繪製會有一瞬間的舊色。Console 的內容
+   本來就是 JS 繪製的，閃的只有底色。
 
 ### 5.2 `streaming-output.js` — 串流輸出
 
@@ -495,23 +574,102 @@ Run 觀測頁的第二種版面。時間軸上方一組 `role="group"` 的切換
 | 狀態 | 呈現與動作 |
 |---|---|
 | Loading | 送出後兩欄 disabled，按鈕文字「建立中」；保留輸入值 |
-| Empty | 初始空表單；name 未填時 primary CTA disabled，取消回到列表 |
+| Empty | 初始空表單；name 未填時 primary CTA disabled，取消回到總覽 |
 | Error | 顯示 `error.code`、訊息與欄位 `details`；保留輸入，focus 第一個錯誤欄 |
 | Partial / Streaming | name 已填而 description 未填是合法 partial；顯示下一步說明「建立後註冊 image 版本」 |
-| Success | 關閉 dialog 並導向新 Agent 詳情；不在列表頁複製成功 toast 與 redirect 兩套結果 |
+| Success | 關閉 dialog 並導向新 Agent 詳情；不在總覽頁複製成功 toast 與 redirect 兩套結果 |
 
-### 5.7 `agent-list.js` — Agent 列表與選擇入口
+### 5.7 `agent-list.js` — Agent 總覽（卡片格子）與選擇入口
 
-列表列顯示 `name`、截斷 description、`latest_published_version`、`updated_at`；整列標題連到 Agent 詳情。
-`agent_id` 可在展開的次要資訊中完整複製。最新版本為 `null` 時顯示文字「尚無已發布版本」，不可顯示假狀態。
+**v0.11.0 起由「一列一列的清單」改成卡片格子，直接取代，不提供卡片／清單切換**（多一種版面就多一套要測、要維護的
+DOM 與五態）。每個 Agent 一張卡，整張卡點下去進入 `/console/agents/{agent_id}`。資料來源不變：仍是
+`GET /v1/agents` 的 items 與 cursor，**不新增任何 API 欄位**。
+
+**卡片內容（由上而下）**
+
+| 區塊 | 內容與規則 |
+|---|---|
+| 名稱首字方塊 | 取 `name` 的第一個字母或數字（`\p{L}` / `\p{N}`，以 code point 計，拉丁字母轉大寫）；整個 name 都沒有字母數字時顯示 `—`。**不用 emoji、不配色**（§0）。方塊 `--monogram-size` 正方形、`--surface-3` 底、1px `--border-default`、`--radius-md`、`--font-display` `--text-lg` `--text-secondary`，文字置中。純裝飾，`aria-hidden="true"` |
+| 名稱 | `--text-md` `--weight-medium` `--text-primary`，單行，超出以省略號截斷；完整名稱放 `title` |
+| 描述 | `--text-sm` `--text-secondary`，**最多兩行**，超出截斷（`line-clamp: 2`）。保留兩行高（`calc(2 * var(--text-sm) * var(--leading-normal))`），讓同一列的卡片底部對齊。`null` 或空字串時顯示「沒有描述」 |
+| 最新版本 | `latest_published_version`，`--font-mono` `--text-xs`。`null` 時顯示「尚無已發布版本」（`--text-secondary`、非 mono），**不可顯示假狀態** |
+| 更新時間 | `updated_at`，`--text-xs` `--text-secondary`，格式沿用 `formatDateTime` |
+
+**卡片上不放 Agent ID。** 完整 `agent_id` 與它的 Copy 鈕在 Agent 詳情頁的 metadata 區（§5.12 第 4 點，現行
+`pages/agent.js` 已有「Agent ID + Copy」）。卡片上若另放一顆複製鈕，等於在「整張卡可點」的區域裡再塞一個
+互動元素 —— 點偏一點就從「複製」變成「離開頁面」。要複製 ID 的人多走一步進詳情頁，代價可接受。
+
+**DOM 與無障礙語意（§7）**
+
+- 每張卡是一個 `<article class="agent-card">`（`position: relative`），名稱是 `<h3>` 裡的 `<a href="/console/agents/{agent_id}">`。
+  **一般模式下這個 `<a>` 是整張卡唯一的互動元素。**
+- 整張卡可點靠 CSS 擴大點擊範圍：`a::after { content: ""; position: absolute; inset: 0; }`。
+  **不准把整張卡包進 `<a>`**，也不准在 `<article>` 上掛 click handler 假裝連結 —— 前者會讓螢幕報讀器把
+  整張卡的文字念成一個超長連結，後者鍵盤進不去。
+- 鍵盤：Tab 依序停在每張卡的名稱連結，Enter 導頁。focus 樣式畫在擴大後的整張卡上：
+  `a:focus-visible::after` 用 2px `--border-focus` outline + 2px offset、圓角 `--radius-lg`；
+  連結本身不另畫 outline（避免一張卡出現兩個 focus 框）。
+- 首字方塊 `aria-hidden="true"`；描述被截斷的部分仍在 DOM 中，報讀器念得到全文。
+
+**卡片外觀與 hover / focus**
+
+- 卡片：`--surface-2` 底、1px `--border-subtle`、`--radius-lg`、內距 `--space-4`，內部元素間距 `--space-3`；
+  內部用 flex 直排，版本與更新時間那一行 `margin-top: auto` 貼底。**不准陰影、漸層、彩色**。
+- hover（一般模式）：底色換 `--surface-hover`、邊框換 `--border-default`。
+  只有明度疊加與髮絲邊框變化，不位移、不放大、不加陰影。
+- `transition: background-color var(--transition), border-color var(--transition)`；
+  `prefers-reduced-motion: reduce` 時取消 transition。
+
+**格子版面（RWD）**
+
+- 容器 `display: grid`，`grid-template-columns: repeat(auto-fill, minmax(min(var(--card-min-width), 100%), 1fr))`，
+  欄距與列距都是 `--space-3`，寬度上限 `--content-max`。欄數隨寬度自適應，**不寫 media query 斷點**；
+  容器窄於 `--card-min-width` 時 `min(…, 100%)` 讓卡片縮成一欄滿寬（手機一欄）。
+  頁面左右留白依 §1.3：桌面 `--space-6`、行動裝置 `--space-4`。
+- **格子不放在 `.card` 面板裡**（卡片套卡片會出現兩層表面與兩種圓角）。工具列、格子、頁尾「載入更多」
+  直接排在頁面內容區，彼此間距 `--space-4`。
+
+**工具列**
+
+- 一般模式：搜尋框（`<input type="search">`，有可見或 visually-hidden 的 `<label>`「搜尋 Agent」，
+  placeholder「搜尋名稱或描述」，`--control-lg`）＋右側 `.btn-secondary`「選取」。
+  搜尋沿用現行行為：只在已載入的 items 中比對 `name` 與 `description`，不呼叫 API。
+- 選取模式：搜尋框保留可用；「選取」換成 `.btn-ghost`「取消」，並顯示
+  「全選」checkbox（`<label>` 文字「全選目前顯示的」）、已選數量「已選 N 個」（`aria-live="polite"`）、
+  `.btn-danger`「刪除所選」（N = 0 時 disabled）。
+- 頁首「建立 Agent」仍是全頁唯一的 primary（§5.12），選取模式不改變它。
 
 | 狀態 | 呈現與動作 |
 |---|---|
-| Loading | 表頭與 5 列骨架；不顯示假資料 |
-| Empty | 「建立第一個 Agent，接著註冊 OCI image 版本」+「建立 Agent」secondary CTA |
-| Error | 顯示 `error.code`、訊息與「重新載入」；頁首建立 CTA 仍可用 |
-| Partial / Streaming | 已有 items、載入下一 cursor 時保留現有列，底部顯示一列骨架 |
-| Success | 顯示 items；next cursor 非 null 時提供「載入更多」，不做無限捲動 |
+| Loading | 工具列照常顯示（搜尋框與「選取」disabled），格子內 6 張**骨架卡**：與真卡同尺寸，首字方塊、名稱、兩行描述、底行各一條 `--surface-2` 微光條。**不顯示假資料**（不放假名稱、假版本號） |
+| Empty | 沒有任何 Agent：格子位置改成置中說明「建立第一個 Agent，接著註冊 OCI image 版本」+「建立 Agent」secondary CTA；「選取」disabled。搜尋後零筆（但有 items）：顯示「沒有符合搜尋條件的 Agent。」，不給 CTA |
+| Error | 顯示 `error.code`（mono）、訊息與「重新載入」；頁首建立 CTA 仍可用；不留下看似可點的舊卡片 |
+| Partial / Streaming | 已有 items、載入下一 cursor 時保留現有卡片，格子末端追加一排骨架卡（數量 = 目前欄數，至少 1 張）；「載入更多」改「載入中」並 disabled |
+| Success | 顯示卡片格子；next cursor 非 null 時格子下方置中提供 `.btn-secondary`「載入更多」，**不做無限捲動** |
+
+**批次選取與刪除（v0.8.0 新增，ADR-0013；v0.11.0 改為「選取模式」）。** 勾選框平常**不顯示**。
+按工具列「選取」進入選取模式後，每張卡左上角才出現 checkbox；按「取消」離開選取模式並**清空選取**。
+
+- 選取模式下，名稱不再是 `<a>`：每張卡的唯一互動元素換成 `<input type="checkbox">`，它的 `<label>` 包住
+  名稱並以同樣的 `::after { position: absolute; inset: 0; }` 擴大到整張卡 —— **點卡片任何地方 = 切換勾選，不導頁**，
+  這是原生 label 行為，不另寫 click handler。checkbox 的可及名稱就是 Agent 名稱。
+  Tab 停在 checkbox，Space 切換；focus 樣式同一般模式（畫在整張卡上）。
+- checkbox 與 label 不准包進任何 `<a>`；選取模式下卡片內不存在連結，也就不會有「點到連結還是點到勾選」的歧義。
+- 已勾選的卡：底色 `--surface-active`、邊框 `--border-strong`，加上 checkbox 本身的勾選狀態
+  （**不只靠顏色**，§0 第 4 條）。checkbox 位置在卡片內距內的左上角，首字方塊往右讓位，不與內容重疊。
+- 按「取消」離開選取模式或重新載入時，選取一律清空；刪除完成後只移除刪掉的，失敗的保留勾選（見第 4 條）。
+
+以下四條規則照舊，換成卡片後一條都不放寬：
+
+1. **全選只作用在目前看得到的那些。** 搜尋過濾之後還去勾看不見的卡，
+   是那種按下去才發現刪多了的錯。部分選取時「全選」checkbox 用 `indeterminate`。
+2. **選取記的是 `agentId`，不是卡片的索引或位置。** 搜尋會換掉可見的卡，欄數也會隨寬度變，記位置會刪到別人。
+   搜尋前已勾、搜尋後被藏起來的 Agent 仍算已選，所以第 3 條的確認視窗要列出**全部**已選的名字。
+3. **確認視窗要列出名字，並講明代價**：不可復原，連 Run 紀錄、用量與 registry 裡的
+   image 一起刪（api-contract §2.5）。只說「確定刪除嗎」不夠 —— 使用者不會知道
+   自己同時放棄了稽核軌跡。確認視窗用原生 `<dialog>`。
+4. **一個失敗不要停下來。** 逐一呼叫 `DELETE`，全部試完再一起回報哪些沒刪掉；
+   停在中間會留下「刪了一半」而使用者無從得知刪到哪裡。刪除成功的卡從格子移除，失敗的保留並維持勾選。
 
 ### 5.8 `agent-version-list.js` — 版本驗證與 artifact 摘要
 
@@ -563,6 +721,121 @@ trigger 只接受 `API` 與 `MCP`：Console 建立的 Run 顯示 `API`，不得�
 | Partial / Streaming | 載入下一 cursor 時保留現有列；RUNNING 列只顯示當前已知狀態，不在此頁開 SSE |
 | Success | 依 created time 新到舊顯示；有 next cursor 時提供「查看全部 Runs」連至 Runs 頁並帶 Agent 篩選 |
 
+### 5.13 `api-keys-card.js` — 下游 API key（v0.6.0 新增，ZEN-015）
+
+在 Agent 詳情頁，緊鄰 §5.6 的憑證卡。**兩張卡管的是相反方向的東西**，
+放在一起是為了讓這件事一眼看得出來：憑證是這個 Agent 往外打 LLM 用的，
+API key 是別人往裡打這個 Agent 用的。
+
+1. **明文只出現一次。** 發完之後用一個必須自己關掉的區塊顯示，附複製鈕，
+   並明說「關掉就沒了」。不准做「再看一次」——平台存的是雜湊，那個功能不存在。
+2. **撤銷過的 key 留在清單裡**（灰掉，`data-row--muted`），因為它的歷史用量還掛著。
+   狀態用 §2 的狀態圓點 + 文字，**不只靠顏色**。
+3. 空狀態要說清楚代價：「還沒有發過 key，所有呼叫都記成未歸戶」。
+4. 卡片把 key 清單透過 `onChange` 推給 §5.14 的面板，**兩邊不各抓一次** ——
+   不然下拉選單會跟清單不同步。
+5. Console 是同源呼叫，**不自己組認證標頭**（§6.4）。怎麼帶 key 的說明留給契約 §2.3。
+
+### 5.14 `usage-panel.js` — 用量與除錯（v0.6.0 新增，ZEN-015）
+
+回答兩個問題，所以是上下兩半：上半是總計 + 依 key + 依 model 的彙總，
+下半是逐筆 LLM 呼叫。篩選列有 key 下拉、「只看出錯的」勾選與重新整理。
+
+1. **`key_id` 為 null 的那一列要顯示成「未歸戶」**，並說明是 Console 發起的。
+   濾掉它總計就對不起來。
+2. **金額不做運算。** `costUsd` 是十進位字串，直接印。要合計讓後端 SQL 算。
+3. 逐筆表的每一列都連到那個 Run —— 查到哪筆錯之後，下一個動作一定是去看它。
+4. 逐筆表用游標翻頁（「載入更多」），不是一次抓全部。
+
+### 5.15 `containers-card.js` — 常駐容器（v0.6.1 新增，ZEN-015）
+
+在 Agent 詳情頁。列出這個 Agent 的常駐容器，可預熱／重啟／停止。
+
+1. **文案要說清楚容器會自己起、也會自己收。** 按鈕叫「預熱」不叫「啟動」——
+   叫啟動會讓人以為不按就不能用。空狀態要明說「沒有容器不是故障」，
+   否則每次回來看到空的都會以為出事。
+2. **`restartCount` 一定要顯示**（§2.2）。一直重啟的容器是壞掉了，
+   不是需要再重啟一次 —— 少了這個數字，那件事看起來跟「剛啟動」一模一樣。
+3. 狀態用 §2 的圓點 + 文字，**不只靠顏色**。五個狀態借用既有的圓點 class，
+   不自創（`STARTING→SCHEDULING`、`READY→SUCCEEDED`、`STOPPED→CANCELLED`…）。
+4. **只有在有容器處於 `STARTING` 時才輪詢**，其餘時間這張卡完全不發請求。
+5. 容器綁單一版本（P5），發新版會並存兩個，所以這裡是列表不是單筆。
+
+### 5.16 `agent-config-card.js` — 這個 Agent 的可變設定（v0.10.0 新增，ZEN-019）
+
+在 Agent 詳情頁。編輯 api-contract §2.6 的那份 JSON 文件。
+
+1. **第一句話就要說「這裡不是放密碼的地方」**，並指向下面那張機密卡。
+   這是整個 ZEN-019 最容易出事的誤用：使用者把 API key 貼進設定，
+   它會明文顯示在畫面上、明文送進沙盒，而且沒有任何東西會警告他。
+   **平台不掃描內容**（猜不準的警告比沒有警告更糟），所以這句文案就是唯一的防線。
+2. **編輯器是一個 `<textarea>` 裝 JSON**，不是動態鍵值表單。
+   理由：值可以是巢狀物件與陣列（契約允許任何 JSON），鍵值表單做不到那個自由度，
+   做半套會讓使用者以為不能用陣列。**在前端就驗 `JSON.parse`**，
+   錯誤指出行號，不要送出去換一個 `422` 回來。
+3. **送出是整份取代**（沒有 PATCH）。CTA 文案要寫「取代整份設定」，
+   確認視窗要說「這份文件會完整覆蓋現有設定」—— 使用者最容易以為是合併。
+4. 摘要列顯示鍵數量與 `updated_at`。**未設定時顯示 `{}` 而不是空白**，
+   因為「沒設定」與「設定成空的」在契約裡是同一件事，畫面不該暗示有差別。
+5. 生效範圍要寫在卡片上：「立刻對所有版本生效，下一筆 Run 就是新值；
+   已經在跑的 Run 不受影響」。
+6. 屬性名一律 `data-config-*` 前綴。
+
+五態：Loading 顯示「正在讀取設定…」；Empty 是 `{}` 與一句「還沒有任何設定」；
+Error 顯示 `error.code` 與可行動建議，JSON 語法錯誤時 `<textarea>` 標 `aria-invalid`；
+Partial / Streaming 不適用；Success 以 `aria-live` 宣告「已取代，下一筆 Run 生效」。
+
+### 5.17 `agent-secrets-card.js` — 這個 Agent 的機密（v0.10.0 新增，ZEN-019）
+
+緊鄰 §5.16。**兩張卡放在一起，是為了讓「哪個放哪裡」一眼看得出來。**
+
+1. **每一列只有名字、尾四碼、更新時間。** 沒有「顯示」按鈕，而且不該假裝有 ——
+   契約保證回應不含值（api-contract §2.7）。與 §5.6 的 LLM 憑證卡同一條規則。
+2. 值的輸入框 `type="password"`，**送出成功後立刻清空**，不留在 DOM 裡。
+3. **卡片要說「這些值不會進到沙盒」**，並說明用法：在出口白名單或寄件者設定裡
+   **以名字引用**它。不講的話，使用者會以為存了就能在 agent 程式碼裡讀到。
+4. **刪除時若後端回 `409`**（還被引用，api-contract §2.7 第 6 點），
+   錯誤訊息要直接列出 `details.referenced_by`，並提供跳到那張卡的連結。
+   只說「刪不掉」等於要使用者自己去猜是誰在用。
+5. 未設定 `ZENTRA_SECRET_KEY` 時後端回 `422`；文案要點出
+   「平台沒設定加密金鑰就不接受機密，它不會退而存明文」（同 §5.6）。
+6. 屬性名一律 `data-secret-*` 前綴。
+
+### 5.18 `egress-card.js` — 對外出口與寄信（v0.10.0 新增，ZEN-019）
+
+一張卡，上下兩塊：上面是主機白名單（api-contract §2.8），下面是寄件者（§2.9）。
+合成一張是因為它們回答同一個問題：**這個 Agent 能把東西送到哪裡去。**
+
+1. **空狀態要說出後果，不是說「沒有資料」**：「還沒有任何規則，這個 Agent 連不到任何
+   外部網站」。預設拒絕是這個功能最重要的性質，而空清單看起來跟「還沒載入」一樣。
+2. 每條規則顯示 host、methods（**`POST` 要用 `--warning` 色的標記標出來**，
+   因為它是「能把東西寫出去」的那一個）、`path_prefix`、以及有沒有帶認證。
+   **帶認證時顯示的是 secret 的名字，不是值。**
+3. 新增規則的表單：`methods` 預設只勾 `GET`，勾 `POST` 時**就地顯示一行說明**
+   「POST 可以把資料送到外部網站，只在需要時開啟」。
+   `auth_secret_name` 是下拉，選項來自 §5.17 的清單 —— **不讓使用者手打名字**，
+   打錯只會在下一次 Run 才失敗。清單為空時下拉 disabled 並指向 §5.17。
+4. 寄件者區塊**沒有密碼欄位**，只有一個指向 §5.17 的 secret 下拉。
+   旁邊一行說明 Gmail 要用「應用程式密碼」，不是登入密碼。
+5. `allowed_recipients` 是必填的多值輸入，空的時候 CTA 維持 disabled，
+   並說明理由：「沒有收件人白名單，一個迴圈寫錯就會用你的帳號寄出幾百封信」。
+6. 卡片底部連到 §5.19 的稽核清單：「看看這個 Agent 實際送出去了什麼」。
+7. 屬性名一律 `data-egress-*` 前綴。
+
+### 5.19 `egress-calls-panel.js` — 出口稽核（v0.10.0 新增，ZEN-019）
+
+與 §5.14 的用量面板並列，形狀刻意做成一樣（篩選列 + 逐筆表 + 「載入更多」）。
+
+1. **HTTP 與寄信在同一張表**，用 `kind` 欄位分（api-contract §2.10）。
+   兩個分頁會讓「這次 Run 往外送了什麼」要看兩個地方。
+2. **被擋下的呼叫要顯示，而且要顯眼**：`error.details.reason` 直接譯成人話
+   （`HOST_NOT_ALLOWED` → 「主機不在白名單」），並附「去加一條規則」的連結。
+   這是這張表最主要的用途 —— 出口設定錯了，只有這裡看得出來。
+3. 每一列連到那筆 Run（同 §5.14 第 3 點）。
+4. **`path` 不含 query string**（契約 §2.10 第 1 點不入庫），
+   畫面上不要暗示它是完整網址。
+5. 預設篩選是「最近 50 筆」，不自動輪詢。
+
 ### 5.11 按鈕（CSS class，不是元件）
 
 | class | 樣式 |
@@ -576,16 +849,17 @@ trigger 只接受 `API` 與 `MCP`：Console 建立的 Run 顯示 `API`，不得�
 
 ### 5.12 五頁組合與完整操作流程
 
-1. `/console/agents`：載入 `agent-list.js`；頁首「建立 Agent」開 `create-agent-dialog.js`。
+1. `/console/agents`：載入 `agent-list.js`（Agent 總覽，卡片格子）；頁首「建立 Agent」開 `create-agent-dialog.js`；整張卡點擊進入 Agent 詳情。
 2. 建立成功導向 `/console/agents/{agent_id}`。若尚無發布版本，頁面首先顯示註冊版本 CTA。
 3. `/console/agents/{agent_id}/versions/new`：`version-registration.js` 接收 semver + canonical image ref，
    確認後註冊並輪詢終態；PUBLISHED 後回 Agent 詳情。
 4. Agent 詳情由 `agent-version-list.js`、`endpoints-card.js`、`run-composer.js` 與 `recent-runs.js` 組成。
    首屏順序是 metadata → 版本 → 呼叫區 → endpoints → 最近 Runs；呼叫區只在有 PUBLISHED version 時可用。
+   metadata 區必須顯示完整 `agent_id` 並附 Copy —— v0.11.0 起總覽卡片不放 Agent ID，這裡是 Console 上唯一能複製它的地方。
 5. Run 建立成功導向 `/console/runs/{run_id}`，沿用 `streaming-output.js` 與 `run-timeline.js`；
    `/console/runs` 仍提供跨 Agent 查找與篩選。
 
-同一頁最多一個 primary CTA：Agent 列表是「建立 Agent」、version-new 是「註冊並驗證」、Agent 詳情有可呼叫
+同一頁最多一個 primary CTA：Agent 總覽是「建立 Agent」、version-new 是「註冊並驗證」、Agent 詳情有可呼叫
 版本時是「執行 Agent」。其他動作用 secondary / ghost，避免 metadata、發布與執行三種操作互相競爭。
 
 ---
@@ -611,6 +885,13 @@ apps/console/
         streaming-output.js  run-timeline.js  endpoints-card.js
         llm-credential-card.js       ← §5.6（ZEN-012）
         run-graph.js                 ← §5.7（ZEN-014）
+        api-keys-card.js             ← §5.13（ZEN-015）
+        usage-panel.js               ← §5.14（ZEN-015）
+        containers-card.js           ← §5.15（ZEN-015）
+        agent-config-card.js         ← §5.16（ZEN-019）
+        agent-secrets-card.js        ← §5.17（ZEN-019）
+        egress-card.js               ← §5.18（ZEN-019）
+        egress-calls-panel.js        ← §5.19（ZEN-019）
         create-agent-dialog.js  agent-list.js  agent-version-list.js
         version-registration.js  run-composer.js  recent-runs.js
       pages/
@@ -691,6 +972,13 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.11.0 | 2026-10-08 | **§5.7 Agent 總覽由清單改為卡片格子**（直接取代，不做切換）：卡片 = 名稱首字方塊（灰階）+ name + 兩行描述 + 最新版本 + 更新時間；整張卡以名稱 `<a>` 加 `::after` 擴大點擊範圍，不把卡片包進 `<a>`。**Agent ID 從總覽拿掉**，只留在詳情頁 metadata（§5.12 第 4 點明文要求附 Copy）。批次刪除改成「選取模式」：勾選框平常隱藏，按「選取」才出現，選取模式下點卡片 = 切換勾選；ADR-0013 四條規則不變。五態改寫成卡片版（骨架卡、Partial 追加一排骨架卡）。**新增 token**（§1.3）：`--card-min-width: 280px`、`--monogram-size: 40px`。檔頭畫面表與 §5.6 / §5.12 的「列表」用語改為「總覽」。api-contract 不動 | @architect |
+| v0.10.0 | 2026-09-30 | **新增 §5.16–§5.19**（[ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) / ZEN-019）：`agent-config-card.js`（可變設定，整份取代）、`agent-secrets-card.js`（機密，只看得到尾四碼）、`egress-card.js`（主機白名單 + 寄件者）、`egress-calls-panel.js`（出口稽核）。§6.1 檔案清單同步。**沒有新 token**。最重要的兩條文案要求：設定卡要明說「這裡不是放密碼的地方」，白名單空狀態要說「連不到任何外部網站」而不是「沒有資料」 | @architect |
+| v0.9.0 | 2026-09-30 | §5.1 色彩模式切換鈕改為純圖示（`i-sun` / `i-moon`），§3 sprite 增加這兩個圖示 | @builder |
+| v0.8.0 | 2026-09-29 | **§5.7 加批次選取與刪除**（ADR-0013）；Runs 列表拆成 Agent 名稱與 Agent ID 兩欄 | @architect |
+| v0.7.0 | 2026-09-29 | **新增淺色模式**：§1.1 加 `:root[data-theme="light"]` 覆寫區塊（只覆寫顏色，29 個 token 全部有值）與 `color-scheme`；§5.1 加頂部列的切換鈕。深色仍是預設，沒存過偏好時跟隨作業系統 | @architect |
+| v0.6.1 | 2026-09-28 | **新增 §5.15 `containers-card.js`**（ZEN-015）：常駐容器的預熱／重啟／停止與狀態。§6.1 檔案清單同步 | @architect |
+| v0.6.0 | 2026-09-28 | **新增 §5.13 `api-keys-card.js` 與 §5.14 `usage-panel.js`**（ZEN-015）：下游 API key 的發放／撤銷，以及 per-key 用量與逐筆除錯。§6.1 檔案清單同步。沒有新 token | @architect |
 | v0.1.0 | 2026-09-20 | 初版 | @ui-designer |
 | v0.2.0 | 2026-09-20 | 改採 Stock-Insight-Chat 深色單色設計語言；**移除全部 emoji 圖示**，狀態改用圓點 + 文字；補齊尺寸/比例 token（控制項高度、圖示尺寸、版面寬度） | @ui-designer |
 | v0.3.0 | 2026-09-20 | 依 ADR-0005 降維：Console 收斂成五個畫面；移除 `<AgentWizard>` 與 `<FlowCanvas>`；新增 `<VersionUpload>` 與 `<EndpointsCard>`。設計 token 與無障礙底線不變 | @ui-designer |

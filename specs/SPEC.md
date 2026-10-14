@@ -7,10 +7,20 @@
 
 | 欄位 | 值 |
 |---|---|
-| Spec 版本 | `v0.4.1` |
+| Spec 版本 | `v0.5.0` |
 | 狀態 | `DRAFT` |
-| 最後更新 | 2026-09-23 |
+| 最後更新 | 2026-09-30 |
 | 擁有者 | `@architect` |
+
+> **v0.5.0 依 [ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) 新增
+> per-agent 的設定、機密與對外能力**（ZEN-019）。三件事拆成三層，性質不同所以不合併：
+> **設定**（可變、明文、隨每筆 Run 進 `ctx.config`）、**機密**（Fernet 加密、**永遠不進沙盒**，
+> 沙盒只拿得到名字）、**能力**（白名單 HTTP 代打 + 寄信，由 Internal Gateway 執行，見 §7.4）。
+> **P1／P2／P3／P5 不變，P4 的字面一條沒鬆**（沙盒網段仍 `internal: true`、
+> 沙盒 env 仍是精確集合、機密仍不進沙盒）——
+> **但 P4 的目的被削弱了**：通用出口 proxy 是一條真正的外洩通道，
+> 白名單擋得住「送到哪」，擋不住「送了什麼」。這個取捨由使用者裁決，
+> 定價與緩解措施寫在 ADR-0014 §6，**讀那一段再判斷要不要沿用**。
 
 > **v0.4.1 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) 撤回 tar 上傳，
 > 改為使用者在平台主機上直接 `docker push`。**
@@ -97,7 +107,7 @@ MVP 沒有「平台組裝者」與「平台管理員」這兩個角色——它�
 架構圖見 [`docs/architecture/detailed-architecture.md`](../docs/architecture/detailed-architecture.md)。
 
 ```
-L0 接入 + 控制   api (FastAPI)  REST · MCP · SSE · Console 靜態檔 · Internal Gateway · Agent Registry
+L0 接入 + 控制   api (FastAPI)  REST · MCP · SSE · Console 靜態檔 · Internal Gateway（LLM 代打 · 出口代打 · 寄信）· Agent Registry
 L1 派工          worker (Celery, Redis broker)  q.run · q.build
 L2 執行          Sandbox Manager → Sandbox（Docker，一 Run 一盒）
 L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daemon image cache
@@ -120,6 +130,12 @@ L3 資料          PostgreSQL · Redis · **內部 OCI Registry** · Docker daem
    理由很具體：`app` 同時掛在 `zentra-net` 與 `zentra-sandbox-net` 上，
    `app` 上任何「幫你查 registry」的端點都會變成沙盒觸達 Registry 的跳板，直接打穿 P4。
    **Registry 對沙盒不可達，要靠「沒有任何一條路可以到」保證，不是靠沙盒不知道位址。**
+5. **出口代打是從 `app` 發出去的，所以 SSRF 防護在 `app` 這一側**（v0.5.0，§7.4）。
+   `app` 同時掛在 `zentra-net` 與 `zentra-sandbox-net` 上，一個「幫你打這個網址」的端點
+   如果不檢查解析結果，就等於把 `app` 變成沙盒觸達 `postgres` / `redis` / `registry` 的跳板。
+   因此出口 proxy **必須**擋掉解析到 private / loopback / link-local / metadata 位址的目標，
+   而且**不跟隨 redirect**（跟隨等於讓對方決定下一跳）。這是硬規則 4 的同一個理由，
+   換到另一條路徑上。
 
 ## 6. 技術選型（已定案，變更需開 ADR）
 
@@ -284,6 +300,44 @@ Internal Gateway 負責：換上真金鑰 → 呼叫供應商 → 計量 token �
 
 **沙盒內禁止**自建 LLM client、自行 `requests` 打外網（網段沒有對外路由，會直接失敗）。
 
+### 7.4 沙盒的設定、機密與對外呼叫（v0.5.0，[ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md)）
+
+三件事性質不同，所以是三層，**不合併**（完整契約見 [`api-contract.md`](./api-contract.md) §2.6–§2.10、§4.1–§4.4）：
+
+| 層 | 存哪裡 | 到得了沙盒嗎 |
+|---|---|---|
+| **設定** | `agent_settings`，明文 JSON，`agent_id` 為鍵 | **會** —— 每筆 Run 隨 bootstrap／工作項送進 `ctx.config` |
+| **機密** | `agent_secrets`，**Fernet 加密**（要解得回來才能登入 SMTP），`(agent_id, name)` 為鍵 | **永遠不會**。沙盒只拿得到 `secret_names` 名字清單 |
+| **能力** | `agent_egress_rules`（主機白名單）、`agent_email_sender` | 規則不進沙盒；沙盒只看得到請求成不成功 |
+
+三層都**綁 Agent 不綁版本**，與 LLM 憑證同一個結構與同一組理由（[ADR-0011](./adr/ADR-0011-per-agent-llm-credentials.md)）：
+發新版自動繼承，更新則所有版本立刻一起變。刪 Agent 時三層全部硬刪（[ADR-0013](./adr/ADR-0013-hard-delete-agents-and-images.md)）。
+
+**設定不走環境變數**（這是實作最容易走偏的地方）：
+
+1. 沙盒 env 的精確集合檢查（`_validate_environment()`）**不放寬**，
+   這次**不新增任何環境變數**。那條檢查是 P4 的第一道關。
+2. 常駐容器一個容器服務多筆 Run（[ADR-0012](./adr/ADR-0012-resident-agent-container.md)）：
+   設定寫進 env 就做不到「改完下一筆生效」，併發時還會串到別人身上。
+3. 所以設定掛在 `ctx.config`，**每筆 Run 重新帶，兩條派工路徑都要帶** ——
+   bootstrap（一次性沙盒）與工作項（常駐容器）。**只改一條等於沒改。**
+4. `config` 是頂層欄位，**不得合併進 `manifest`**：manifest 是版本的不可變內容。
+
+**對外呼叫一律經 Internal Gateway 代打，沙盒仍然沒有對外路由**：
+
+- `POST /internal/egress/request`：白名單內的 `https` GET／POST。
+  預設拒絕、無萬用字元、不跟隨 redirect、擋內網位址、**沙盒不得自帶認證 header**
+  （要帶認證由規則指名一個 secret，平台注入）、有大小與次數上限。
+- `POST /internal/notify/email`：SMTP 寄信。密碼是該 Agent 的一個 secret，
+  收件人必須在 `allowed_recipients` 白名單內。
+- **兩者都要 run token，每一次都寫一列 `egress_calls`**（含被擋下的）。
+  只靠 `run_id` 就要還原得出「這次 Run 往外送了什麼」。
+
+> ⚠️ **通用出口 proxy 是一條真正的外洩通道。** 白名單擋得住「送到哪」，
+> 擋不住「送了什麼」—— `GET` 的 query string 就是資料。GET-only 與大小上限
+> 只是壓低頻寬，不是消除通道。這個取捨成立的前提是交付條件 §1.1 的
+> **「只跑自己信得過的程式碼」**。那條變了就回去讀 ADR-0014 §6 與「何時該重新檢討」。
+
 ## 8. 對外契約（Contract）
 
 > **前後端與 SDK 都以此為準。** 完整定義見 [`specs/api-contract.md`](./api-contract.md)。
@@ -303,8 +357,17 @@ def build(ctx: ZentraContext) -> StateGraph:
     """必須回傳未 compile 的 StateGraph；平台負責 compile 並注入事件 hook。"""
     ...
 ```
-MVP 的 `ctx` 提供：`ctx.llm()`、`ctx.logger`、`ctx.emit()`、`ctx.config`。
-**不提供** `ctx.tools`、`ctx.knowledge`、`ctx.secrets` —— 它們在 §11 的 MVP 外。
+MVP 的 `ctx` 提供：`ctx.llm()`、`ctx.logger`、`ctx.emit()`、`ctx.config`，
+以及 v0.5.0 新增的 `ctx.secret_names`、`ctx.http`、`ctx.send_email()`。
+**不提供** `ctx.tools`、`ctx.knowledge`、`ctx.secrets`（取值）—— 前兩個在 §11 的 MVP 外，
+第三個是刻意**永遠不做**（機密不進沙盒，見 §7.4）。
+
+| ctx 能力 | 是什麼 | 要注意的 |
+|---|---|---|
+| `ctx.config` | 這個 Agent 的可變設定，dict（api-contract §2.6） | **v0.5.0 之前它永遠是 `{}`** —— 有 property 但沒有人往裡面放東西。現在由 bootstrap／工作項帶進來。**不要在 `build()` 裡對某個鍵做硬性要求**：validation 通過之後設定還會變，少一個鍵會讓每一筆 Run 都在 build 階段死掉，而版本狀態仍是 `PUBLISHED`。用 `.get()` 帶預設值，或在節點裡讀。**validation 沙盒一律用空的 `config` 驗證**（api-contract §4.1 第 4 點、[ADR-0014 修訂 R1](./adr/ADR-0014-per-agent-config-secrets-and-egress.md)），所以違反這條規則的 agent 會在**發布時**就失敗，而不是等使用者哪天清掉設定 |
+| `ctx.secret_names` | 這個 Agent 設了哪些機密的**名字**，唯讀集合 | 只有名字，**沒有值**。用途是 fail fast：第一個節點就說得出「缺 `SMTP_PASSWORD`」，而不是跑完整段分析才在最後一步失敗 |
+| `ctx.http` | 經 Gateway 代打的對外 HTTP（api-contract §4.2） | 回的是**信封**：上游狀態碼在 `status` 裡，不是例外。所以「主源失敗換備援」寫得出來。不要自己 `import requests`，網段不通 |
+| `ctx.send_email()` | 經 Gateway 寄信（api-contract §4.4） | 寄件者、帳號、密碼、收件人白名單都在平台側。回 `202` 表示 SMTP 收下了，不表示對方讀到了。**不冪等**，重送就是再寄一封 |
 
 **簽章是契約的一部分（v0.4.0 裁決 Q-008）**：`build` 必須接受**且只接受一個位置參數**，
 參數名稱不限，回傳未 compile 的 `StateGraph`。`validate` mode 必須在呼叫前檢查 arity，
@@ -372,7 +435,9 @@ TIMEOUT / SANDBOX_ERROR / USER_CODE_ERROR 皆歸入 FAILED，以 error.code 區�
 | Run 最長執行 | **15 分鐘硬上限**（wall-clock） | 取消 `q.agent.long` 與 6 小時 tier |
 | 可用性 | **不設目標** | 單機即單點故障。`restart: unless-stopped` + 健康檢查，主機重開 = 停機。**誠實不承諾，而不是承諾做不到的數字** |
 | 資料隔離 | 單租戶。資料表留 `owner_id` 欄位但**不做 RLS** | 多租戶在 MVP 外 |
-| 稽核 | 所有 LLM 呼叫 100% 留存於 `llm_calls` | 沙盒沒有其他出口，這就是全部的外網活動 |
+| 稽核 | 所有 LLM 呼叫 100% 留存於 `llm_calls`；**所有對外 HTTP 與寄信 100% 留存於 `egress_calls`，含被擋下的**（v0.5.0） | v0.4.x 時「沙盒沒有其他出口」，`llm_calls` 就是全部的外網活動。**v0.5.0 之後不再是** —— 多了 §7.4 的兩條出口，所以多一張表，兩張合起來才是全部。**被擋下的也要記**：少了它，「為什麼我的 agent 連不出去」在畫面上沒有任何線索 |
+| 出口上限（v0.5.0） | request ≤ 64 KiB、response ≤ 1 MiB、單次逾時 ≤ 15s、每筆 Run ≤ 100 次；寄信每 Run ≤ 5 封、每 Agent 每小時 ≤ 60 封 | **超量不截斷，直接當錯誤**。次數上限是為了不被交易所封 IP（被封的是整台主機）與不被 Gmail 鎖帳號。全部可由環境變數調整，預設值寫在 api-contract §4.2／§4.4 |
+| `egress_calls` 保留期 | **不設**，跟 `llm_calls` 一樣只增不刪 | 一支每分鐘抓一次行情的 agent 一天就是上千列。**這是已知會長大的東西**，保留期與彙總記在 BOARD 待辦，不在 ZEN-019 範圍 |
 | image 進場 | **平台不接收 image 檔案**，沒有上傳端點、沒有大小上限、沒有續傳問題 | v0.4.1 撤回 v0.4.0 的 tar 上傳；image 經 `docker push` 進 Registry，layer 去重與重試由 Docker 負責 |
 | 內部 Registry 容量 | 上限＝主機磁碟。**無自動 GC、無配額系統，責任在維運者** | 平台不在 push 路徑上，**不做預檢也沒有訊號**：磁碟滿了是使用者的 `docker push` 在 client 端失敗，Console 什麼都不會顯示。已 `PUBLISHED` 的版本不受影響（§6.1） |
 
@@ -387,7 +452,9 @@ push OCI image（外部 Registry 或主機上的 localhost:6000）→ 以 digest
 
 具體：OCI image 型 Agent、**單一進場路徑（JSON digest 註冊）＋ 內部 Registry 讓使用者同機 push**、
 版本發布與 digest 凍結、Celery 派工、Docker 沙盒四層隔離、
-Internal Gateway（LLM 代理 + 事件回收）、REST + MCP 雙門面、Run 觀測、Console 五個畫面（原生 HTML/CSS/JS）、`zentra` CLI。
+Internal Gateway（LLM 代理 + 事件回收 + **對外 HTTP 代打 + 寄信**，v0.5.0）、
+**per-agent 設定／機密／出口白名單**（v0.5.0，§7.4）、
+REST + MCP 雙門面、Run 觀測、Console 五個畫面（原生 HTML/CSS/JS）、`zentra` CLI。
 
 ### MVP 外（架構留位，不寫程式碼）
 
@@ -398,6 +465,15 @@ Python bundle/venv 發布、**Dockerfile 上傳與遠端 build service**、
 內部 Registry 的 TLS / 認證 / 自動 GC / 配額 / 自動備份 / 遠端（非同機）push、
 版本或 image 的刪除功能、**平台接收 image 檔案（`docker save` tar 上傳）**、
 斷點續傳與分塊上傳、Registry 瀏覽 UI 或任何代理 Registry HTTP 端點的平台功能。
+
+v0.5.0 追加在 MVP 外的（[ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) 明確否決或延後）：
+**沙盒可取值的 `ctx.secrets`**（永久否決，不是延後）、
+**把設定注入沙盒環境變數**（永久否決）、
+出口內容檢查／DLP、設定與機密的版本史、
+交易所專用端點與行情快取、
+出口白名單的萬用字元主機／跟隨 redirect／非 `https`／`PUT`・`DELETE`／沙盒自帶 header
+（這四項各自都要回頭改 ADR-0014，不得在 code review 裡順手放行）、
+`egress_calls` 的保留期與彙總。
 
 > v0.4.0 把「image tar 直傳」與「平台內建 OCI Registry」移出本清單；
 > **v0.4.1 把「image tar 直傳」放回 MVP 外**（[ADR-0009 R2](./adr/ADR-0009-internal-registry-image-upload.md) 撤回它），
@@ -421,6 +497,7 @@ Python bundle/venv 發布、**Dockerfile 上傳與遠端 build service**、
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.5.0 | 2026-09-30 | 依 [ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) 新增 **per-agent 設定／機密／對外能力三層**（ZEN-019）：新增 §7.4；§5 新增分層硬規則 5（出口代打的 SSRF 防護在 `app` 這一側）；§8.1 的 ctx 能力表補上 `ctx.config` **從空殼變成真的會帶值**，新增 `ctx.secret_names` / `ctx.http` / `ctx.send_email()`，並把 `ctx.secrets`（取值）標為**永久不做**；§10 新增 `egress_calls` 稽核、出口上限與保留期三列，並修正「沙盒沒有其他出口」這個已不再成立的前提；§11 兩張清單各自更新。契約對應 api-contract v0.12.0。**P1／P2／P3／P5 不變，P4 的字面一條沒鬆**（沙盒網段仍 `internal: true`、env 仍是精確集合、機密仍不進沙盒）；**但 P4 的目的被削弱**，定價見 ADR-0014 §6 | @architect |
 | v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的 tar 上傳路徑**，改為使用者在平台主機上直接 `docker push localhost:6000/<repo>:<tag>` 後以既有 JSON 端點註冊（**只限同機**，不綁 `0.0.0.0`，不加 TLS/認證）。移除 multipart、`LOAD`/`PUSH` stage、`artifact.origin`/`image_origin`、digest 三欄 nullable 化、`uploads` volume、2 GiB 上限、磁碟餘裕的 `QUOTA_EXCEEDED`；digest 三欄恢復 `NOT NULL`。新增：§5 硬規則 4（平台不得代理 Registry HTTP 端點）、§6.1 容量與 GC 責任歸屬與 `--delete-untagged` 禁令、§7.1 `image_ref` 正規化護欄。內部 OCI Registry（5 個長駐服務）**保留**。v0.4.0 的新增從未實作，**相對於實際跑著的系統是零變更**。P1–P5 與 `version_id` 語意不變 | @architect |
 | v0.4.0 | 2026-09-22 | 依 [ADR-0009](./adr/ADR-0009-internal-registry-image-upload.md) 新增 image tar 上傳路徑與**內部 OCI Registry**（長駐服務 4 → 5，修訂 ADR-0005 的服務清單）；明定兩條路徑的匯流點與「`origin` 不得影響執行期行為」；把 P5 可重現性寫成不變式（`RepoDigests` 非空 + DB CHECK）；裁決 Q-008（`build(ctx)` 簽章）、Q-009（SDK 自行宣告依賴）、Q-010（官方 base image）。`version_id` 語意、Run 狀態機、錯誤 code、沙盒隔離與 P1–P5 均未變 | @architect |
 | v0.3.1 | 2026-09-22 | 裁決 Run `trigger` 為可信的接入協定：REST 與 Console 共用 `/v1`，一律為 `API`；FastMCP handler 為 `MCP`；移除無法可靠判定的 `CONSOLE`。不新增 client 可控 discriminator | @architect |

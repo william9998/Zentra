@@ -87,6 +87,40 @@ def _json_from(text: str) -> dict[str, Any]:
         return {}
 
 
+def _text_of(reply) -> str:
+    """把模型回應轉成**純文字**。
+
+    ## 為什麼不能直接 str(reply.content)
+
+    開了 Responses API 的網路搜尋之後，`content` 不是字串，是**一串內容區塊**：
+
+        [{"type": "reasoning", "encrypted_content": "gAAAAA…（好幾 KB 的 base64）"},
+         {"type": "web_search_call", "action": {...}},
+         {"type": "output_text", "text": "← 真正的答案在這裡"}]
+
+    `str()` 會把整個 list 的 Python repr 印出來。結果不只是難看：
+    那幾段加密的 reasoning 有好幾 KB，會把真正的答案**擠到截斷長度之外**，
+    於是下游拿到一堆亂碼，判定「資料不足」，而模型其實有好好回答。實際踩過。
+
+    ## 為什麼不用 `AIMessage.text`
+
+    它只認 `type == "text"`，**不認 `output_text`** —— 而 Responses API 用的
+    正是後者，所以那條路會回空字串，失敗得同樣安靜。
+    """
+    content = getattr(reply, "content", reply)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") in ("text", "output_text"):
+                parts.append(str(block.get("text") or ""))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
 @agent(
     name="stock-agent",
     version="1.0.0",
@@ -167,12 +201,17 @@ def build(ctx) -> StateGraph:
             ):
                 try:
                     reply = await llm(**attempt).ainvoke(prompt)
-                    return str(reply.content)
+                    text = _text_of(reply)
+                    if not text.strip():
+                        # 只回了 reasoning 與搜尋紀錄、沒有文字 —— 換下一種形狀再試。
+                        # 這裡不能當成「成功但沒內容」，那會讓 assess 誤判成查不到。
+                        raise ValueError("回應裡沒有任何文字區塊")
+                    return text
                 except Exception as exc:       # noqa: BLE001 - 供應商差異，逐一退化
                     ctx.logger.warning("帶搜尋的呼叫失敗，換一種形狀再試",
                                        detail=f"{type(exc).__name__}: {exc}"[:300])
         reply = await llm().ainvoke(prompt)
-        return str(reply.content)
+        return _text_of(reply)
 
     # ── 節點 1：判斷在問什麼 ────────────────────────────────────────
 

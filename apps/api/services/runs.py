@@ -21,7 +21,14 @@ async def create_run(
     body: CreateRunRequest,
     *,
     trigger: RunTrigger,
+    api_key_id: UUID | None = None,
 ) -> tuple[Run, AgentVersion]:
+    """建立一筆 Run。
+
+    `api_key_id` 是哪一把下游 key 觸發的（ZEN-015）。**Console 發起時是 None**，
+    那不是錯誤：MVP 的 Console 沒有 key，契約 §0 也還沒要求 `/v1` 認證。
+    這個欄位買到的是「用量歸戶」，不是「擋住未授權的人」。
+    """
     agent = await agents.load_agent(session, agent_id)
     version = await agents.resolve_published_version(session, agent.id, body.version)
     selected = agents.entrypoint(version, body.entrypoint)
@@ -33,6 +40,7 @@ async def create_run(
         status=RunStatus.QUEUED, trigger=trigger,
         entrypoint=body.entrypoint, input=body.input,
         timeout_seconds=body.config.timeout_seconds, celery_task_id=str(run_id),
+        api_key_id=api_key_id,
     )
     session.add(run)
     await session.flush()
@@ -65,3 +73,11 @@ async def save_result(session: AsyncSession, run_id: UUID, body: SandboxResult) 
         run.usage = usage
         run.result_received_at = datetime.now(UTC)
     await session.commit()
+
+    # 常駐容器（ZEN-015）沒有「容器退出」這個訊號，所以沒有 worker 在等它。
+    # 結果進來就是終態的觸發點 —— 但**裁決權仍在 worker**（契約 §4：
+    # `/result` 只保存，不轉狀態）。Gateway 自己轉的話，沙盒等於能宣告自己成功。
+    if run.container_id is not None:
+        from apps.api.tasks import dispatch_finalize
+        import asyncio
+        await asyncio.to_thread(dispatch_finalize, str(run_id))

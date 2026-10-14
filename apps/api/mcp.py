@@ -33,6 +33,7 @@ from apps.api.db import SessionLocal
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
 from apps.api.schemas import CreateRunRequest
+from apps.api.services import agent_api_keys
 from apps.api.services import agents as agents_service
 from apps.api.services.runs import create_run
 from apps.api.tasks import dispatch_run
@@ -54,6 +55,8 @@ class _EntrypointTool(Tool):
 
     agent_id: str
     entrypoint_name: str
+    #: 哪一把下游 key 觸發的（ZEN-015）。沒帶 key 就是 None，與 REST 同語意。
+    api_key_id: Any = None
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
         args = dict(arguments)
@@ -66,6 +69,7 @@ class _EntrypointTool(Tool):
                 self.agent_id,
                 CreateRunRequest(entrypoint=self.entrypoint_name, input=args),
                 trigger=RunTrigger.MCP,
+                api_key_id=self.api_key_id,
             )
             run_id = str(run.id)
 
@@ -105,7 +109,7 @@ def _terminal_result(run: Any, run_id: str) -> ToolResult:
     raise ToolError(f"{code}: {message} (run_id={run_id})")
 
 
-def _build_server(agent_id: str, version: Any) -> FastMCP:
+def _build_server(agent_id: str, version: Any, api_key_id: Any = None) -> FastMCP:
     """把該版本的 entrypoints 轉成 MCP tools。"""
     server = FastMCP(name=f"zentra-agent-{agent_id}")
     for tool in agents_service.mcp_tools(version):
@@ -116,8 +120,23 @@ def _build_server(agent_id: str, version: Any) -> FastMCP:
             output_schema=tool["outputSchema"],
             agent_id=agent_id,
             entrypoint_name=tool["name"],
+            api_key_id=api_key_id,
         ))
     return server
+
+
+def _bearer(scope: dict) -> str:
+    """從 ASGI scope 取出 Bearer token。
+
+    這裡沒有 FastAPI 的依賴注入可用（MCP 是掛上去的原生 ASGI app），
+    所以自己解 header。規則與 `deps.optional_agent_api_key` 必須一致，
+    否則同一把 key 在 REST 能用、在 MCP 不能用。
+    """
+    for name, value in scope.get("headers", []):
+        if name.lower() == b"authorization":
+            scheme, _, token = value.decode("latin-1").partition(" ")
+            return token if scheme.lower() == "bearer" and token else ""
+    return ""
 
 
 class _McpDispatch:
@@ -152,7 +171,9 @@ class _McpDispatch:
             async with SessionLocal() as session:
                 agent = await agents_service.load_agent(session, agent_id)
                 version = await agents_service.resolve_published_version(session, agent.id, None)
-                server = _build_server(str(agent.id), version)
+                # 認證與 REST 同一套規則：有帶就必須有效，沒帶預設放行（ZEN-015）。
+                key_id = await _resolve_key(session, agent, _bearer(scope))
+                server = _build_server(str(agent.id), version, key_id)
         except ZentraError as exc:
             return await _plain(send, exc.http_status, exc.body())
 
@@ -167,6 +188,29 @@ class _McpDispatch:
         # 這個 app 的 lifespan 必須跑起來，session manager 才會初始化
         async with app.router.lifespan_context(app):
             await app(inner, receive, send)
+
+
+async def _resolve_key(session: Any, agent: Any, presented: str) -> Any:
+    """把 Bearer token 換成 `api_key_id`。與 REST 的判斷一字不差。"""
+    from apps.api.config import get_settings
+
+    if not presented:
+        if get_settings().require_agent_api_key:
+            raise ZentraError(
+                ErrorCode.UNAUTHENTICATED,
+                "this platform requires an agent API key: send Authorization: Bearer <key>",
+                401,
+            )
+        return None
+    row = await agent_api_keys.resolve(session, presented)
+    if row is None:
+        raise ZentraError(
+            ErrorCode.UNAUTHENTICATED, "the agent API key is invalid or revoked", 401)
+    if row.agent_id != agent.id:
+        raise ZentraError(
+            ErrorCode.PERMISSION_DENIED, "this API key belongs to a different agent", 403)
+    await agent_api_keys.touch(session, row)
+    return row.id
 
 
 async def _plain(send: Any, status: int, body: dict) -> None:

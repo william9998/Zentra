@@ -76,3 +76,30 @@ _（尚未執行首次稽核。建議在 ZEN-003 與 ZEN-004 完成後執行第�
 ### G1 裁定
 
 **G1 不通過。** P1～P5 沒有直接紅旗，但上述 `ZEN000-DRIFT-01`、`02`、`03` 是 ZEN-000 契約／核心流程的未修正偏離，`04`、`05` 使目前 acceptance 結果不可作為一致性證據。完整四層隔離的未覆蓋項目（gVisor／容器逃逸／L3 壓力測試）依 ZEN-003 的範圍標為未驗證或 skipped，沒有被本次誤判為通過。
+
+## 稽核 2026-10-09 — Agent 總覽卡片格子（ui-contract v0.11.0 §5.7）
+
+範圍：`apps/console/static/js/components/agent-list.js`、`static/js/pages/agents.js`、`static/css/layout.css`、`static/css/tokens.css`（工作區未提交版本）。
+
+### 🔴 違反核心立場
+
+- 無。
+
+### 🟡 契約漂移
+
+- `apps/console/static/js/components/agent-list.js:54-59` `monogramOf()` 對**所有**有大小寫的文字轉大寫（希臘、西里爾等，例：`δ` → `Δ`），§5.7 寫的是「拉丁字母轉大寫」。
+  → 影響很小。二選一：契約改成「有大小寫的字母轉大寫」，或程式只對 `\p{Script=Latin}` 轉大寫。
+
+### 🔵 規格缺漏（程式碼比規格完整，該補規格）
+
+- `agent-list.js:287` 刪除**全部成功**（選取清空）後自動離開選取模式。§5.7 只寫了「取消／重新載入清空選取」與「失敗的保留勾選」，沒寫全部成功後的模式。行為合理，建議補進 §5.7 選取模式那段。
+- `layout.css` `.agent-card-name` 明確用 `--font-sans`，蓋掉 `base.css` 對 `h3` 的 `--font-display`。§5.7 名稱列沒規定字族，§1.2 說 display「只用於標題與品牌」，卡片名稱算不算標題沒寫清楚。建議在 §5.7 名稱列補上字族。
+- `layout.css` `.sel-list--tall { max-height: calc(var(--space-16) * 3) }` 用間距 token 乘出確認視窗名單的最大高度（192px）；`.agent-toolbar input[type="search"]` 借用 `--card-min-width` 當 flex-basis。都沒寫死數字，但都是把 token 挪作他用。若要嚴格遵守「不准自創尺寸」，應在 §1.3 補一個對應 token 或在 §5.7 註明。
+
+### ✅ 本次確認一致
+
+- 確認視窗列出**全部**已選名字（含被搜尋藏起來的），符合 v0.11.0 §5.7 規則 2 的明文要求；舊版只列 12 個的做法反而不合新契約。
+- 一般模式下每張卡唯一的互動元素是 `<h3>` 裡的 `<a>`，卡片沒被包進 `<a>`；選取模式下卡內沒有 `<a>`，點卡片描述（真實滑鼠座標點擊）＝切換勾選且不導頁。
+- 五態（Loading 6 張骨架卡、Empty／搜尋零筆、Error 不留舊卡、Partial 追加欄數張骨架卡、Success）用 headless Chrome 攔截 `GET /v1/agents` 逐一確認。
+- 卡片沒有陰影、漸層或彩色；格子用 `repeat(auto-fill, minmax(min(var(--card-min-width), 100%), 1fr))`，沒有 media query；360px 寬退成一欄、沒有水平捲動；`tokens.css` 的兩個新 token 與 §1.3 一致。
+- agent-list.js 的 `innerHTML` 只寫入不含插值的 `FRAME` 常數，來自 API 的字串全走 `textContent`。

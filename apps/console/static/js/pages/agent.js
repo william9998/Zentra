@@ -1,4 +1,10 @@
 import { ApiError, ERROR_CODE, VERSION_STATUS, getAgent } from '../api.js';
+import { mount as mountConfigCard } from '../components/agent-config-card.js';
+import { mount as mountSecretsCard } from '../components/agent-secrets-card.js';
+import { mount as mountEgressCard } from '../components/egress-card.js';
+import { mount as mountEgressCalls } from '../components/egress-calls-panel.js';
+import { mount as mountKeysCard } from '../components/api-keys-card.js';
+import { mount as mountContainers } from '../components/containers-card.js';
 import { mount as mountVersionList } from '../components/agent-version-list.js';
 import { mount as mountDeleteDialog } from '../components/delete-agent-dialog.js';
 import { mount as mountEditDialog } from '../components/edit-agent-dialog.js';
@@ -6,6 +12,7 @@ import { mount as mountEndpoints } from '../components/endpoints-card.js';
 import { mount as mountCredential } from '../components/llm-credential-card.js';
 import { mount as mountRecentRuns } from '../components/recent-runs.js';
 import { mount as mountComposer } from '../components/run-composer.js';
+import { mount as mountUsagePanel } from '../components/usage-panel.js';
 import { createCopyButton, createErrorBox, createTimers, el, formatDateTime } from '../dom.js';
 import { mount as mountShell } from '../shell.js';
 
@@ -50,6 +57,38 @@ const PAGE = `
         發新版本不用重填，更換則所有版本立刻一起變。沒設定就用平台預設金鑰。
       </p>
       <div data-credential></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">設定</h2></div>
+      <div data-config></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">機密</h2></div>
+      <div data-secrets></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">對外出口與寄信</h2></div>
+      <div data-egress></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">出口稽核</h2></div>
+      <div data-egress-calls></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">常駐容器</h2></div>
+      <div data-containers></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">下游 API key</h2></div>
+      <div data-keys></div>
+    </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">用量與除錯</h2></div>
+      <p class="field-hint">
+        用量按 key 歸戶。沒帶 key 的呼叫記成<strong>未歸戶</strong> ——
+        那不是錯誤，是 Console 自己發起的。
+      </p>
+      <div data-usage></div>
     </section>
     <section class="card">
       <div class="card-header"><h2 class="card-title">最近 Runs</h2></div>
@@ -100,6 +139,31 @@ function main() {
     onCompose() {
       app.querySelector('#run-composer').scrollIntoView({ block: 'start' });
     },
+  });
+  // key 卡片與用量面板共用同一份 key 清單：卡片拿到之後推給面板，
+  // 面板不必自己再抓一次（也就不會有兩份可能不同步的下拉選單）。
+  const containers = mountContainers(app.querySelector('[data-containers]'), {
+    agentId, timers,
+  });
+  // ZEN-019 的三層。機密卡是**唯一**抓機密清單的地方 ——
+  // 出口卡的兩個下拉直接吃它推過來的名字，不自己再抓一次，
+  // 不然兩份清單會不同步（而不同步時畫面上看不出來）。
+  const configCard = mountConfigCard(app.querySelector('[data-config]'), { agentId });
+  const egressCard = mountEgressCard(app.querySelector('[data-egress]'), { agentId });
+  const secretsCard = mountSecretsCard(app.querySelector('[data-secrets]'), {
+    agentId,
+    onChange(secretRows) {
+      egressCard.setSecretNames(secretRows.map((row) => row.name));
+    },
+  });
+  const egressCalls = mountEgressCalls(app.querySelector('[data-egress-calls]'), {
+    agentId,
+  });
+  const usagePanel = mountUsagePanel(app.querySelector('[data-usage]'), { agentId });
+  const keysCard = mountKeysCard(app.querySelector('[data-keys]'), {
+    agentId,
+    timers,
+    onChange(rows) { usagePanel.setKeys(rows); },
   });
   let knownPublished = false;
   let knownPublishedKey = null;
@@ -202,6 +266,13 @@ function main() {
     composer.destroy();
     endpoints.destroy();
     credential.destroy();
+    containers.destroy();
+    configCard.destroy();
+    secretsCard.destroy();
+    egressCard.destroy();
+    egressCalls.destroy();
+    keysCard.destroy();
+    usagePanel.destroy();
     recentRuns.destroy();
     timers.clearAll();
     shell.destroy();

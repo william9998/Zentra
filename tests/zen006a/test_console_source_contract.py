@@ -39,8 +39,15 @@ EXPECTED_FILES = {
     "static/css/tokens.css",
     "static/icons.svg",
     "static/js/api.js",
+    # ZEN-019（ui-contract §5.16–§5.19）
+    "static/js/components/agent-config-card.js",
+    "static/js/components/agent-secrets-card.js",
+    "static/js/components/egress-card.js",
+    "static/js/components/egress-calls-panel.js",
     "static/js/components/agent-list.js",
     "static/js/components/agent-version-list.js",
+    "static/js/components/api-keys-card.js",
+    "static/js/components/containers-card.js",
     "static/js/components/create-agent-dialog.js",
     "static/js/components/delete-agent-dialog.js",
     "static/js/components/edit-agent-dialog.js",
@@ -50,6 +57,7 @@ EXPECTED_FILES = {
     "static/js/components/recent-runs.js",
     "static/js/components/run-composer.js",
     "static/js/components/run-timeline.js",
+    "static/js/components/usage-panel.js",
     "static/js/components/version-registration.js",
     "static/js/dom.js",
     "static/js/pages/agent.js",
@@ -73,6 +81,8 @@ CONTRACT_ERROR_CODES = {
     "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "VALIDATION_ERROR",
     "QUOTA_EXCEEDED", "AGENT_NOT_PUBLISHED", "VERSION_CONFLICT", "BUILD_FAILED",
     "SANDBOX_TIMEOUT", "SANDBOX_ERROR", "LLM_ERROR", "EGRESS_BLOCKED",
+    # ZEN-019：政策放行了但上游打不通。與 EGRESS_BLOCKED 的分界是「該不該重試」。
+    "EGRESS_FAILED",
     "USER_CODE_ERROR", "INTERNAL_ERROR",
 }
 # ui-contract §2 status labels, character for character.
@@ -80,10 +90,11 @@ CONTRACT_STATUS_LABELS = {
     "QUEUED": "排隊中", "SCHEDULING": "配置中", "RUNNING": "執行中",
     "SUCCEEDED": "已完成", "FAILED": "失敗", "CANCELLED": "已取消",
 }
-# ui-contract §3 sprite: exactly these ten symbols, "不要多抓".
+# ui-contract §3 sprite: exactly these symbols, "不要多抓".
 CONTRACT_ICON_IDS = {
     "i-bot", "i-activity", "i-box", "i-upload", "i-copy",
     "i-chevron-right", "i-chevron-down", "i-rotate-cw", "i-square", "i-search",
+    "i-sun", "i-moon",
 }
 # Values removed in SPEC/api-contract v0.2.0; nobody may render or assert them.
 REMOVED_VALUES = ["WAITING_INPUT", "tool.call", "tool.result", "interrupt", "CONSOLE"]
@@ -97,6 +108,22 @@ ALLOWED_V1_PATTERNS = [
     re.compile(r"^/agents/\{?[^/]*\}?/versions/\{?[^/]*\}?$"),
     # ZEN-012：per-agent LLM 憑證（api-contract v0.5.0 §2.1）
     re.compile(r"^/agents/\{?[^/]*\}?/llm-credential$"),
+    # ZEN-015：下游 API key 與用量／除錯查詢（api-contract v0.7.0 §2.3、v0.8.0 §2.4）
+    re.compile(r"^/agents/\{?[^/]*\}?/api-keys$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/api-keys/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/usage$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/llm-calls$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/containers$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/containers/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/containers/\{?[^/]*\}?/restart$"),
+    # ZEN-019：設定／機密／出口白名單／寄件者／稽核（api-contract v0.12.0 §2.6–§2.10）
+    re.compile(r"^/agents/\{?[^/]*\}?/config$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/secrets$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/secrets/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/egress-rules$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/egress-rules/\{?[^/]*\}?$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/email-sender$"),
+    re.compile(r"^/agents/\{?[^/]*\}?/egress-calls$"),
     re.compile(r"^/runs$"),
     re.compile(r"^/runs/\{?[^/]*\}?$"),
     re.compile(r"^/runs/\{?[^/]*\}?/events$"),
@@ -243,17 +270,67 @@ def _css_tokens(text: str) -> dict:
     return tokens
 
 
-def test_tokens_css_matches_ui_contract_section_1() -> None:
+LIGHT_SELECTOR = ':root[data-theme="light"]'
+
+
+def _contract_tokens_section() -> str:
     contract = _read(UI_CONTRACT)
-    section = contract[contract.index("## 1. 設計 Token"):contract.index("## 2. Run 狀態")]
-    expected = _css_tokens(section)
-    actual = _css_tokens(_read(CONSOLE / "static/css/tokens.css"))
+    return contract[contract.index("## 1. 設計 Token"):contract.index("## 2. Run 狀態")]
+
+
+def _without_light(text: str) -> str:
+    """去掉淺色覆寫區塊。
+
+    `_css_tokens` 是扁平的（後面的同名 token 會蓋掉前面的），所以不先拿掉淺色區塊
+    的話，深色的值就完全沒有被比對到 —— 改壞了也不會有人發現。
+    """
+    return re.sub(re.escape(LIGHT_SELECTOR) + r"\s*\{[^{}]*\}", "", text, flags=re.S)
+
+
+def _css_block(text: str, selector: str) -> dict:
+    """取出某一個 `selector { … }` 區塊的 token。CSS 與 markdown 圍欄都吃得下。"""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    match = re.search(re.escape(selector) + r"\s*\{([^{}]*)\}", text)
+    assert match, f"block {selector!r} not found"
+    return {
+        name: value.strip()
+        for name, value in re.findall(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", match.group(1))
+    }
+
+
+def test_tokens_css_matches_ui_contract_section_1() -> None:
+    expected = _css_tokens(_without_light(_contract_tokens_section()))
+    actual = _css_tokens(_without_light(_read(CONSOLE / "static/css/tokens.css")))
     assert expected, "failed to parse ui-contract §1 tokens"
     assert set(actual) == set(expected), (
         f"missing={set(expected) - set(actual)} extra={set(actual) - set(expected)}"
     )
     mismatched = {k: (expected[k], actual[k]) for k in expected if expected[k] != actual[k]}
     assert mismatched == {}
+
+
+def test_light_theme_block_matches_the_contract() -> None:
+    expected = _css_block(_contract_tokens_section(), LIGHT_SELECTOR)
+    actual = _css_block(_read(CONSOLE / "static/css/tokens.css"), LIGHT_SELECTOR)
+    assert expected and actual == expected
+
+
+def test_light_theme_covers_every_colour_token() -> None:
+    """每一個顏色 token 都要有淺色的值。
+
+    少了一個不會壞掉，它只是**保持深色** —— 在淺色版面上那看起來像一塊莫名其妙的
+    暗色，不像少了設定，所以不會有人去找設定。這條就是替那件事出聲。
+    """
+    css = _read(CONSOLE / "static/css/tokens.css")
+    dark = _css_block(css, ":root")
+    light = _css_block(css, LIGHT_SELECTOR)
+    colours = {
+        name for name, value in dark.items()
+        if re.match(r"^(#|rgba?\()", value)
+    }
+    assert colours, "沒有解析到任何顏色 token —— 是解析壞了，不是程式對了"
+    assert colours - set(light) == set(), f"缺少淺色值：{sorted(colours - set(light))}"
+    assert set(light) - colours == set(), f"淺色多定義了非顏色 token：{sorted(set(light) - colours)}"
 
 
 def test_non_token_css_has_no_literal_colors_or_sizes() -> None:
@@ -272,7 +349,10 @@ def test_non_token_css_has_no_literal_colors_or_sizes() -> None:
 # ----------------------------------------- §6.3 rule 6: destroy() really exists
 
 
-@pytest.mark.parametrize("name", ["shell.js", "components/run-timeline.js"])
+@pytest.mark.parametrize("name", ["shell.js", "components/run-timeline.js",
+                                  "components/api-keys-card.js",
+                                  "components/usage-panel.js",
+                                  "components/containers-card.js"])
 def test_components_expose_destroy(name: str) -> None:
     source = _read(CONSOLE / "static/js" / name)
     assert re.search(r"export function mount\(", source), name
@@ -369,7 +449,9 @@ def test_api_js_enums_match_api_contract() -> None:
 def test_contract_enums_still_say_what_this_test_asserts() -> None:
     """Guard against the contract moving underneath us without the Console noticing."""
     contract = _read(API_CONTRACT)
-    assert "| 契約版本 | `v0.3.1` |" in contract
+    # 這是絆線：契約版本一動就該有人回來看 Console 有沒有跟上。
+    # v0.4.0–v0.6.0 之間沒人更新它，所以它紅了好幾個版本都沒被當一回事。
+    assert "| 契約版本 | `v0.12.1` |" in contract
     for code in CONTRACT_ERROR_CODES:
         assert f"`{code}`" in contract, code
     for status in CONTRACT_RUN_STATUS:
@@ -461,6 +543,14 @@ def test_only_whitelisted_v1_endpoints_are_referenced() -> None:
     assert paths == {
         "/agents", "/agents/{}", "/agents/{}/runs", "/agents/{}/versions",
         "/agents/{}/versions/{}", "/agents/{}/llm-credential",   # ZEN-012
+        "/agents/{}/api-keys", "/agents/{}/api-keys/{}",         # ZEN-015
+        "/agents/{}/usage", "/agents/{}/llm-calls",              # ZEN-015
+        "/agents/{}/containers", "/agents/{}/containers/{}",     # ZEN-015
+        "/agents/{}/containers/{}/restart",
+        "/agents/{}/config",                                     # ZEN-019
+        "/agents/{}/secrets", "/agents/{}/secrets/{}",           # ZEN-019
+        "/agents/{}/egress-rules", "/agents/{}/egress-rules/{}", # ZEN-019
+        "/agents/{}/email-sender", "/agents/{}/egress-calls",    # ZEN-019
         "/runs", "/runs/{}", "/runs/{}/events",
         "/runs/{}/cancel",   # ZEN-008-D5：死碼，見下方 xfail
     }, paths
@@ -523,10 +613,16 @@ def test_console_stores_no_long_lived_credentials() -> None:
 
     `api_key` 在 ZEN-012 之後變成「可以傳，不可以留」——
     所以字串檢查對兩個明列的檔案放行，**真正的規則由下面的儲存斷言守著**。
-    其餘的憑證字眼（`Authorization` / `Bearer` / `access_token` / `secret` / `password`）
+    其餘的憑證字眼（`Authorization` / `Bearer` / `access_token`）
     一個檔案都不准出現：Console 是同源呼叫，它本來就不該自己組認證標頭。
+
+    **ZEN-019 之後 `secret` 是一個端點的名字**（`/v1/agents/{id}/secrets`），
+    不再是「這裡有一把憑證」的訊號 —— 那一層的設計正好相反：
+    Console 只看得到機密的**名字**與尾四碼，值讀不回來（api-contract §2.7）。
+    所以把它從字眼清單移除，真正的規則由下面的儲存斷言與
+    `test_the_secrets_card_never_shows_a_value` 守著。
     """
-    always_banned = ["Authorization", "Bearer", "secret", "access_token"]
+    always_banned = ["Authorization", "Bearer", "access_token"]
     credential_fields = ["api_key", "apiKey"]
 
     for path in JS_FILES + HTML_FILES:
@@ -538,6 +634,11 @@ def test_console_stores_no_long_lived_credentials() -> None:
         # 禁的是把密碼當資料處理。檢查前先拿掉註解與那個型別宣告 ——
         # 稽核的是程式碼，不是散文。
         code = _strip_js_comments(source).replace('type="password"', "")
+        # `password_secret_name` 是**機密的名字**，不是密碼（ADR-0014 M2：
+        # 寄件者那張表沒有密碼欄位）。名字本來就該出現在前端，值永遠不會。
+        code = code.replace("password_secret_name", "").replace(
+            "passwordSecretName", "").replace("passwordSecret", "").replace(
+            "passwordHint", "")
         assert "password" not in code, (
             f"{_rel(path)}: 出現 password，且不是 input 型別宣告"
         )
@@ -553,7 +654,8 @@ def test_console_stores_no_long_lived_credentials() -> None:
     for path in JS_FILES:
         source = _read(path)
         storage_keys.update(re.findall(r"(?:local|session)Storage\.\w+\(\s*([A-Z_]+|'[^']*')", source))
-    assert storage_keys <= {"SIDEBAR_KEY", "STASH_KEY"}, storage_keys
+    # THEME_KEY 與 SIDEBAR_KEY 同類：UI 偏好，不是憑證。§6.4 禁的是憑證。
+    assert storage_keys <= {"SIDEBAR_KEY", "STASH_KEY", "THEME_KEY"}, storage_keys
 
 
 def test_the_credential_card_keeps_no_copy_of_the_key() -> None:
@@ -578,7 +680,9 @@ def test_localstorage_run_stash_has_been_removed() -> None:
     for path in JS_FILES:
         storage_keys.update(re.findall(
             r"(?:local|session)Storage\.\w+\(\s*([A-Z_]+|'[^']*')", _read(path)))
-    assert storage_keys <= {"SIDEBAR_KEY"}, storage_keys
+    # SIDEBAR_KEY / THEME_KEY 都是 UI 偏好。這條守的是「Run 資料不准進瀏覽器儲存」，
+    # 不是「不准用 localStorage」。
+    assert storage_keys <= {"SIDEBAR_KEY", "THEME_KEY"}, storage_keys
 
 
 def test_root_redirect_deviation_is_resolved() -> None:
@@ -615,3 +719,55 @@ def test_no_stray_json_config_in_console() -> None:
         _rel(path) for path in _files(".json")
     ] == [], "Console is zero-build; no JSON config belongs here"
     json.dumps({})  # keep the import meaningful for linters
+
+
+def test_run_list_rows_carry_agent_name() -> None:
+    """api-contract v0.11.0：`GET /v1/runs` 每一列有 `agent_name`，Runs 列表要讀得到。
+
+    列表走的是 viewRunSummary，不是 viewRun（單一 Run 的回應根本沒有這個欄位）。
+    曾經加錯地方：欄位標題出現了，每一列卻都是 `—`。
+    """
+    api = _strip_js_comments(_read(CONSOLE / "static/js/api.js"))
+    summary = re.search(r"function viewRunSummary\(raw\) \{.*?\n\}", api, flags=re.S)
+    assert summary, "api.js 找不到 viewRunSummary"
+    assert "agentName: raw.agent_name" in summary.group(0)
+
+
+# ------------------------------------------- ui-contract v0.11.0 §5.7 卡片格子
+#
+# 瀏覽器 E2E（cdp_agent_bulk_delete_e2e.mjs）在容器裡會 skip，這兩條是容器裡也守得住的底線。
+
+
+def _css_rule(text: str, selector: str) -> str:
+    match = re.search(r"(?:^|\})\s*" + re.escape(selector) + r"\s*\{([^{}]*)\}", text, flags=re.M)
+    assert match, f"layout.css 找不到 {selector!r}"
+    return match.group(1)
+
+
+def test_agent_card_is_not_wrapped_in_a_link() -> None:
+    """§5.7：名稱 <a> 放在 <h3> 裡、是卡片唯一的連結；不准把整張 <article> 包進 <a>，
+    也不准在卡片上掛 click handler 假裝連結（鍵盤進不去）。"""
+    source = _strip_js_comments(_read(CONSOLE / "static/js/components/agent-list.js"))
+    assert len(re.findall(r"\bel\(\s*'a'", source)) == 1, "agent-list.js 應只建一個 <a>（卡片名稱）"
+    assert "<a" not in source, "agent-list.js 的樣板字串裡不該有 <a>"
+    assert re.search(r"\bel\(\s*'article'", source) and re.search(r"\bel\(\s*'h3'", source)
+    assert re.search(r"\bcard\.addEventListener\(\s*'click'", source) is None
+
+
+def test_agent_card_click_area_and_grid_follow_the_contract() -> None:
+    """§5.7：點卡片任何地方靠 `::after { position: absolute; inset: 0 }` 撐開；
+    格子欄數由 --card-min-width 決定、不寫斷點；卡片不准陰影或漸層。"""
+    css = re.sub(r"/\*.*?\*/", "", _read(CONSOLE / "static/css/layout.css"), flags=re.S)
+    card = _css_rule(css, ".agent-card")
+    assert re.search(r"position:\s*relative", card)
+    assert "shadow" not in card and "gradient" not in card
+    hit_after = _css_rule(css, ".agent-card-hit::after")
+    assert re.search(r"position:\s*absolute", hit_after) and re.search(r"inset:\s*0", hit_after)
+    grid = _css_rule(css, ".agent-grid")
+    assert re.search(
+        r"grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(var\(--card-min-width\),\s*100%\),\s*1fr\)\)",
+        grid)
+    for media in re.finditer(r"@media[^{]*\{(.*?)\n\}", css, flags=re.S):
+        assert ".agent-grid" not in media.group(1), "卡片格子不准用 media query 斷點"
+    agent_rules = re.findall(r"\.agent-card[^{]*\{([^{}]*)\}", css)
+    assert agent_rules and not any("shadow" in r or "gradient" in r for r in agent_rules)

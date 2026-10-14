@@ -74,23 +74,47 @@ def test_api_never_talks_to_a_registry_over_http() -> None:
     是 P4 的唯一保證方式：**Registry 對沙盒不可達要靠「沒有任何一條路可以到」**，
     不是靠沙盒不知道位址。
     """
-    hits = grep_tree(APPS / "api", r""":5000|/v2/_catalog|registry:5000|localhost:6000""",
-                     suffixes=PY)
+    hits = [
+        hit for hit in grep_tree(
+            APPS / "api", r""":5000|/v2/|registry:5000|localhost:6000""", suffixes=PY)
+        # `config.py` 是唯一的例外（ADR-0013）：worker 要刪 manifest 就得知道位址，
+        # 而 Settings 是兩邊共用的一個類別。**那裡只有字串，沒有任何 HTTP 呼叫** ——
+        # 下面那條斷言守的就是這件事。
+        if not hit.startswith("apps/api/config.py:")
+    ]
     assert not hits, (
         "apps/api/** 出現 registry 位址。即使是註解或常數也不行 —— "
         "它是下一個人寫出代理端點的起點：\n" + "\n".join(hits)
     )
 
+    # 真正的那條線：api 不准自己對 registry 發請求，不管位址寫在哪裡。
+    calls = grep_tree(
+        APPS / "api",
+        r"""(httpx|requests)\.(get|post|put|delete|request)\([^)]*(registry|:5000|:6000)""",
+        suffixes=PY)
+    assert not calls, "apps/api/** 直接對 registry 發 HTTP：\n" + "\n".join(calls)
 
-def test_worker_never_talks_to_a_registry_over_http() -> None:
-    """Z9-D5：pull 的執行者是**主機上的 Docker daemon**，不是 worker 行程。
 
-    worker 自己對 registry 發 HTTP，代表有人繞過 daemon 自己實作了 pull，
-    那會讓 `RepoDigests` 比對（P5 的可重現性證據）失去意義。
+def test_worker_only_talks_to_the_registry_to_delete_manifests() -> None:
+    """Z9-D5（ADR-0013 改）：worker 現在會打 registry，但**只為了刪 manifest**。
+
+    原本這條是「一律不准」。它擔心的是有人繞過主機的 Docker daemon 自己實作 pull ——
+    那會讓 `RepoDigests` 比對（P5 的可重現性證據）失去意義。**那個擔心沒有變。**
+
+    ADR-0013 開的口子很窄：刪整個 Agent 時刪掉它的 manifest。
+    所以現在守的是「除了 DELETE manifests 以外，一律不准」。
     """
-    hits = grep_tree(APPS / "worker", r""":5000|/v2/_catalog|registry:5000|localhost:6000""",
-                     suffixes=PY)
-    assert not hits, "apps/worker/** 出現 registry 位址：\n" + "\n".join(hits)
+    calls = grep_tree(
+        APPS / "worker",
+        r"""(httpx|requests)\.(get|post|put|patch|head|request)\([^)]*(registry|:5000|/v2/)""",
+        suffixes=PY)
+    assert not calls, (
+        "worker 只准對 registry 發 DELETE（刪 manifest）。其他動詞代表有人在自己實作 "
+        "pull 或 push，那會繞過 daemon 的 digest 驗證：\n" + "\n".join(calls)
+    )
+
+    blobs = grep_tree(APPS / "worker", r"""/v2/[^"']*/blobs/""", suffixes=PY)
+    assert not blobs, "worker 不准碰 blob —— 那就是自己實作 pull：\n" + "\n".join(blobs)
 
 
 def test_console_only_mentions_the_registry_as_plain_text() -> None:

@@ -98,6 +98,10 @@
   border-bottom: 1px solid var(--border-default);
 }
 
+/* 色彩模式切換：靠右，跟麵包屑分開 —— 它是全站設定，不屬於這一頁的路徑。
+   只有圖示，所以做成正方形（寬 = 高），不讓 .btn-sm 的左右 padding 把它拉成長條。 */
+.shell-theme { margin-left: auto; flex: none; width: var(--control-sm); padding: 0; }
+
 .breadcrumb {
   display: flex;
   align-items: center;
@@ -453,6 +457,7 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
 /* ---- Agent Registry / OCI registration（ui-contract v0.5.1）---- */
 .list-toolbar {
   display: flex;
+  align-items: center;
   gap: var(--space-3);
 }
 
@@ -491,7 +496,12 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.data-row--run-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+/* 六欄：狀態／Agent 名稱／Agent ID／版本／入口／建立時間。
+   id 欄給寬一點，UUID 斷行會讓每一列高度不一樣。 */
+.data-row--run-list {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.6fr)
+                         minmax(0, 0.8fr) minmax(0, 0.6fr) minmax(0, 1fr);
+}
 
 .list-identity {
   display: flex;
@@ -736,4 +746,366 @@ dialog::backdrop { background: var(--bg-base); opacity: 0.8; }
 
 .graph-arrow--back {
   fill: var(--status-scheduling);
+}
+
+/* ── 下游 API key 與用量（ZEN-015）──────────────────────────────────── */
+
+.keys-card,
+.usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.keys-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 明文只出現一次，所以這一塊要比周圍重 —— 使用者關掉它之前必須先看見它。 */
+.keys-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.keys-reveal-title { font-size: var(--text-sm); line-height: var(--leading-normal); }
+
+.keys-reveal-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.keys-plaintext {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-code);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.data-row--keys { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+
+/* 撤銷過的 key 還在清單裡（它的用量還掛著），但要看得出來不能用了。 */
+.data-row--muted { color: var(--text-disabled); }
+
+.data-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.usage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.usage-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.usage-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.usage-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.usage-block {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.usage-heading {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+.data-row--usage { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* 八欄塞不進窄螢幕，所以這張表自己可以橫向滑，不要把整頁撐寬。 */
+.data-row--calls {
+  grid-template-columns:
+    minmax(var(--space-16), 1.4fr) minmax(0, 0.8fr) minmax(0, 1.2fr)
+    minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 2fr);
+}
+
+@media (max-width: 768px) {
+  .usage-split,
+  .usage-totals { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── 常駐容器（ZEN-015）────────────────────────────────────────────── */
+
+.containers-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.data-row--containers { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+
+/* 啟動失敗的原因可能很長（Docker 的錯誤訊息），讓它自己佔一整列 */
+.containers-error {
+  grid-column: 1 / -1;
+  padding-top: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+/* ── Agent 總覽：卡片格子與選取模式（ui-contract v0.11.0 §5.7，ADR-0013）─────── */
+
+/* 工具列、格子、頁尾彼此間距 --space-4；格子不放在 .card 裡（避免卡片套卡片）。 */
+.agent-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.agent-overview .list-footer { padding-top: 0; }
+
+.agent-toolbar { flex-wrap: wrap; }
+.agent-toolbar input[type="search"] { flex: 1 1 var(--card-min-width); }
+
+.agent-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+.sel-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.sel-box {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  margin: 0;
+  flex: none;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* 欄數由寬度決定，不寫斷點；容器比 --card-min-width 窄時 min(…, 100%) 退成一欄滿寬。 */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--card-min-width), 100%), 1fr));
+  gap: var(--space-3);
+  width: 100%;
+  max-width: var(--content-max);
+}
+
+.agent-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  transition: background-color var(--transition), border-color var(--transition);
+}
+
+.agent-card:not(.agent-card--skeleton):hover {
+  background: var(--surface-hover);
+  border-color: var(--border-default);
+}
+
+.agent-card.is-selected,
+.agent-card.is-selected:hover {
+  background: var(--surface-active);
+  border-color: var(--border-strong);
+}
+
+/* checkbox 在內距內的左上角，首字方塊往右讓位 */
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.agent-card-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--monogram-size);
+  height: var(--monogram-size);
+  background: var(--surface-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
+.agent-card-name {
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-normal);
+}
+
+/* 名稱的 <a>（一般模式）或 <label>（選取模式）：單行截斷，::after 撐到整張卡 */
+.agent-card-hit {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.agent-card-hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+}
+
+/* focus 只畫在擴大後的整張卡上，一張卡不出現兩個框 */
+a.agent-card-hit:focus-visible { outline: none; }
+a.agent-card-hit:focus-visible::after,
+.agent-card:has(.sel-box:focus-visible) .agent-card-hit::after {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.agent-card .sel-box:focus-visible { outline: none; }
+
+/* 兩行截斷，但保留兩行高，讓同一列的卡片底部對齊；被截掉的字仍在 DOM 裡 */
+.agent-card-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-height: calc(2 * var(--text-sm) * var(--leading-normal));
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.agent-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: auto;
+  min-width: 0;
+}
+
+.agent-card-foot > .mono { overflow-wrap: anywhere; }
+
+/* 骨架卡：與真卡同尺寸，不放假資料 */
+.agent-card--skeleton .agent-card-monogram {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+.agent-card--skeleton .agent-card-desc { display: block; }
+.agent-card--skeleton .agent-card-name {
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--text-md) * var(--leading-normal));
+}
+.agent-card--skeleton .agent-card-foot { min-height: calc(var(--text-xs) * var(--leading-normal)); }
+.agent-card--skeleton .skeleton-line:last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-card { transition: none; }
+}
+
+.sel-list {
+  max-height: var(--space-16);
+  overflow-y: auto;
+  padding-left: var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  list-style: disc;
+}
+
+/* 確認視窗要列出**全部**已選的名字（ADR-0013 第 3 條），所以給高一點、可捲動 */
+.sel-list--tall { max-height: calc(var(--space-16) * 3); }
+
+/* ── ZEN-019：設定 / 機密 / 對外出口 / 出口稽核 ───────────────────────── */
+
+/* 設定編輯器是一個 textarea 裝 JSON（ui-contract §5.16 第 2 點）：
+   契約允許任何 JSON 值，動態鍵值表單做不到那個自由度。 */
+.credential-form textarea,
+.keys-form textarea {
+  width: 100%;
+  min-height: calc(var(--space-8) * 4);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  resize: vertical;
+}
+
+.credential-form textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+/* POST 是「能把東西寫出去」的那一個，所以用 --warning 標出來
+   （ui-contract §5.18 第 2 點）。**顏色來自 token，不是硬編碼色碼。** */
+.egress-method--write {
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+}
+
+/* 被擋下的那一列要顯眼：出口設定錯了，只有這張表看得出來
+   （ui-contract §5.19 第 2 點）。 */
+.egress-call--blocked {
+  border-left: 2px solid var(--danger);
+  padding-left: var(--space-3);
 }

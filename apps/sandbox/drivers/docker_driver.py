@@ -225,6 +225,17 @@ class DockerSandboxDriver:
             ) from exc
         return self._inspect_object(image, image_ref)
 
+    async def remove_image(self, image_ref: str) -> None:
+        return await asyncio.to_thread(self._remove_image, image_ref)
+
+    def _remove_image(self, image_ref: str) -> None:
+        """移除主機上快取的 image（刪 Agent 時用，ADR-0013）。
+
+        **不用 force**：還有容器在用它就該失敗，而不是把那個容器連根拔掉。
+        呼叫端把失敗當成「這次沒清到」，不是錯誤 —— image 隨時可以再 pull 回來。
+        """
+        self._client.images.remove(image_ref)
+
     def _inspect_object(self, image: Any, image_ref: str) -> ImageMetadata:
         _, expected_digest = parse_digest_reference(image_ref)
         try:
@@ -335,6 +346,8 @@ class DockerSandboxDriver:
         }
         if spec.mode is SandboxMode.VALIDATE:
             labels["zentra.agent_version_id"] = resource_id
+        elif spec.mode is SandboxMode.SERVE:
+            labels["zentra.agent_id"] = resource_id
         else:
             labels["zentra.run_id"] = resource_id
 
@@ -366,6 +379,8 @@ class DockerSandboxDriver:
             "oom_kill_disable": False,
             "stdin_open": False,
             "tty": False,
+            # 一次性沙盒不需要 healthcheck（跑完就走）。常駐容器需要 ——
+            # 它掛掉時沒有「任務失敗」可以觀察，只有沒人取工作這個沉默的症狀。
             "healthcheck": {"test": ["NONE"]},
             "log_config": LogConfig(
                 type="json-file", config={"max-size": "10m", "max-file": "1"}
@@ -375,7 +390,13 @@ class DockerSandboxDriver:
             kwargs.update(
                 entrypoint=[OCI_RUNTIME_EXECUTABLE], command=[spec.mode.value]
             )
+            if spec.mode is SandboxMode.SERVE:
+                # 常駐容器：Docker 自己不重啟它。重啟是平台的決定，因為要記
+                # restart_count —— 一直重啟的容器是壞掉了，不是需要再重啟一次。
+                # 交給 Docker 的 restart_policy 會讓那個訊號消失。
+                kwargs["restart_policy"] = {"Name": "no"}
         else:
+            # ZEN-000 的內建 fixture 走這條（非 OCI），它的 image 裡沒有 zentra-agent。
             kwargs["command"] = ["python", "-m", "zentra_runtime"]
 
         try:
@@ -448,6 +469,31 @@ class DockerSandboxDriver:
             return raw[:_MAX_LOG_BYTES].decode("utf-8", errors="replace")
         except (NotFound, APIError):
             return ""
+
+    async def inspect_container(self, docker_id: str) -> dict:
+        """容器的原始 inspect（ZEN-015 的生命週期管理要看 `State`）。
+
+        找不到容器不是例外 —— 它可能已經被清掉了。回一個「不在跑」的形狀，
+        讓呼叫端用同一條路處理。
+        """
+        def _run() -> dict:
+            try:
+                return self._client.containers.get(docker_id).attrs
+            except NotFound:
+                return {"State": {"Running": False, "ExitCode": None}}
+        return await asyncio.to_thread(_run)
+
+    async def container_logs(self, docker_id: str, tail: int = 100) -> str:
+        """容器輸出。它死掉時這是唯一的線索，所以取不到也要說為什麼。"""
+        def _run() -> str:
+            try:
+                raw = self._client.containers.get(docker_id).logs(tail=tail)
+            except NotFound:
+                return "(the container is already gone; no output available)"
+            except APIError as exc:
+                return f"(could not read the container output: {_safe_error(exc)})"
+            return raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+        return await asyncio.to_thread(_run)
 
     async def destroy(self, handle: SandboxHandle) -> None:
         """Idempotent across normal completion, crash, timeout and cancellation."""
