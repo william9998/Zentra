@@ -77,6 +77,8 @@ async def invoke_run(
         await session.refresh(run)
         if RunStatus(run.status).is_terminal:
             return await _to_response(run, session)
+        # 最多等 60 秒。每輪結束交易，sleep 期間才不會占著池子裡的連線。
+        await session.commit()
         await asyncio.sleep(0.1)
     raise ZentraError(
         ErrorCode.SANDBOX_TIMEOUT, "synchronous invocation exceeded 60 seconds", 504,

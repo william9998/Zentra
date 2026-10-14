@@ -89,6 +89,8 @@ class _EntrypointTool(Tool):
                 await session.refresh(run)
                 if RunStatus(run.status).is_terminal:
                     return _terminal_result(run, run_id)
+                # 與 routers/runs.py 的 invoke 同一條規則：sleep 期間不占連線。
+                await session.commit()
                 await asyncio.sleep(0.1)
 
         raise ToolError(

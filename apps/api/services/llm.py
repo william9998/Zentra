@@ -218,6 +218,9 @@ async def proxy(
         "content-type": "application/json",
     }
 
+    # 上游回應最久要 llm_timeout_seconds。不先結束交易的話，這段時間會一直占著
+    # 一條池子裡的連線；同時在等模型的 Run 一多，事件與結果回寫就拿不到連線。
+    await session.commit()
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:

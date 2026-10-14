@@ -231,6 +231,8 @@ async def send(
     if html:
         message.add_alternative(html, subtype="html")
 
+    # SMTP 對話最久要 email_timeout_seconds。別在等它時占著池子裡的連線（見 llm.proxy）。
+    await session.commit()
     started = time.monotonic()
     try:
         await asyncio.to_thread(

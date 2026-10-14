@@ -412,6 +412,8 @@ async def perform(
 
     # ── 10. DNS 解析 → 位址是不是內網 ─────────────────────────────────
     port = parts.port or 443
+    # DNS 與上游都可能慢。別在等它們時占著池子裡的連線（見 llm.proxy）。
+    await session.commit()
     try:
         addresses = await resolve_addresses(host, port)
     except OSError as exc:
@@ -449,6 +451,7 @@ async def perform(
         send_headers[rule.auth_header] = value
 
     target = _connect_url(parts.scheme, address, port, parts.path, parts.query)
+    await session.commit()
     started = time.monotonic()
     max_response = settings.egress_max_response_bytes
     try:
