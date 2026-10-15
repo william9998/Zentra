@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, Request, Response
 from redis.asyncio import Redis
@@ -227,3 +228,32 @@ async def take_work(
         status_code=200,
         media_type="application/json",
     )
+
+
+@router.post("/registry/events")
+async def registry_events(request: Request) -> dict:
+    """內部 registry 的 push 通知 → 註冊版本（push 即註冊，見 services/registry_events.py）。
+
+    **沒有 token**：registry 沒辦法帶我們的憑證。通知內容不被相信，註冊前會回頭向 registry
+    確認 tag 真的指向那個 digest，所以偽造的通知只能觸發「registry 本來就是那樣」的註冊。
+
+    **永遠回 200**：回別的 registry 會一直重送同一則通知。處理結果寫 log。
+    """
+    from apps.api.services import registry_events
+    from apps.api.tasks import dispatch_build
+
+    try:
+        envelope = json.loads(await request.body() or b"{}")
+    except ValueError:
+        return {"registered": 0}
+    registered = 0
+    for repo, tag, digest in registry_events.candidates(envelope):
+        try:
+            version_id = await registry_events.register(repo, tag, digest)
+        except Exception:                           # noqa: BLE001 —— 一則壞掉不擋其他則
+            logging.getLogger(__name__).exception("registry push %s:%s failed", repo, tag)
+            continue
+        if version_id:
+            await asyncio.to_thread(dispatch_build, version_id)
+            registered += 1
+    return {"registered": registered}

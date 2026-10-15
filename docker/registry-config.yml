@@ -1,0 +1,38 @@
+# 內部 registry 的設定：上游 registry:2 的預設值 + push 通知。
+#
+# push 一個 <agent 名>:<版號> 就等於註冊那個版本 —— registry 每次 push 完會通知 app，
+# app 向 registry 確認 tag 真的指向那個 digest 之後才註冊（specs/agent-registry.md §push 即註冊）。
+# 通知送不到（app 沒起來）不會讓 push 失敗：registry 會在記憶體裡排隊重試。
+version: 0.1
+log:
+  fields:
+    service: registry
+storage:
+  cache:
+    blobdescriptor: inmemory
+  filesystem:
+    rootdirectory: /var/lib/registry
+  delete:
+    enabled: true
+http:
+  addr: :5000
+  headers:
+    X-Content-Type-Options: [nosniff]
+health:
+  storagedriver:
+    enabled: true
+    interval: 10s
+    threshold: 3
+notifications:
+  events:
+    includereferences: true
+  endpoints:
+    - name: zentra-app
+      url: http://app:8000/internal/registry/events
+      timeout: 5s
+      threshold: 5
+      backoff: 2s
+      ignoredmediatypes:
+        - application/octet-stream
+      ignore:
+        actions: [pull, mount, delete]

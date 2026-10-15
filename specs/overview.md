@@ -47,7 +47,8 @@ compose 的 5 個長駐服務：`postgres` · `redis` · `registry` · `app` · 
 **分層硬規則**
 1. 沙盒（L2）不得直連 L3：沒有 Postgres、Redis、Registry 連線，一律經 Internal Gateway。
 2. `postgres` / `redis` / `registry` / `worker` **絕不**接 `zentra-sandbox-net`。`app` 是唯一的橋。
-3. 平台不得代理、轉發或嵌入任何 Registry HTTP 端點（`/v2/*`）—— `app` 橫跨兩個網段，任何「幫你查 registry」的端點都會變成沙盒的跳板。
+3. 平台不得**對外**代理、轉發或嵌入任何 Registry HTTP 端點（`/v2/*`）—— `app` 橫跨兩個網段，任何「幫你查 registry」的端點都會變成沙盒的跳板。
+   平台內部會用到 registry API 的只有兩處：push 通知進來時 `app` 回頭確認 tag、刪版本時 worker 刪 manifest。
 4. 出口代打從 `app` 發出，所以 SSRF 防護在 `app` 這一側（見 [gateway.md](gateway.md)）。
 5. 只有 `worker` 掛 `docker.sock`（等同主機 root，常駐風險，誠實記著）。
 6. Console 沒有自己的容器，由 `app` 服務靜態檔，與 API 同源（見 [console-ui.md](console-ui.md)）。

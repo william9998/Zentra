@@ -48,13 +48,39 @@ def build(ctx: ZentraContext) -> StateGraph:   # 只接受一個位置參數，�
 | 放哪 | 怎麼放 | `image_ref` |
 |---|---|---|
 | 外部 Registry（GHCR、自建） | 自己 push | `ghcr.io/acme/agent@sha256:…` |
-| 平台內部 Registry | **在跑平台的那台主機上** `docker push localhost:6000/<repo>:<tag>` | `localhost:6000/<repo>@sha256:…` |
+| 平台內部 Registry | **在跑平台的那台主機上** `docker push localhost:6000/<agent 名>:<版號>` —— **push 就是註冊**（見下） | `localhost:6000/<agent 名>@sha256:…` |
 
-```bash
-docker build -t localhost:6000/my-agent:1.0.0 .
-docker push localhost:6000/my-agent:1.0.0
-docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0   # 拿去註冊的就是這串
+外部 Registry 的 image 用 `POST /v1/agents/{id}/versions` 以 digest 註冊（digest 用 `docker inspect --format='{{index .RepoDigests 0}}' <image>` 取）。
+
+## push 即註冊（內部 Registry）
+
 ```
+docker push localhost:6000/<agent 名>:<版號>   ==   註冊 <agent 名> 的 <版號>
+```
+
+| 部分 | 規則 |
+|---|---|
+| repository | **就是 Agent 名稱**，只能一層、符合 Agent 名稱規則。不存在就**自動建立** Agent |
+| tag | **就是版號**（與 `POST /versions` 的 semver 規則相同；Docker tag 不能有 `+`，所以沒有 build metadata） |
+| 不符合約定 | 略過並記 warning log：`latest`、`dev`、多層 repo（`team/x`）、layer / config blob 事件 |
+
+```
+docker push ──▶ registry ──通知──▶ app POST /internal/registry/events
+                                     1. 挑出「manifest 的 push、有 tag、repo 是 Agent 名、tag 是版號」的事件
+                                     2. HEAD registry /v2/<repo>/manifests/<tag>：tag 現在真的指向那個 digest 嗎？不是就略過
+                                     3. 同一個交易：找 Agent（沒有就建）→ create_version（與 POST /versions 同一個函式）
+                                     4. 需要驗證 → 送 zentra.build.execute → 之後與一般註冊完全相同
+```
+
+- 之後的行為與 API 註冊**完全一樣**：驗證、發布、同版號 = 取代、成為最新版時舊容器收掉。
+- **通知端點沒有 token**（registry 帶不了我們的憑證）。但 `/internal/*` 是沙盒連得到的，所以**通知內容不被相信**：
+  第 2 步向 registry 確認之後才註冊。偽造的通知最多只能讓平台註冊「registry 裡本來就是那樣」的東西，跟真的 push 一樣。
+- **永遠回 200**：回別的 registry 會一直重送同一則。處理結果寫 `app` 的 log。
+- 同一個版號上一次 push 還在驗證中 → `409`，這次的 push 不會註冊（log 有記），等它結束再 push。
+- 通知送不到（`app` 沒起來）不會讓 push 失敗；registry 會在記憶體裡排隊重試，但 registry 重啟就丟了 —— 那時重 push 一次。
+- 設定在 `docker/registry-config.yml`（compose 掛進 registry）。
+
+典型用法（平台那台 VM 上的 CD）：從公司 registry 拉下要上線的版本 → `docker tag` 成 `localhost:6000/<agent 名>:<版號>` → `docker push`。
 
 內部 Registry：只掛 `zentra-net`、只發布 `127.0.0.1:6000`、無 TLS、無認證。**loopback 綁定本身就是存取控制**，所以只能同機 push。
 綁 `0.0.0.0` 或遠端 push 要先解決 TLS 與認證，需要重新設計。

@@ -36,6 +36,7 @@
 | `POST` | `/internal/notify/email` | run | 寄信 |
 | `GET` | `/internal/agents/{agent_id}/work` | container | 常駐容器 long-poll 取工作（25 秒，`200` 工作項 / `204` 沒工作） |
 | `POST` | `/internal/versions/{version_id}/validation` | validation | 回報驗證結果與 entrypoints |
+| `POST` | `/internal/registry/events` | **無**（內容不被相信，註冊前回頭向 registry 確認） | 內部 registry 的 push 通知 → 註冊版本，見 [agent-registry.md](agent-registry.md) §push 即註冊 |
 
 ### 每筆 Run 帶進沙盒的資料
 

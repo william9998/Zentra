@@ -56,7 +56,7 @@ flowchart LR
         browser["Browser · Console"]
         system["External systems"]
         mcpc["MCP clients"]
-        dev["Developer on the host"]
+        dev["Developer / CD on the host"]
     end
 
     subgraph host["One host · docker compose · 5 long-running services"]
@@ -86,6 +86,7 @@ flowchart LR
     browser & system -- "REST" --> app
     mcpc -- "MCP" --> app
     dev -- "docker push" --> registry
+    registry -. "push notification = register" .-> app
     app --- pg
     app -- "enqueue" --> redis
     redis -- "tasks" --> worker
@@ -269,64 +270,55 @@ uid 65534. Writing the Dockerfile by hand instead is fine — see
 [`examples/demo-echo/Dockerfile`](examples/demo-echo/Dockerfile), which spells out every contract
 requirement — but then the dependencies are yours to get right.
 
-### 3. Build and push
+### 3. Build and push — pushing is registering
 
-**The build context is your agent's own directory, so `cd` into it first.** `.` means "look for the
-Dockerfile and everything it copies right here", and a Dockerfile that only copies `agent.py` needs
-nothing else in scope:
+**Pushing to the platform's registry registers the version.** The naming convention is the whole interface:
+
+```
+localhost:6000/<agent name>:<version>
+```
+
+| Part | Rule |
+|---|---|
+| repository | **the Agent's name**, a single segment (`my-agent`, not `team/my-agent`). No Agent by that name yet → it is created |
+| tag | **the version**, e.g. `1.0.0` or `1.2.0-rc.1`. Pushing a version that already exists **replaces** it |
+| anything else | ignored, with the reason in the `app` log: `latest`, `dev`, nested repositories |
 
 ```bash
-cd examples/my-agent        # or wherever your agent lives
+cd examples/my-agent        # the build context is your agent's own directory
 docker build -t localhost:6000/my-agent:1.0.0 .
-docker push  localhost:6000/my-agent:1.0.0
+docker push  localhost:6000/my-agent:1.0.0     # ← this is the registration
 ```
 
-Your agent's directory does not have to live inside this repository. Its only tie to the platform is
-`FROM zentra/agent-base:1.0`, an image already on your machine.
-
-Then ask Docker for the reference to register. **Do not paste the push output** — it prints
-`1.0.0: digest: sha256:… size: …`, which is the digest alone, without the repository in front of it.
-This command prints the whole thing, ready to paste:
+After the push the registry notifies the platform, which checks with the registry that the tag really points at
+that digest, then validates the image **inside a throwaway sandbox** (user code is never imported by the
+platform, P1). Watch it settle:
 
 ```bash
-docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
-# → localhost:6000/my-agent@sha256:58b16bb2…
-```
-
-That digest is the **registry manifest digest**. The sha256 `docker build` prints is the local image ID,
-a different identifier that cannot stand in for it.
-
-Tag with the semver you are about to register. Nothing enforces it, but it keeps every registered
-manifest reachable by a tag, which matters for the garbage-collection trap in
-[`specs/dispatcher-resources.md`](specs/dispatcher-resources.md).
-
-An external registry (GHCR, Docker Hub, your own) works exactly the same way. The platform does not care
-which one, only that it can pull the digest.
-
-### 4. Create the Agent and register the version
-
-In the Console at `http://localhost:8000/console/agents`, or over the API:
-
-```bash
-AID=$(curl -s -X POST http://localhost:8000/v1/agents   -H 'Content-Type: application/json'   -d '{"name":"my-agent","description":"..."}' \
-  | python3 -c 'import sys, json; print(json.load(sys.stdin)["agent_id"])')
-
-curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions"   -H 'Content-Type: application/json'   -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:6000/my-agent@sha256:58b16bb2…\"}"
-```
-
-The response is `BUILDING`. In the background the platform pulls the image by digest, inspects it, and
-runs `zentra-agent validate` **inside a throwaway sandbox** to extract the entrypoint schemas — user code
-is never imported by the platform (P1). Poll until it settles:
-
-```bash
+AID=$(curl -s 'http://localhost:8000/v1/agents?limit=100' \
+  | python3 -c 'import sys, json; print(next(a["agent_id"] for a in json.load(sys.stdin)["items"] if a["name"]=="my-agent"))')
 curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])'
 ```
 
 `PUBLISHED` means it is runnable. `FAILED` puts the validation container's full traceback in
 `error.message`; that is the only debugging signal you get, so read it rather than guessing.
+A `409` in the `app` log means that version was still validating from a previous push — wait for it and push again.
 
-Only digests are accepted. A tag is rejected with `VALIDATION_ERROR`, and re-registering a semver that
-already exists replaces it once the new image validates (a `409` only while that semver is still validating).
+This only works on the host running the platform (the registry listens on `127.0.0.1:6000`), which is where a
+CD job on that VM runs: pull the release from your company registry, re-tag it as
+`localhost:6000/<agent>:<version>`, push.
+
+### 4. Registering from an external registry
+
+Images in GHCR, Docker Hub or your own registry are registered by digest over the API (or the Console):
+
+```bash
+curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" -H 'Content-Type: application/json' \
+  -d '{"semver":"1.0.0","image_ref":"ghcr.io/acme/my-agent@sha256:58b16bb2…"}'
+```
+
+Only digests are accepted; get one with `docker inspect --format='{{index .RepoDigests 0}}' <image>`
+(not the push output, and not the image ID `docker build` prints).
 
 ### 5. Run it
 
@@ -386,8 +378,8 @@ overturning it would cost is priced out in
 
 ### Publishing a new version
 
-Build, push, register. A new semver leaves the old version running untouched. Registering an existing
-semver **replaces** it: the new image is validated first, and only if it passes does it take over — runs
+Build and push. A new version leaves the old one running untouched, and once the new one is the latest
+the old container is stopped after its in-flight runs finish. Pushing an existing version **replaces** it: the new image is validated first, and only if it passes does it take over — runs
 already created keep the image they were bound to, and the old image is cleaned up once they finish.
 See [`specs/agent-registry.md`](specs/agent-registry.md).
 
@@ -463,7 +455,7 @@ flowchart LR
         browser["瀏覽器 · Console"]
         system["外部系統"]
         mcpc["MCP 客戶端"]
-        dev["主機上的開發者"]
+        dev["主機上的開發者 / CD"]
     end
 
     subgraph host["一台主機 · docker compose · 5 個長駐服務"]
@@ -493,6 +485,7 @@ flowchart LR
     browser & system -- "REST" --> app
     mcpc -- "MCP" --> app
     dev -- "docker push" --> registry
+    registry -. "push 通知 = 註冊" .-> app
     app --- pg
     app -- "派工" --> redis
     redis -- "任務" --> worker
@@ -643,65 +636,53 @@ Base image 已經備好 SDK、相依套件、`io.zentra.image-contract` label �
 想自己從頭寫也可以，[`examples/demo-echo/Dockerfile`](examples/demo-echo/Dockerfile)
 把契約要求的每一項都攤開寫著 —— 但相依套件就得自己顧。
 
-#### 3. build 並 push
+#### 3. build 並 push —— push 就是註冊
 
-**build context 是你的 agent 目錄，所以要先 `cd` 進去。** 最後那個 `.` 的意思是
-「Dockerfile 和它要 COPY 的東西都在這裡找」，而一個只 COPY `agent.py` 的 Dockerfile
-不需要其他東西在範圍內：
+**push 到平台的 registry 就等於註冊那個版本。** 約定就是全部的介面：
+
+```
+localhost:6000/<agent 名>:<版號>
+```
+
+| 部分 | 規則 |
+|---|---|
+| repository | **就是 Agent 名稱**，只能一層（`my-agent`，不能是 `team/my-agent`）。這個名字的 Agent 還不存在 → 自動建立 |
+| tag | **就是版號**，例如 `1.0.0`、`1.2.0-rc.1`。push 一個已經存在的版號 = **取代**它 |
+| 其他 | 一律略過，原因寫在 `app` 的 log：`latest`、`dev`、多層 repository |
 
 ```bash
-cd examples/my-agent        # 或你自己的 agent 目錄
+cd examples/my-agent        # build context 是你 agent 自己的目錄
 docker build -t localhost:6000/my-agent:1.0.0 .
-docker push  localhost:6000/my-agent:1.0.0
+docker push  localhost:6000/my-agent:1.0.0     # ← 這一步就是註冊
 ```
 
-你的 agent 目錄**不必放在這個 repo 裡**。它跟平台唯一的關係是
-`FROM zentra/agent-base:1.0`，而那個 image 已經在你本機了。
-
-接著問 Docker 要「可以直接註冊的 reference」。**不要貼 push 的輸出** ——
-它印的是 `1.0.0: digest: sha256:… size: …`，只有 digest，少了前面的 repository。
-這個指令會把完整字串印出來，貼上去就好：
+push 完 registry 會通知平台，平台向 registry 確認那個 tag 真的指向那個 digest 之後，
+在**一次性沙盒裡**驗證 image（使用者程式碼永遠不會被平台 import，P1）。看它跑到終態：
 
 ```bash
-docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
-# → localhost:6000/my-agent@sha256:58b16bb2…
-```
-
-那串 digest 是 **registry manifest digest**。`docker build` 印的那串 sha256 是本機 image ID，
-**是不同的識別，不能互相代替**。
-
-**tag 建議用 semver。** 平台不強制，但這讓每個註冊過的 manifest 都留著一個 tag ——
-理由是 [`specs/dispatcher-resources.md`](specs/dispatcher-resources.md) 裡那個垃圾回收的陷阱。
-
-外部 Registry（GHCR、Docker Hub、企業自架）用法完全一樣。平台不在乎是哪一個，只要拉得到那個 digest。
-
-#### 4. 建立 Agent 並註冊版本
-
-在 Console `http://localhost:8000/console/agents`，或走 API：
-
-```bash
-AID=$(curl -s -X POST http://localhost:8000/v1/agents \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"my-agent","description":"..."}' \
-  | python3 -c 'import sys, json; print(json.load(sys.stdin)["agent_id"])')
-
-curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" \
-  -H 'Content-Type: application/json' \
-  -d "{\"semver\":\"1.0.0\",\"image_ref\":\"localhost:6000/my-agent@sha256:58b16bb2…\"}"
-```
-
-回應是 `BUILDING`。平台在背景依 digest 拉 image、inspect，並在**一個一次性沙盒裡**跑
-`zentra-agent validate` 抽出 entrypoint schema —— 使用者程式碼永遠不會被平台 import（P1）。輪詢到終態：
-
-```bash
+AID=$(curl -s 'http://localhost:8000/v1/agents?limit=100' \
+  | python3 -c 'import sys, json; print(next(a["agent_id"] for a in json.load(sys.stdin)["items"] if a["name"]=="my-agent"))')
 curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])'
 ```
 
 `PUBLISHED` 就能跑。`FAILED` 會把驗證容器的完整 traceback 放進 `error.message` ——
 **那是你唯一的除錯線索**，要讀它，不要用猜的。
+`app` log 出現 `409` 表示上一次 push 的同一個版號還在驗證中 —— 等它結束再 push 一次。
 
-只收 digest：用 tag 會被 `VALIDATION_ERROR` 擋下。同一個 semver 再送一次會在新 image 驗證通過後取代它
-（那個 semver 還在驗證中時才回 `409`）。
+只能在跑平台的那台主機上 push（registry 只聽 `127.0.0.1:6000`）。這正好是那台 VM 上 CD 的流程：
+從公司的 registry 拉下要上線的版本 → 重新 tag 成 `localhost:6000/<agent 名>:<版號>` → push。
+
+#### 4. 從外部 registry 註冊
+
+放在 GHCR、Docker Hub 或企業自架 registry 的 image，用 API（或 Console）以 digest 註冊：
+
+```bash
+curl -s -X POST "http://localhost:8000/v1/agents/$AID/versions" -H 'Content-Type: application/json' \
+  -d '{"semver":"1.0.0","image_ref":"ghcr.io/acme/my-agent@sha256:58b16bb2…"}'
+```
+
+只收 digest，用 `docker inspect --format='{{index .RepoDigests 0}}' <image>` 取得
+（不是 push 的輸出，也不是 `docker build` 印的本機 image ID）。
 
 #### 5. 執行
 
@@ -759,7 +740,8 @@ curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
 
 #### 發新版本
 
-build、push、註冊。用新的 semver，舊版本照常運作。用已存在的 semver 會**取代**它：
+build、push。用新的版號，舊版本照常可用；新版本成為最新版後，舊容器在手上的 Run 跑完就停掉。
+push 已存在的版號會**取代**它：
 新 image 先驗證，通過才接手；已建立的 Run 照舊跑原本綁定的 image，跑完後舊 image 會被清掉。
 見 [`specs/agent-registry.md`](specs/agent-registry.md)。
 
