@@ -61,20 +61,22 @@ worker：zentra.run.execute
 ```
 6a. 同一個交易：找這個「版本」READY 且 inflight < N 的容器（FOR UPDATE），找到就 inflight + 1
 6b. 找不到時：
-     · 有 READY 但全滿 → 背景加開一個（到上限為止），這筆**只排隊不等**，不記在任何容器頭上
+     · 有 READY 但滿了 → 只排進 Redis 佇列，不記在容器頭上，**不開第二個容器**；容器空出位子才來拿
      · 一個都沒有     → 冷啟動並**等它**（上限 CONTAINER_START_TIMEOUT_SECONDS）；
                         起不來 → 退回路徑 B，Run 照樣跑
-6c. 轉 RUNNING（記 container_id，排隊中的為 NULL）→ commit
+6c. **狀態維持 SCHEDULING、不記 started_at**（有預留名額的記 container_id）→ commit
 6d. **commit 之後**才 LPUSH 工作項到 agent_work:{agent_id}:{version_id}
-6e. 放掉一次性沙盒名額，任務返回 —— 不等結果
+6e. 撤銷第 3 步發的 run token（常駐路徑用不到它）、放掉一次性沙盒名額，任務返回 —— 不等結果
 ```
 
-工作項帶：`run_id`、**`run_token`**、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names`。
-token 跟著工作項進容器，不跟著容器走（常駐容器服務多個 Run，見 [gateway.md](gateway.md)）。
+工作項帶：`run_id`、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names`。
 
 ```
 容器 ──GET /internal/agents/{id}/work（long-poll 25s）──▶ app BRPOP 該版本的佇列
-                                                         ├ 有工作 → 200 + 工作項；把 Run 歸屬到「真正取走它」的容器
+          （容器先取自己的並發名額，沒位子就不來取）        ├ Run 已終結（排隊太久被收掉）→ 丟掉，繼續等下一筆
+                                                         ├ Run 還在 SCHEDULING → 同一個交易：轉 RUNNING、記 started_at、
+                                                         │   歸屬到取走它的容器（inflight）→ commit → **發 run token**
+                                                         │   （TTL = timeout_seconds，從這一刻算）→ 200 + 工作項（含 run_token）
                                                          └ 沒有   → 204，容器立刻再 poll
 容器跑完 ──POST /internal/runs/{id}/result──▶ app 只保存 output/error/usage → 送 zentra.run.finalize
 worker：zentra.run.finalize
@@ -82,9 +84,13 @@ worker：zentra.run.finalize
 ```
 
 - **一個版本一條佇列**，不是一個 Agent 一條：容器綁定單一版本，共用佇列會讓舊容器撈走新版本的工作（實測踩過）。
+- **排隊不算進逾時**：排隊中的 Run 是 `SCHEDULING`（畫面「配置中」），被容器取走才轉 `RUNNING` 開始計時。
+  不維持 `QUEUED` 是因為 `QUEUED → SCHEDULING` 是 worker 防止重複投遞的認領動作，退回去會讓重送的任務再派一次。
+- **排隊有上限**：等超過 `RUN_QUEUE_TIMEOUT_SECONDS`（預設 1 小時）還沒被取走 → `FAILED` + `SANDBOX_TIMEOUT`（訊息寫明是排隊太久）。
+  容器死掉時佇列裡的工作永遠不會被取走，沒有這條上限它們會永遠卡著。
 - **先 commit 再 LPUSH**：反過來的話容器可能在 DB 寫完前就取走工作，`inflight_runs` 被加兩次（實測踩過）。
-  反向風險是「commit 了但沒推出去」，那筆 Run 會停在 RUNNING 直到逾時清掃收掉 —— 慢，但帳是對的。
-- **歸屬校正**：同版本多個容器共用一條佇列，先空出來的先拿。派工端猜的容器不一定是執行的那個，所以取工作時把 `inflight` 從猜的那個搬到真正取走的那個。
+  反向風險是「commit 了但沒推出去」，那筆 Run 會停在 SCHEDULING 直到排隊上限收掉 —— 慢，但帳是對的。
+- **歸屬校正**：排隊的工作派工時沒有記在容器上，取走時才記到真正取走它的容器（`attribute_run`）。
 - **`inflight_runs` 永遠不超過 N**：全滿時進來的工作不預留給任何容器。
 
 ### 路徑 B：一次性沙盒（退路）
@@ -131,7 +137,8 @@ Redis 掉通知、重送、整個 key 過期，client 看到的事件都不會�
 | 路徑 | 誰抓 | 怎麼收 |
 |---|---|---|
 | 一次性沙盒 | `driver.wait(timeout)` | 容器被殺 → `SANDBOX_TIMEOUT` |
-| 常駐容器 | `_sweep_timeouts`，**每次派工時順手掃**（最多 50 筆） | `started_at + timeout_seconds` 過了 → FAILED + `SANDBOX_TIMEOUT`，撤銷 token，inflight - 1 |
+| 常駐容器（執行中） | `_sweep_timeouts`，**每次派工時順手掃**（最多 50 筆） | `started_at`（被容器取走的時間）`+ timeout_seconds` 過了 → FAILED + `SANDBOX_TIMEOUT`，撤銷 token，inflight - 1 |
+| 常駐容器（排隊中） | 同上 | `created_at + RUN_QUEUE_TIMEOUT_SECONDS` 過了還在 SCHEDULING → FAILED + `SANDBOX_TIMEOUT` |
 | 同步呼叫 `runs:invoke` / MCP | API 端輪詢 60 秒 | 回 `SANDBOX_TIMEOUT`，**Run 本身繼續跑** |
 
 ⚠️ 常駐路徑的逾時清掃**沒有流量就不會跑**：最後幾筆卡住的 Run 會停在 RUNNING 直到下一次派工。

@@ -67,7 +67,7 @@ log 出現這個代表有一處違反借用規則，**要修程式，不是調�
 | `egress_calls` | 一次對外 HTTP 或寄信（含被擋的） | 依 Agent，可能每天上千 |
 | `agent_llm_credentials` | 一個 Agent 的 LLM 金鑰 | 每 Agent 0～1 |
 | `agent_api_keys` | 一把下游 key | 每 Agent 數把 |
-| `agent_containers` | 一個常駐容器 | 每 Agent 0～3 |
+| `agent_containers` | 一個常駐容器 | 每版本 0～1 個在服務（歷史列會累積） |
 | `agent_settings` | 一個 Agent 的設定文件 | 每 Agent 0～1 |
 | `agent_secrets` | 一個機密 | 每 Agent ≤ 50 |
 | `agent_egress_rules` | 一條出口白名單 | 每 Agent ≤ 20 |

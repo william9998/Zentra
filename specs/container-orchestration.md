@@ -87,6 +87,9 @@ LLM 金鑰、DB 密碼、使用者機密永遠不會出現在 env。
 
 ### 啟動（`start_container`）
 
+**預熱（`POST /containers`）時，這個版本已經有容器在服務或啟動中 → 什麼都不做**，回那一列。
+再派一次啟動會走下面第 1 步，把正在服務的容器連同跑到一半的 Run 一起砍掉重建。
+
 1. 先銷毀殘骸：用 DB 的 Docker id **加上固定容器名**再補刀一次（上次啟動若在建立後、寫回 DB 前失敗，DB 是空的但 Docker 有一個同名容器，會撞名 409）。
 2. 發 container token（TTL 30 天，綁 `agent_id + container_uuid`）。
 3. pull exact digest → 建 `SERVE` 容器。
@@ -101,7 +104,8 @@ LLM 金鑰、DB 密碼、使用者機密永遠不會出現在 env。
 - container token **只能**打這一條，打 `/internal/runs/*`、`/llm/*`、`/egress/*`、`/notify/*` 一律 `403`。
   它按字面是長期憑證，但權限窄到洩漏也沒用：最壞是搶到自己 Agent 的工作。
 - 每次取工作都更新 `last_health_at`（`STARTING` / `UNHEALTHY` 會被翻成 `READY`）：**能來要工作就是最好的健康訊號**，不另做 `/healthz`。
-- 每筆工作項帶**那一筆 Run 的** run token；容器啟動時沒有任何 run token。
+- 每筆工作項帶**那一筆 Run 的** run token，由 app 在容器取走時才發；容器啟動時沒有任何 run token。
+- 容器只在自己有空位時才 long-poll（`ZENTRA_MAX_CONCURRENT_RUNS` 的 semaphore），所以超過 N 的工作會留在 Redis 排隊。
 
 ### 停止、重啟、回收
 
@@ -110,10 +114,11 @@ LLM 金鑰、DB 密碼、使用者機密永遠不會出現在 env。
 | 停止 | 撤銷**這一個容器**的 token → 銷毀 → `STOPPED`、`inflight_runs = 0` |
 | 重啟 | 同上，再走一次啟動；`restart_count + 1`（一直重啟的容器是壞掉了，這個數字讓它看得見） |
 | 閒置回收 | beat 每 60 秒，見 [dispatcher-resources.md](dispatcher-resources.md) §回收 |
-| 版本被取代 | `zentra.version.retire`，等綁著舊版本的 Run 都結束再停（[agent-registry.md](agent-registry.md)） |
+| 版本被取代 | `zentra.version.retire`，等綁著舊版本的 Run 都結束再停，並刪舊 image（[agent-registry.md](agent-registry.md)） |
+| 新版本成為最新版 | `zentra.container.drain_other_versions`，其他版本的容器等手上的 Run 跑完就停（不刪 image） |
 | 刪 Agent | `zentra.agent.purge` 逐一停掉 |
 
-撤銷一律**以容器為單位**：照 Agent 撤會把兄弟容器的 token 一起撤掉，它們還在 long-poll 卻每次 401，畫面上看起來完全正常。
+撤銷一律**以容器為單位**：同一個 Agent 可能同時有新舊兩個版本的容器，照 Agent 撤會把另一個的 token 一起撤掉，它還在 long-poll 卻每次 401，畫面上看起來完全正常。
 
 ### 容器綁定單一版本
 

@@ -25,6 +25,7 @@ celery_app.conf.update(
         # 塞進 q.run 會卡住真正的 Run 派工。
         "zentra.container.apply": {"queue": "q.build"},
         "zentra.version.retire": {"queue": "q.build"},
+        "zentra.container.drain_other_versions": {"queue": "q.build"},
     },
     timezone="UTC",
     enable_utc=True,

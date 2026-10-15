@@ -106,6 +106,21 @@ def _fail(version_id: uuid.UUID, message: str, stage: str) -> dict:
     return {"agent_version_id": str(version_id), "status": str(AgentVersionStatus.FAILED)}
 
 
+def _is_latest(agent_id: uuid.UUID, version_id: uuid.UUID) -> bool:
+    """這一筆是不是這個 Agent 現在的最新 PUBLISHED（依 semver，與 API 解析版本同規則）。"""
+    from apps.api.services.agents import _semver_key
+
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, semver FROM agent_versions WHERE agent_id = %(a)s AND status = %(s)s",
+            {"a": agent_id, "s": str(AgentVersionStatus.PUBLISHED)},
+        ).fetchall()
+    if not rows:
+        return False
+    latest = max(rows, key=lambda r: _semver_key(r["semver"]))
+    return latest["id"] == version_id
+
+
 @celery_app.task(name="zentra.build.execute", bind=True, acks_late=True)
 def execute_build(self, agent_version_id: str) -> dict:
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
@@ -200,11 +215,14 @@ def execute_build(self, agent_version_id: str) -> dict:
                     "now": now,
                 },
             )
-        if replaced is not None:
-            # commit 之後才派：retire 要看得到 SUPERSEDED，否則它會以為沒事可做。
-            from apps.worker.tasks.container import retire_version
+        # commit 之後才派：這些任務要看得到這次的結果，否則會以為沒事可做。
+        from apps.worker.tasks.container import drain_other_versions, retire_version
 
+        if replaced is not None:
             retire_version.apply_async(args=[str(replaced["id"])])
+        if _is_latest(locked.agent_id, version_id):
+            # 新請求從現在起都走這個版本，其他版本的容器跑完手上的就停（一個 Agent 一個容器）。
+            drain_other_versions.apply_async(args=[str(locked.agent_id), str(version_id)])
         return {"agent_version_id": agent_version_id,
                 "status": str(AgentVersionStatus.PUBLISHED),
                 "superseded": str(replaced["id"]) if replaced is not None else None}

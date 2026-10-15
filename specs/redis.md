@@ -137,8 +137,8 @@ loop:
 > **`container_tokens:{agent_id}` 目前只寫不讀。** `revoke_agent` / `revoke_agent_sync` 存在但沒有呼叫端 ——
 > 多容器之後它們會連兄弟容器一起撤掉，所以所有撤銷都改走 `container_tokens_of`。這個 Set 仍在發放時寫入，靠 TTL 消失。
 >
-> **為什麼要分 `container_tokens_of`**：一個 Agent 可以有多個容器。如果照 Agent 撤銷，
-> 停掉一個容器會把兄弟容器的 token 一起撤掉 —— 它們還在 long-poll，卻每次都拿到 401，畫面上看起來完全正常。
+> **為什麼要分 `container_tokens_of`**：一個 Agent 可能同時有新舊兩個版本的容器。如果照 Agent 撤銷，
+> 停掉一個容器會把另一個的 token 一起撤掉 —— 它們還在 long-poll，卻每次都拿到 401，畫面上看起來完全正常。
 
 ### 3.5 `agent_work:{agent_id}:{agent_version_id}` —— 常駐容器工作佇列
 
@@ -151,11 +151,11 @@ worker（派工）  ──LPUSH──▶  agent_work:{agent_id}:{version_id}  �
 | | |
 |---|---|
 | 型別 | List，`LPUSH` + `BRPOP` = **FIFO**（先到的 Run 先處理） |
-| 每個項目 | JSON：`run_id`、**`run_token`**、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names` |
+| 每個項目 | JSON：`run_id`、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names`。**沒有 run token** —— app 在容器取走時才發、加進回應 |
 | 寫入 | `worker` 的 `q.run` 任務，**在 commit Run 的 `container_id` 與 `inflight_runs` 之後**才 LPUSH |
 | 讀取 | `app` 收到容器的 long-poll 時 `BRPOP`，最多等 25 秒；沒工作回 204，容器重新 poll |
 | TTL | 無 |
-| 刪除 | 該版本最後一個容器停止時 `DEL`（沒人會來取了，留著只會讓那些 Run 停在 RUNNING 直到逾時） |
+| 刪除 | 該版本最後一個容器停止時 `DEL`（沒人會來取了，留著只會讓那些 Run 停在 SCHEDULING 直到排隊上限） |
 
 > **一個版本一條佇列，不是一個 Agent 一條。** 容器綁定單一版本（P5）。共用一條的話，切換版本期間
 > 新舊容器並存，舊容器會把新版本的工作撈走：說好跑 1.0.2 的 Run 實際跑了 1.0.0（實測踩過）。

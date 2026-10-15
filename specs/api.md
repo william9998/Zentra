@@ -80,7 +80,7 @@ HTTP 欄為 `—` 的只出現在 Run 或版本的 `error` 物件裡，不是 HT
   "created_at": "…", "started_at": "…", "finished_at": "…" }
 ```
 
-- `status`：`QUEUED | SCHEDULING | RUNNING | SUCCEEDED | FAILED | CANCELLED`（狀態機見 [dispatch.md](dispatch.md)）。**沒有 `WAITING_INPUT`**，不要寫也不要斷言。
+- `status`：`QUEUED | SCHEDULING | RUNNING | SUCCEEDED | FAILED | CANCELLED`（狀態機見 [dispatch.md](dispatch.md)）。在常駐容器佇列裡排隊的是 `SCHEDULING`；`started_at` 是真正開始執行的時間。**沒有 `WAITING_INPUT`**，不要寫也不要斷言。
 - `output` / `error` / `usage` / `started_at` / `finished_at` 還沒有值時是 `null`，**key 一定在**。
 - 不打 LLM 的 Run：`usage` 的計數為 `0`、`cost_usd` 為 `"0"`。`usage` 由 `llm_calls` 聚合，不採信沙盒回報。
 - `agent_version` 是 semver。同版號可能被取代過，要知道實際跑的 image 看版本紀錄的 digest。
@@ -157,7 +157,7 @@ Console 的 `api.js` 有呼叫它，但**後端沒有這條路由**（會 404）
 
 ```json
 { "container_id": "…", "agent_id": "…", "agent_version": "1.2.0", "status": "READY",
-  "inflight_runs": 3, "max_concurrent_runs": 30, "restart_count": 0,
+  "inflight_runs": 3, "max_concurrent_runs": 50, "restart_count": 0,
   "started_at": "…", "last_health_at": "…", "error": null }
 ```
 

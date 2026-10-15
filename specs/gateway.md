@@ -48,7 +48,7 @@
   "secret_names": ["SMTP_PASSWORD"] }
 ```
 
-工作項另外帶 `run_token`。
+常駐容器的工作項另外帶 `run_token`：app 在容器取走工作的那一刻才發，TTL 從那時算（排隊時間不吃掉它）。
 
 - `default_model`、`config`、`secret_names` **每筆 Run 重算**：中途改設定，下一筆就生效；已經在跑的不受影響。
 - `config` 是頂層欄位，**不得併進 `manifest`**（manifest 是版本的不可變內容）。

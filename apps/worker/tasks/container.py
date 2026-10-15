@@ -457,19 +457,7 @@ def retire_version(self, agent_version_id: str) -> dict:
     manager = _manager(redis)
     notes = []
     try:
-        for row in containers:
-            try:
-                containertoken.revoke_container_sync(redis, row.id)
-                _destroy(manager, row.id, row.container_id)
-                with db.transaction() as conn:
-                    conn.execute(
-                        "UPDATE agent_containers SET container_id = NULL, status = 'STOPPED', "
-                        "inflight_runs = 0 WHERE id = %(id)s",
-                        {"id": row.id},
-                    )
-                notes.append(f"容器 {row.id} 已移除")
-            except Exception as exc:              # noqa: BLE001
-                notes.append(f"容器 {row.id} 移除失敗：{type(exc).__name__}")
+        notes.extend(_stop_containers(redis, manager, containers))
 
         if shared:
             notes.append(f"{version.image_ref}: 還有 {shared} 個版本用同一個 digest，不刪")
@@ -485,3 +473,66 @@ def retire_version(self, agent_version_id: str) -> dict:
 
     log.info("retired version %s: %s", agent_version_id, "; ".join(notes))
     return {"agent_version_id": agent_version_id, "status": "RETIRED", "notes": notes}
+
+
+def _stop_containers(redis: Redis, manager: SandboxManager, rows: list[AgentContainer]) -> list[str]:
+    """撤銷 token → 銷毀 → 標 STOPPED。每個獨立處理，一個失敗不擋其他的。"""
+    notes = []
+    for row in rows:
+        try:
+            containertoken.revoke_container_sync(redis, row.id)
+            _destroy(manager, row.id, row.container_id)
+            with db.transaction() as conn:
+                conn.execute(
+                    "UPDATE agent_containers SET container_id = NULL, status = 'STOPPED', "
+                    "inflight_runs = 0 WHERE id = %(id)s",
+                    {"id": row.id},
+                )
+            notes.append(f"容器 {row.id} 已移除")
+        except Exception as exc:              # noqa: BLE001
+            notes.append(f"容器 {row.id} 移除失敗：{type(exc).__name__}")
+    return notes
+
+
+@celery_app.task(name="zentra.container.drain_other_versions", bind=True,
+                 max_retries=_RETIRE_MAX_RETRIES, default_retry_delay=_RETIRE_RETRY_SECONDS)
+def drain_other_versions(self, agent_id: str, keep_version_id: str) -> dict:
+    """新版本成為最新版之後，停掉同一個 Agent **其他版本**的常駐容器。
+
+    一個 Agent 平常只該有一個常駐容器。換版之後新請求都走新版本的容器，
+    舊容器只剩手上的 Run —— 等它們跑完就停，不等閒置回收的 30 分鐘。
+
+    只停容器，**不刪 image**：舊版本仍是 PUBLISHED，指定舊版號的呼叫照樣能跑
+    （會再拉起它的容器，閒置後被回收）。被同版號取代的版本由 retire_version 收 image。
+    """
+    with db.connection() as conn:
+        containers = [
+            AgentContainer.from_row(r) for r in conn.execute(
+                f"SELECT {AgentContainer.returning()} FROM agent_containers "
+                "WHERE agent_id = %(agent)s AND agent_version_id <> %(keep)s "
+                "AND status IN ('STARTING', 'READY', 'UNHEALTHY')",
+                {"agent": uuid.UUID(agent_id), "keep": uuid.UUID(keep_version_id)},
+            ).fetchall()
+        ]
+        if not containers:
+            return {"agent_id": agent_id, "status": "NOTHING_TO_DRAIN"}
+        busy = conn.execute(
+            "SELECT count(*) AS n FROM runs WHERE agent_version_id = ANY(%(ids)s) "
+            "AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')",
+            {"ids": list({c.agent_version_id for c in containers})},
+        ).fetchone()["n"]
+    if busy:
+        try:
+            raise self.retry()
+        except self.MaxRetriesExceededError:
+            log.warning("agent %s: old-version containers still have %d unfinished runs; "
+                        "leaving them to idle reclamation", agent_id, busy)
+            return {"agent_id": agent_id, "status": "GAVE_UP", "busy_runs": busy}
+
+    redis = Redis.from_url(settings.redis_url)
+    try:
+        notes = _stop_containers(redis, _manager(redis), containers)
+    finally:
+        redis.close()
+    log.info("drained old-version containers of agent %s: %s", agent_id, "; ".join(notes))
+    return {"agent_id": agent_id, "status": "DRAINED", "notes": notes}

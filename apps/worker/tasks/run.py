@@ -254,7 +254,7 @@ def _sweep_timeouts(redis: Redis) -> int:
             {"status": str(RunStatus.RUNNING)},
         ).fetchall()
 
-    swept = 0
+    swept = _sweep_queue_timeouts(redis, now)
     for rec in stale:
         run = RunRow.from_row(rec)
         deadline = run.started_at + timedelta(seconds=run.timeout_seconds)
@@ -285,6 +285,53 @@ def _sweep_timeouts(redis: Redis) -> int:
         swept += 1
     if swept:
         log.warning("swept %d timed-out resident runs", swept)
+    return swept
+
+
+def _sweep_queue_timeouts(redis: Redis, now: datetime) -> int:
+    """在常駐容器佇列裡等太久、一直沒被取走的 Run 收成 FAILED。
+
+    排隊不算進 Run 的逾時（容器取走才轉 RUNNING 開始計時），所以要另一條上限：
+    容器死掉時佇列裡的工作永遠不會被取走，不收的話它們會永遠停在 SCHEDULING。
+    佇列裡留著的工作項之後被取到時，take_work 看到 Run 已終結會直接丟掉。
+    """
+    from datetime import timedelta
+
+    cutoff = now - timedelta(seconds=settings.run_queue_timeout_seconds)
+    with worker_db.connection() as conn:
+        stale = conn.execute(
+            f"""
+            SELECT {RunRow.returning()} FROM runs
+            WHERE status = %(status)s AND started_at IS NULL AND created_at < %(cutoff)s
+            LIMIT 50
+            """,
+            {"status": str(RunStatus.SCHEDULING), "cutoff": cutoff},
+        ).fetchall()
+    swept = 0
+    for rec in stale:
+        run = RunRow.from_row(rec)
+        with worker_db.transaction() as conn:
+            current = lock_run(conn, run.id)
+            if current.status != RunStatus.SCHEDULING or current.started_at is not None:
+                continue
+            _transition(
+                conn, run.id, RunStatus.FAILED, terminal=True,
+                error=_error(
+                    ErrorCode.SANDBOX_TIMEOUT,
+                    f"the run waited in the queue for over {settings.run_queue_timeout_seconds}s "
+                    "without a free container slot",
+                    str(run.id), True,
+                ),
+            )
+            if current.container_id:
+                conn.execute(
+                    "UPDATE agent_containers SET inflight_runs = inflight_runs - 1 "
+                    "WHERE id = %(id)s AND inflight_runs > 0",
+                    {"id": current.container_id},
+                )
+        publish_pending(redis, run.id)
+        runtoken.revoke_run_sync(redis, str(run.id))
+        swept += 1
     return swept
 
 
@@ -394,7 +441,7 @@ def _ready_container(conn, agent_id, version_id) -> AgentContainer | None:
     發新版之後舊容器還在跑舊版本，把新版的 Run 派進去會執行到錯的程式碼。
 
     滿載（`inflight_runs >= N`）的容器不算。回 `None` 不代表沒有容器 ——
-    可能是全都滿了，那是 `_live_containers` 要回答的問題（溢出，見 `_overflow`）。
+    可能是滿了，那是 `_live_containers` 要回答的問題。
     """
     worker_db.require_transaction(conn)
     rec = conn.execute(
@@ -479,42 +526,6 @@ def _live_containers(conn, agent_id, version_id) -> list[AgentContainer]:
         {"agent_id": agent_id, "version_id": version_id},
     ).fetchall()
     return [AgentContainer.from_row(row) for row in rows]
-
-
-def _overflow(agent_id, version_id) -> None:
-    """全滿了就在**背景**再開一個容器（ADR-0012 選項 C 的後半）。
-
-    ## 為什麼不等它
-
-    冷啟動要等，是因為沒有容器就沒人能接這筆工作。溢出不一樣：
-    **工作已經排進佇列了**，現有容器一空出位子就會拿走它。
-    再讓這筆 Run 去等一個全新容器（含 image pull）只是無謂地加幾十秒延遲。
-    新容器是為了**後面**的請求擴容，不是為了這一筆。
-
-    所以這裡把啟動丟給 `q.build`（跟使用者按按鈕走同一條路），立刻返回。
-
-    ## 為什麼有上限
-
-    沒有上限的話，一波尖峰會讓平台一直開容器，每個 2 GB，直到主機被 OOM killer
-    清場 —— 那比讓請求排隊糟得多。排隊只是慢，OOM 是整台機器上的東西一起死。
-    """
-    from apps.api.tasks import dispatch_container_start
-
-    cap = settings.sandbox_max_containers_per_agent
-    with worker_db.connection() as conn:
-        live = _live_containers(conn, agent_id, version_id)
-    if len(live) >= cap:
-        log.info("agent %s is at its container cap (%d); queueing instead", agent_id, cap)
-        return
-    if any(row.status == "STARTING" for row in live):
-        return          # 已經有一個在路上了，不要一筆工作開一個容器
-
-    container, mine = _claim_container_slot(agent_id, version_id)
-    if container is None or not mine:
-        return
-    log.info("agent %s containers are full; starting #%d in the background",
-             agent_id, len(live) + 1)
-    dispatch_container_start(str(container.id))
 
 
 def _wait_ready(container_uuid, deadline: float) -> AgentContainer | None:
@@ -675,23 +686,24 @@ def execute_run(self, run_id: str) -> dict:
             # ZEN-000 的內建 fixture 沒有 serve 模式，跳過它（ZEN-010 會退休它）。
             #
             # 「沒有可用容器」有兩種，處理方式相反：
-            #   全滿      → 工作排進佇列就好，先空出來的容器會拿走；背景加開下一個
+            #   滿了      → 工作排進 Redis 佇列就好，容器空出位子會自己來拿。
+            #               **不開第二個容器** —— 一個版本就是一個容器，多的排隊。
             #   一個都沒有 → 沒人能接，只能等一個起來（冷啟動）
             serving = [row for row in live if row.status == "READY"]
             if serving:
-                _overflow(run.agent_id, version.id)
-                # **不預留給任何容器。** 全都滿了，硬記在誰頭上都會讓
-                # `inflight_runs` 超過 N，畫面上變成「2 / 1」那種看起來像超收的數字。
-                # 這筆工作就是在排隊 —— 等某個容器空出來取走它，
-                # 那時 take_work 會把它記到真正執行的容器上。
+                # **不預留給容器。** 已經滿了，硬記上去會讓 `inflight_runs` 超過 N。
+                # 這筆工作就是在排隊 —— 容器取走它時，take_work 才把它記上去。
                 queued_only = True
                 container = serving[0]
             else:
                 container = _ensure_container(redis, run.agent_id, version.id)
         if container is not None:
+            # 常駐路徑的 run token **由 app 在容器取走工作時才發**（TTL 從那一刻算）。
+            # 這裡先發的那把用不到 —— 在佇列裡等久了它會先過期 —— 直接撤掉。
+            runtoken.revoke_run_sync(redis, run_id)
+            token = None
             item = {
                 "run_id": run_id,
-                "run_token": token,                # ← P4：token 跟著工作項走
                 "entrypoint": run.entrypoint,
                 "input": run.input,
                 "manifest": version.manifest or {},
@@ -702,13 +714,14 @@ def execute_run(self, run_id: str) -> dict:
                 "config": _agent_config(run.agent_id),
                 "secret_names": _secret_names(run.agent_id),
             }
-            with worker_db.transaction() as conn:
-                _transition(
-                    conn, rid, RunStatus.RUNNING,
-                    started_at=datetime.now(UTC),
-                    container_id=None if queued_only else container.id,
-                )
-            publish_pending(redis, rid)
+            # **狀態維持 SCHEDULING、不記 started_at。** 容器取走時（app 的 take_work）
+            # 才轉 RUNNING 並開始計時 —— 排隊的時間不算進 Run 的逾時。
+            if not queued_only:
+                with worker_db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE runs SET container_id = %(cid)s WHERE id = %(id)s",
+                        {"cid": container.id, "id": rid},
+                    )
 
             # **推工作一定要在 commit 之後。** 反過來的話，容器可能在 DB 寫完之前
             # 就取走這筆工作並做歸屬校正 —— 那時它看到的 `run.container_id` 還是空的，
@@ -716,7 +729,7 @@ def execute_run(self, run_id: str) -> dict:
             # 實測踩過：一筆 Run 跑完，容器顯示 inflight=2。
             #
             # 反向的風險是「commit 了但沒推出去」（行程正好在這裡死掉），
-            # 那筆 Run 會停在 RUNNING 直到 _sweep_timeouts 收掉它 —— 慢，但帳是對的。
+            # 那筆 Run 會停在 SCHEDULING 直到 _sweep_timeouts 依排隊上限收掉它 —— 慢，但帳是對的。
             work.push_sync(redis, run.agent_id, version.id, item)
             # **不等結果就返回。** 常駐容器同時跑 N 個 Run，而 Celery worker 只有
             # 十個行程 —— 在這裡等會讓 Celery 變成新的瓶頸，N 就白設了。
@@ -724,7 +737,7 @@ def execute_run(self, run_id: str) -> dict:
             manager.release(run_id)
             reserved = False
             dispatched_to_container = True
-            return {"run_id": run_id, "status": str(RunStatus.RUNNING), "dispatched": True}
+            return {"run_id": run_id, "status": str(RunStatus.SCHEDULING), "dispatched": True}
 
         # Keep the ZEN-000 fixture runnable during the migration. Every user
         # registered version uses the exact DB-resolved digest path.

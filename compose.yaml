@@ -92,10 +92,10 @@ services:
       #    否則沙盒會拿到指向舊名字的 gateway，Run 會 FAILED 且沒有任何事件。
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
-      # 常駐容器（ZEN-015 / ADR-0012）。N × 容器 mem_limit 就是單一 Agent 的
-      # 記憶體天花板 —— 調 SANDBOX_MAX_CONTAINERS_PER_AGENT 前先看主機有多少記憶體。
-      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-30}
-      SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
+      # 常駐容器：一個版本一個，同時最多 N 個 Run，多的在 Redis 排隊。
+      # N 個 Run 共用容器的 2 GB —— 調大 N 前先想每個 Run 吃多少記憶體。
+      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-50}
+      RUN_QUEUE_TIMEOUT_SECONDS: ${RUN_QUEUE_TIMEOUT_SECONDS:-3600}
       CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
       CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
       # ── LLM（ZEN-002 / P4）──────────────────────────────────────────
@@ -140,10 +140,10 @@ services:
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
-      # 常駐容器（ZEN-015 / ADR-0012）。N × 容器 mem_limit 就是單一 Agent 的
-      # 記憶體天花板 —— 調 SANDBOX_MAX_CONTAINERS_PER_AGENT 前先看主機有多少記憶體。
-      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-30}
-      SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
+      # 常駐容器：一個版本一個，同時最多 N 個 Run，多的在 Redis 排隊。
+      # N 個 Run 共用容器的 2 GB —— 調大 N 前先想每個 Run 吃多少記憶體。
+      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-50}
+      RUN_QUEUE_TIMEOUT_SECONDS: ${RUN_QUEUE_TIMEOUT_SECONDS:-3600}
       CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
       CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
       # 內部 Registry 的兩個視角：image_ref 寫的是主機看到的位址，

@@ -170,9 +170,11 @@ async def start_agent_container(
         version = None
         if body and body.version:
             version = await service.load_version_by_semver(conn, agent.id, body.version)
-        row = await container_service.request_start(conn, agent.id, version)
+        row, created = await container_service.request_start(conn, agent.id, version)
         semver = await container_service.semver_of(conn, row.agent_version_id)
-    dispatch_container_start(str(row.id))
+    if created:
+        # 已經有同版本的容器在服務（或正在啟動）就什麼都不做 —— 再派一次會把它砍掉重建。
+        dispatch_container_start(str(row.id))
     return _container_view(row, semver)
 
 

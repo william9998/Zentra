@@ -25,8 +25,8 @@
 | 變數 | 預設 | 管什麼 |
 |---|---|---|
 | `SANDBOX_MAX_CONCURRENT` | 10 | 同時存在的**一次性沙盒**數。滿了 → Run `FAILED` + `QUOTA_EXCEEDED`（retryable） |
-| `SANDBOX_RUNS_PER_CONTAINER` | 30 | 一個常駐容器同時跑幾筆 Run（N） |
-| `SANDBOX_MAX_CONTAINERS_PER_AGENT` | 3 | 一個 Agent 最多幾個常駐容器（溢出上限） |
+| `SANDBOX_RUNS_PER_CONTAINER` | 50 | 一個常駐容器同時跑幾筆 Run（N）。多的在 Redis 排隊 |
+| `RUN_QUEUE_TIMEOUT_SECONDS` | 3600 | Run 在佇列裡最多等多久；排隊時間**不算**進 Run 自己的逾時 |
 | `CONTAINER_START_TIMEOUT_SECONDS` | 180 | 冷啟動（含 image pull）最多等多久，逾時退回一次性沙盒 |
 | `CONTAINER_IDLE_TIMEOUT_SECONDS` | 1800 | 閒置多久回收。`0` = 不回收（**自動啟動之後不該設 0**） |
 | `RUN_TIMEOUT_SECONDS` | 900 | Run 預設逾時；每筆 Run 的 `timeout_seconds` 硬上限也是 900 |
@@ -36,22 +36,30 @@
 
 ### N 與記憶體是一組的
 
-> **N = 30 表示 30 個 Run 共用一個容器的 2 GB，平均每 Run 約 68 MB。**
+> **N = 50 表示 50 個 Run 共用一個容器的 2 GB，平均每 Run 約 40 MB。**
 
-LLM agent 大部分時間在等 I/O，通常夠用。不夠的情況很具體：agent 把大 payload（長文件、大 JSON、圖片）整份讀進記憶體，
-幾個並行就吃光額度，**同容器的 30 個一起被 OOM 帶走**。調 N 時要一起看記憶體，不能只調一個。
+LLM agent 大部分時間在等 I/O，純等 LLM 回應的 Run 通常夠用。不夠的情況很具體：agent 把大 payload（長文件、大 JSON、圖片）
+整份讀進記憶體，幾個並行就吃光額度，**同容器的 N 個一起被 OOM 帶走**。調 N 時要一起看記憶體，不能只調一個。
 
-### 單一 Agent 的記憶體天花板
+### 一個版本只開一個容器
 
-`SANDBOX_MAX_CONTAINERS_PER_AGENT × 2 GB` = 預設 **6 GB**。開發機通常沒有那麼多：
-多開的容器會在啟動時被 OOM 帶走，畫面上只看到 `FAILED`。調高前先確認主機記憶體。
+**不做溢出擴容。** 一個版本就是一個常駐容器，滿了多的在 Redis 排隊，容器空出位子才會來拿 ——
+容器在 long-poll 之前先取自己的並發名額（`ZENTRA_MAX_CONCURRENT_RUNS` = N 的 semaphore），沒位子就不取工作。
+所以單一 Agent 的記憶體天花板固定是 **2 GB**，尖峰只會讓排隊變長，不會多吃記憶體。
+
+例外：同一個 Agent 同時有兩個版本在被呼叫時，每個版本各一個容器。這只會短暫發生：
+
+- **換版**：新版本發布並成為最新版時，worker 送 `zentra.container.drain_other_versions` ——
+  其他版本的容器等手上的 Run 跑完就停（每 30 秒檢查，最多等一小時，之後交給閒置回收）。
+  只停容器、不刪 image（舊版本仍可用版號指定）；被同版號取代的版本另由 `retire_version` 收 image。
+- **呼叫端指定舊版號**：會再拉起舊版本的容器，閒置 30 分鐘後回收。
 
 **主機規劃**（以 Docker 可用記憶體計）：
 
 | 要同時服務 | 至少需要 |
 |---|---|
 | 平台本身（postgres、redis、registry、app、worker） | ~2 GB |
-| 每個「正在被呼叫」的 Agent | + 2 GB × 它的容器數 |
+| 每個「正在被呼叫」的 Agent（的每個版本） | + 2 GB |
 | 一次性沙盒併發 10 個（全部退回時的最壞情況） | + 20 GB |
 
 macOS 用 Colima 時，VM 低於 6 GB 會把 Docker daemon 拖死。
@@ -60,17 +68,17 @@ macOS 用 Colima 時，VM 低於 6 GB 會把 Docker daemon 拖死。
 
 ```
 找「這個版本」的容器（容器綁定單一版本，不能跨版本）：
-  有 READY 且 inflight < N        → 選 inflight 最少的那個，inflight + 1（FOR UPDATE，同交易）
-  有 READY 但全滿                 → 這筆排進佇列不等；背景加開一個（還沒到上限、也沒有正在啟動的才開）
-  一個都沒有（或只有 STARTING）    → 冷啟動並等它，最多 CONTAINER_START_TIMEOUT_SECONDS
+  READY 且 inflight < N           → inflight + 1（FOR UPDATE，同交易），推進佇列
+  READY 但滿了                    → 推進佇列排隊，不記在容器頭上；**不開第二個容器**
+  沒有容器（或還在 STARTING）       → 冷啟動並等它，最多 CONTAINER_START_TIMEOUT_SECONDS
   冷啟動失敗或逾時                 → 退回一次性沙盒（受 SANDBOX_MAX_CONCURRENT 限制）
 ```
 
 - **防止同時開十個**：十個請求同時打進一個沒容器的 Agent，用 `pg_advisory_xact_lock(版本 id)` 讓「檢查 + 登記 STARTING」只有一個人做；
   鎖只罩住這一瞬間，不罩住 image pull。拿到鎖後要重查一次（等鎖期間別人可能已經開好了）。
-- **溢出不讓這筆請求等**：工作已經在佇列裡，先空出來的容器會拿走它；新容器是為了**後面**的請求擴容。
-- **到上限就只排隊**，不再開。排隊太久會被逾時清掃收成 `SANDBOX_TIMEOUT`。
-- 多個容器共用同一條版本佇列，誰先空出來誰拿；取走時把 inflight 歸到真正執行的容器（見 [dispatch.md](dispatch.md)）。
+- **排隊是 FIFO**（`LPUSH` + `BRPOP`），先到的 Run 先被容器拿走；取走時才把 inflight 記到容器上。
+- **排隊不算進逾時**：排隊中的 Run 是 `SCHEDULING`，被容器取走才轉 `RUNNING`、記 `started_at`、發 run token。
+  排隊本身的上限是 `RUN_QUEUE_TIMEOUT_SECONDS`（見 [dispatch.md](dispatch.md) §逾時）。
 
 ### 一次性沙盒的併發租約
 

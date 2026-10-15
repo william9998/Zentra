@@ -71,7 +71,7 @@ flowchart LR
         end
         subgraph sbx["zentra-sandbox-net · internal · no route out"]
             direction TB
-            serve["<b>Resident container</b><br/>one per version · up to 30 runs"]
+            serve["<b>Resident container</b><br/>one per version · up to 50 runs · rest queue in Redis"]
             oneoff["<b>One-off sandbox</b><br/>one per run · fallback"]
             validate["<b>Validation container</b><br/>on publish"]
         end
@@ -478,7 +478,7 @@ flowchart LR
         end
         subgraph sbx["zentra-sandbox-net · internal · 無對外路由"]
             direction TB
-            serve["<b>常駐容器</b><br/>每版本一個 · 同時最多 30 筆 Run"]
+            serve["<b>常駐容器</b><br/>每版本一個 · 同時最多 50 筆 · 其餘在 Redis 排隊"]
             oneoff["<b>一次性沙盒</b><br/>一 Run 一盒 · 退路"]
             validate["<b>驗證容器</b><br/>發布時"]
         end

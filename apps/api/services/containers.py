@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 
-from apps.api.enums import AgentVersionStatus, ErrorCode
+from apps.api.enums import AgentVersionStatus, ErrorCode, RunStatus
 from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
 from apps.api.rows import AgentContainer, AgentVersion, Run
@@ -62,8 +62,11 @@ async def live_containers(
 
 async def request_start(
     conn: asyncpg.Connection, agent_id: uuid.UUID, version: AgentVersion | None = None,
-) -> AgentContainer:
-    """登記一個「要啟動」的容器，回傳待建立的那一列。
+) -> tuple[AgentContainer, bool]:
+    """登記一個「要啟動」的容器，回傳 `(那一列, 是不是這次新登記的)`。
+
+    **只有新登記的才該派啟動任務。** 啟動流程第一步是清掉同名殘骸 —— 對一個正在服務的
+    容器派啟動，等於把它連同裡面跑到一半的 Run 一起砍掉重建（實測踩過）。
 
     **不在這裡建容器** —— 只寫 `STARTING`，實際建立由 worker 接手。
     這樣 API 不會被 image pull 卡住，而且 docker.sock 仍然只有 worker 掛。
@@ -74,8 +77,7 @@ async def request_start(
     same_version = [c for c in existing if c.agent_version_id == version.id]
     if same_version:
         # 已經有同版本的容器在服務 —— 重複啟動不是錯誤，但也不該再開一個。
-        # 要多開是「並發滿了溢出」的職責，不是使用者按兩次按鈕。
-        return same_version[0]
+        return same_version[0], False
 
     rec = await conn.fetchrow(
         f"""
@@ -85,7 +87,7 @@ async def request_start(
         """,
         uuid7(), agent_id, version.id, "STARTING",
     )
-    return AgentContainer.from_row(rec)
+    return AgentContainer.from_row(rec), True
 
 
 async def load_container(conn: asyncpg.Connection, container_uuid: str) -> AgentContainer:
@@ -239,6 +241,39 @@ async def attribute_run(
     await conn.execute(
         "UPDATE runs SET container_id = $2 WHERE id = $1", rid, taker_uuid,
     )
+
+
+async def start_taken_run(
+    conn: asyncpg.Connection, taker_uuid: uuid.UUID, run_id: str | None,
+) -> Run | None:
+    """容器取走一筆工作：把 Run 從 SCHEDULING 轉成 RUNNING 並開始計時。
+
+    排隊中的 Run 維持 SCHEDULING、沒有 `started_at` —— **被容器取走這一刻才開始算逾時**，
+    排隊時間不算。回 `None` 表示這筆工作已經不該跑（例如排隊太久被收成 FAILED），
+    呼叫端丟掉它、繼續取下一筆。狀態與 run.status 事件同一個交易寫入。
+    """
+    from apps.api.services.events import lock_run, status_event
+
+    if not run_id:
+        return None
+    try:
+        rid = uuid.UUID(run_id)
+    except ValueError:
+        return None
+    try:
+        run = await lock_run(conn, rid)
+    except ZentraError:
+        return None
+    if run.status != str(RunStatus.SCHEDULING):
+        return None
+    await attribute_run(conn, taker_uuid, run_id)
+    rec = await conn.fetchrow(
+        f"UPDATE runs SET status = $2, started_at = $3 WHERE id = $1 RETURNING {Run.returning()}",
+        rid, str(RunStatus.RUNNING), datetime.now(UTC),
+    )
+    started = Run.from_row(rec)
+    await status_event(conn, started)
+    return started
 
 
 async def resolve_for_work(

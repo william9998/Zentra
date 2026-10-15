@@ -18,7 +18,7 @@ from apps.api.schemas import (
 )
 from apps.api.services import containers as container_service
 from apps.api.services import (
-    agent_credentials, agent_secrets, agent_settings, egress, events, llm, notify, work,
+    agent_credentials, agent_secrets, agent_settings, egress, events, llm, notify, runtoken, work,
 )
 from apps.api.services.runs import save_result
 from apps.api.services.validation import save_validation
@@ -202,15 +202,25 @@ async def take_work(
             return Response(status_code=204)
         await container_service.touch_health(conn, row.id)
 
-    item = await work.pop(redis, bound_agent_id, row.agent_version_id)
-    if item is None:
-        return Response(status_code=204)
+    # 佇列裡可能有已經終結的工作（排隊太久被收掉的），丟掉、繼續等下一筆。
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + work.LONG_POLL_SECONDS
+    while True:
+        remaining = int(deadline - loop.time())
+        if remaining <= 0:
+            return Response(status_code=204)
+        item = await work.pop(redis, bound_agent_id, row.agent_version_id, timeout=remaining)
+        if item is None:
+            return Response(status_code=204)
+        async with db.transaction() as conn:
+            started = await container_service.start_taken_run(conn, row.id, item.get("run_id"))
+        if started is not None:
+            break
 
-    # **記在真正取走它的容器頭上。** 佇列是 per-agent 的（多個容器共用一條，
-    # 先空出來的先拿），所以派工端猜的那個容器不一定就是執行的那個。
-    # 不校正的話，畫面會顯示一個閒著的容器滿載、一個滿載的容器閒著。
-    async with db.transaction() as conn:
-        await container_service.attribute_run(conn, row.id, item.get("run_id"))
+    # **run token 在這裡才發**，TTL = 這筆 Run 的 timeout，從容器取走的這一刻算 ——
+    # 排隊多久都不會吃掉它的執行時間（P4：一個 Run 一把，跑完由 finalize 撤銷）。
+    item["run_token"] = await runtoken.issue(redis, started.id, started.timeout_seconds)
+    await events.publish_pending(redis, started.id)
 
     return Response(
         content=json.dumps(item),
