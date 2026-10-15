@@ -43,10 +43,62 @@ ADR-0005 relaxed the *threat model* to trusted code — **it did not relax these
 ## Architecture
 
 
-One host, one `docker compose`, four long-running services — plus a sandbox container created per Run and destroyed
-when it ends. The sandbox sits on a network with **no route out**; its only peer is the `app` service's Internal
-Gateway, which holds the LLM key, meters tokens and collects events. The console has no container of its own: it is
-static HTML/CSS/JS served by `app`, calling the same `/v1` API everyone else calls.
+One host, one `docker compose`, five long-running services — plus Agent containers the worker creates on demand:
+by default one **resident container** per version that runs many runs at once and is reclaimed when idle, with a
+**one-off sandbox per run** as the fallback. Containers sit on a network with **no route out**; their only peer is the
+`app` service's Internal Gateway, which holds the LLM keys, meters tokens and proxies allow-listed egress. The console
+has no container of its own: it is static HTML/CSS/JS served by `app`, calling the same `/v1` API everyone else calls.
+
+```mermaid
+flowchart LR
+    subgraph clients["Callers"]
+        direction TB
+        browser["Browser · Console"]
+        system["External systems"]
+        mcpc["MCP clients"]
+        dev["Developer on the host"]
+    end
+
+    subgraph host["One host · docker compose · 5 long-running services"]
+        direction LR
+        subgraph net["zentra-net"]
+            direction TB
+            app["<b>app</b> · FastAPI :8000<br/>REST /v1 · MCP · SSE · Console<br/><b>Internal Gateway</b> /internal"]
+            worker["<b>worker</b> · Celery<br/>q.run · q.build<br/>only service with docker.sock"]
+            redis[("<b>redis</b><br/>broker · tokens · work queues")]
+            pg[("<b>postgres</b><br/>all records")]
+            registry[("<b>registry</b><br/>localhost:6000")]
+        end
+        subgraph sbx["zentra-sandbox-net · internal · no route out"]
+            direction TB
+            serve["<b>Resident container</b><br/>one per version · up to 30 runs"]
+            oneoff["<b>One-off sandbox</b><br/>one per run · fallback"]
+            validate["<b>Validation container</b><br/>on publish"]
+        end
+    end
+
+    subgraph outside["Internet"]
+        direction TB
+        llm["LLM providers"]
+        ext["Allow-listed HTTPS · SMTP"]
+    end
+
+    browser & system -- "REST" --> app
+    mcpc -- "MCP" --> app
+    dev -- "docker push" --> registry
+    app --- pg
+    app -- "enqueue" --> redis
+    redis -- "tasks" --> worker
+    worker --- pg
+    worker -- "create / destroy" --> sbx
+    registry -. "pull by digest" .-> sbx
+    sbx -- "short-lived tokens only" --> app
+    app -- "real keys" --> llm
+    app -- "egress proxy" --> ext
+```
+
+Every arrow out of the sandbox network goes to `app` — no route to postgres, redis, the registry or the internet.
+Long-lived credentials stay on `app`; containers only get short-lived tokens. Details: [`specs/overview.md`](specs/overview.md).
 
 ```
 L0  Access + Control   api (FastAPI) — REST · MCP · SSE · Console static files · Registry · Internal Gateway
@@ -58,7 +110,7 @@ L3  Data               PostgreSQL · Redis · internal OCI registry · Docker im
 
 ### The two hard parts
 
-**Sandbox isolation** ([ADR-0001](specs/container-orchestration.md), scoped by [ADR-0005](specs/overview.md)) — four Docker-native layers, on the assumption that each one can be breached: an internal-only network, dropped capabilities and a non-root user, cgroup limits, and a read-only filesystem, plus an SDK interception layer. Sandboxes are never reused across runs. **There is no gVisor**, so `capabilities()` reports `l2_kernel_isolation: false` and the matching security tests are marked `skipped`, never `passed` — this tier fits trusted code, not a public multi-tenant platform.
+**Sandbox isolation** ([ADR-0001](specs/container-orchestration.md), scoped by [ADR-0005](specs/overview.md)) — four Docker-native layers, on the assumption that each one can be breached: an internal-only network, dropped capabilities and a non-root user, cgroup limits, and a read-only filesystem. A resident container is bound to one version and serves only that agent's runs. **There is no gVisor**, so `capabilities()` reports `l2_kernel_isolation: false` and the matching security tests are marked `skipped`, never `passed` — this tier fits trusted code, not a public multi-tenant platform.
 
 **Celery ↔ LangGraph boundary** ([ADR-0002](specs/dispatch.md)) — one rule: *crosses machines, needs queueing, or scales independently → Celery; just the next step inside one agent → a LangGraph node.* One run is one Celery task, however many nodes the graph has.
 
@@ -403,6 +455,57 @@ above and the isolation checklist in [`.claude/commands/verify.md`](.claude/comm
 沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `app` 服務的 **Internal Gateway**——
 由它代持 LLM 金鑰、計量 token、回收事件。
 Console 沒有自己的容器，它是 `app` 服務出去的原生靜態檔，打的是跟外部系統同一份 `/v1` API。
+
+```mermaid
+flowchart LR
+    subgraph clients["呼叫端"]
+        direction TB
+        browser["瀏覽器 · Console"]
+        system["外部系統"]
+        mcpc["MCP 客戶端"]
+        dev["主機上的開發者"]
+    end
+
+    subgraph host["一台主機 · docker compose · 5 個長駐服務"]
+        direction LR
+        subgraph net["zentra-net"]
+            direction TB
+            app["<b>app</b> · FastAPI :8000<br/>REST /v1 · MCP · SSE · Console<br/><b>Internal Gateway</b> /internal"]
+            worker["<b>worker</b> · Celery<br/>q.run · q.build<br/>唯一掛 docker.sock 的服務"]
+            redis[("<b>redis</b><br/>broker · token · 工作佇列")]
+            pg[("<b>postgres</b><br/>所有紀錄")]
+            registry[("<b>registry</b><br/>localhost:6000")]
+        end
+        subgraph sbx["zentra-sandbox-net · internal · 無對外路由"]
+            direction TB
+            serve["<b>常駐容器</b><br/>每版本一個 · 同時最多 30 筆 Run"]
+            oneoff["<b>一次性沙盒</b><br/>一 Run 一盒 · 退路"]
+            validate["<b>驗證容器</b><br/>發布時"]
+        end
+    end
+
+    subgraph outside["網際網路"]
+        direction TB
+        llm["LLM 供應商"]
+        ext["白名單 HTTPS · SMTP"]
+    end
+
+    browser & system -- "REST" --> app
+    mcpc -- "MCP" --> app
+    dev -- "docker push" --> registry
+    app --- pg
+    app -- "派工" --> redis
+    redis -- "任務" --> worker
+    worker --- pg
+    worker -- "建立 / 銷毀" --> sbx
+    registry -. "依 digest 拉取" .-> sbx
+    sbx -- "只拿短命 token" --> app
+    app -- "代換真金鑰" --> llm
+    app -- "出口代打" --> ext
+```
+
+沙盒網段往外的每一條線都只到 `app` —— 到 postgres、redis、registry、網際網路都沒有路由。
+長期憑證只在 `app` 上，容器只拿短命 token。細節見 [`specs/overview.md`](specs/overview.md)。
 完整說明見 [`specs/overview.md`](specs/overview.md)。
 
 ### 兩個技術核心
