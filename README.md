@@ -4,7 +4,7 @@
 
 **An agent platform where every agent runs in an isolated sandbox and ships with both a REST API and an MCP endpoint.**
 
-[繁體中文](#繁體中文) · [Architecture](docs/architecture/detailed-architecture.md) · [Spec](specs/SPEC.md) · [ADRs](specs/adr/)
+[繁體中文](#繁體中文) · [Specs](specs/overview.md)
 
 </div>
 
@@ -19,10 +19,10 @@ generated from a single definition so they can never drift apart.
 > accepted as `DONE` beyond the console slice; [`coordination/BOARD.md`](coordination/BOARD.md) is the
 > authority on what is verified and what is still open.
 >
-> **Scoped down in [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md):** internal tool, single tenant,
+> **Scoped down in [ADR-0005](specs/overview.md):** internal tool, single tenant,
 > trusted code, 8-week MVP. Deployment is **one host running `docker compose`** — no Kubernetes.
 > The console is **plain HTML + CSS + ES modules with no build step**
-> ([ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md)), served by the API itself — **four services total**.
+> ([ADR-0006](specs/console-ui.md)), served by the API itself — **four services total**.
 > The five commitments below are unchanged; the infrastructure under them is a quarter of the size.
 
 ## Why this exists
@@ -38,11 +38,10 @@ ADR-0005 relaxed the *threat model* to trusted code — **it did not relax these
 | **P2** | Agents are **always LangChain + LangGraph**. One framework means streaming, event hooks and tracing are written once. |
 | **P3** | Every agent gets **both an API and an MCP interface**, generated from the same `entrypoints` definition. |
 | **P4** | **No long-lived credential ever enters a sandbox.** The sandbox network has no route out; its only peer is an **Internal Gateway** that holds the secrets. |
-| **P5** | **Published versions are immutable.** `agent@semver` is identified by the bundle's SHA-256; its directories are frozen read-only on publish. |
+| **P5** | **Versions are immutable.** Identified by the full OCI digest; a version record's digest is never rewritten, and re-registering a semver adds a new record that replaces the old one. |
 
 ## Architecture
 
-![Zentra system architecture](docs/architecture/zentra-architecture.svg)
 
 One host, one `docker compose`, four long-running services — plus a sandbox container created per Run and destroyed
 when it ends. The sandbox sits on a network with **no route out**; its only peer is the `app` service's Internal
@@ -52,17 +51,16 @@ static HTML/CSS/JS served by `app`, calling the same `/v1` API everyone else cal
 ```
 L0  Access + Control   api (FastAPI) — REST · MCP · SSE · Console static files · Registry · Internal Gateway
 L1  Dispatch           worker (Celery, Redis broker) — q.run · q.build
-L2  Execution          Sandbox Manager → Sandbox (Docker, one per Run)
-L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
+L2  Execution          resident Agent container per version (default) · one-off sandbox per Run (fallback)
+L3  Data               PostgreSQL · Redis · internal OCI registry · Docker image cache
 ```
 
-**[→ 11 detailed diagrams](docs/architecture/detailed-architecture.md)** covering the publish flow, request lifecycle, sandbox isolation model, Celery topology, agent runtime, data model and deployment.
 
 ### The two hard parts
 
-**Sandbox isolation** ([ADR-0001](specs/adr/ADR-0001-sandbox-isolation.md), scoped by [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md)) — four Docker-native layers, on the assumption that each one can be breached: an internal-only network, dropped capabilities and a non-root user, cgroup limits, and a read-only filesystem, plus an SDK interception layer. Sandboxes are never reused across runs. **There is no gVisor**, so `capabilities()` reports `l2_kernel_isolation: false` and the matching security tests are marked `skipped`, never `passed` — this tier fits trusted code, not a public multi-tenant platform.
+**Sandbox isolation** ([ADR-0001](specs/container-orchestration.md), scoped by [ADR-0005](specs/overview.md)) — four Docker-native layers, on the assumption that each one can be breached: an internal-only network, dropped capabilities and a non-root user, cgroup limits, and a read-only filesystem, plus an SDK interception layer. Sandboxes are never reused across runs. **There is no gVisor**, so `capabilities()` reports `l2_kernel_isolation: false` and the matching security tests are marked `skipped`, never `passed` — this tier fits trusted code, not a public multi-tenant platform.
 
-**Celery ↔ LangGraph boundary** ([ADR-0002](specs/adr/ADR-0002-celery-langgraph-boundary.md)) — one rule: *crosses machines, needs queueing, or scales independently → Celery; just the next step inside one agent → a LangGraph node.* One run is one Celery task, however many nodes the graph has.
+**Celery ↔ LangGraph boundary** ([ADR-0002](specs/dispatch.md)) — one rule: *crosses machines, needs queueing, or scales independently → Celery; just the next step inside one agent → a LangGraph node.* One run is one Celery task, however many nodes the graph has.
 
 ## Repository layout
 
@@ -71,17 +69,16 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 | [`examples/my-agent/`](examples/my-agent/) | **Start here to write an agent.** A working text-analysis agent — copy the directory, edit `agent.py` |
 | [`examples/llm-agent/`](examples/llm-agent/) | The same thing but calling a model through `ctx.llm()`, with the credential staying on the platform |
 | [`examples/stock-agent/`](examples/stock-agent/) | A bounded retry loop: search, judge whether the answer is there, search again with what was missing |
-| [`specs/`](specs/) | **Single source of truth.** Master spec, API & UI contracts, glossary, ADRs, feature specs |
-| [`docs/architecture/`](docs/architecture/) | Mermaid diagrams and design deep-dives |
+| [`specs/`](specs/) | **Single source of truth.** Eleven files, one per subsystem; start at `overview.md` |
 | [`coordination/BOARD.md`](coordination/BOARD.md) | Open tasks, known defects, and what is deliberately out of scope |
 | [`.claude/`](.claude/) | One `builder` agent and a `/verify` command for Claude Code |
 
 ## Built with Claude Code
 
 Development rules live in [`CLAUDE.md`](CLAUDE.md), kept deliberately short: the five commitments,
-where to read the spec, and a test rule — run only the suite you touched, and add the smoke test and
+where to read the spec, and a verification rule — run the changed path for real, and add the smoke test and
 isolation checklist only when the sandbox, credentials or network egress change. Frontend and backend
-both target [`api-contract.md`](specs/api-contract.md) (contract-first).
+both target [`specs/api.md`](specs/api.md) (contract-first).
 
 ## Stack
 
@@ -91,14 +88,12 @@ Python 3.12 · FastAPI · Celery (Redis broker) · LangChain + LangGraph · Post
 
 To understand the project:
 
-1. [`specs/SPEC.md`](specs/SPEC.md) — what it is and the five commitments
-2. [`docs/architecture/detailed-architecture.md`](docs/architecture/detailed-architecture.md) — how it fits together
-3. [`specs/adr/`](specs/adr/) — why it's built this way rather than some other way
-4. [`coordination/BOARD.md`](coordination/BOARD.md) — what is actually built, what is still open
+1. [`specs/overview.md`](specs/overview.md) — what it is, the five commitments, and a map of the other spec files
+2. [`coordination/BOARD.md`](coordination/BOARD.md) — what is actually built, what is still open
 
 Local and production are the same `docker compose` stack — there is no separate deployment target. See
-[ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) for what was cut and why, and the
-[runtime notes](docs/architecture/07-local-dev-sandbox.md) for how sandboxes are actually launched.
+[ADR-0005](specs/overview.md) for what was cut and why, and the
+[runtime notes](specs/container-orchestration.md) for how sandboxes are actually launched.
 
 ## Running the stack
 
@@ -138,7 +133,7 @@ test and nine test files, so it is a task of its own rather than a deletion.
 
 The registry publishes on **host port 6000**, not the 5000 registries usually take: macOS runs AirPlay
 Receiver on `*:5000`, which shadows it. Inside the container it is still 5000 — only the host side moved
-([ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md) R3). Check it with the header, not just
+([ADR-0009](specs/agent-registry.md) R3). Check it with the header, not just
 reachability, since anything else on that port would also answer:
 
 ```bash
@@ -208,7 +203,7 @@ and the per-agent OpenAPI document are all generated from it (P3), so changing i
 version.
 
 The module must be importable as `agent` — the filename can differ, the module name cannot
-([ADR-0003](specs/adr/ADR-0003-agent-packaging-dual-interface.md)).
+([ADR-0003](specs/agent-registry.md)).
 
 ### 2. Write the Dockerfile
 
@@ -251,7 +246,7 @@ a different identifier that cannot stand in for it.
 
 Tag with the semver you are about to register. Nothing enforces it, but it keeps every registered
 manifest reachable by a tag, which matters for the garbage-collection trap in
-[`docs/operations.md`](docs/operations.md).
+[`specs/dispatcher-resources.md`](specs/dispatcher-resources.md).
 
 An external registry (GHCR, Docker Hub, your own) works exactly the same way. The platform does not care
 which one, only that it can pull the digest.
@@ -279,7 +274,7 @@ curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | python3 -c 'impo
 `error.message`; that is the only debugging signal you get, so read it rather than guessing.
 
 Only digests are accepted. A tag is rejected with `VALIDATION_ERROR`, and re-registering a semver that
-already exists returns `409` — published versions are immutable (P5), so a change means a new semver.
+already exists replaces it once the new image validates (a `409` only while that semver is still validating).
 
 ### 5. Run it
 
@@ -335,13 +330,14 @@ See [`examples/llm-agent/`](examples/llm-agent/).
 You can use OpenAI's **models** this way. You cannot use OpenAI's **Agents SDK** to orchestrate: `build()`
 must return an uncompiled `StateGraph`, and the runtime checks the type (P2). The reasoning and what
 overturning it would cost is priced out in
-[ADR-0010](specs/adr/ADR-0010-agent-framework-lock-in.md).
+[ADR-0010](specs/overview.md).
 
 ### Publishing a new version
 
-Build, push, register a new semver. The old version keeps running exactly as before; that is what
-immutability buys. Registering over an existing semver is a `409`, and the registry has deletion disabled,
-so a published version cannot be pulled out from under itself.
+Build, push, register. A new semver leaves the old version running untouched. Registering an existing
+semver **replaces** it: the new image is validated first, and only if it passes does it take over — runs
+already created keep the image they were bound to, and the old image is cleaned up once they finish.
+See [`specs/agent-registry.md`](specs/agent-registry.md).
 
 ## Testing
 
@@ -354,47 +350,12 @@ bash scripts/verify-zen000.sh
 One end-to-end pass plus the isolation probes: SSE events, sandbox lifecycle, the four isolation layers, and
 the contract error paths. Expect `通過 27 ／ 失敗 0 ／ 跳過 2`. The two skips are gVisor kernel isolation and
 container escape — this architecture does not provide them, so they are reported as **skipped, never passed**
-([ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md)). Needs the stack up, migrations applied and the
+([ADR-0005](specs/overview.md)). Needs the stack up, migrations applied and the
 runtime image built.
 
-### Test suites
-
-The host interpreter has no application dependencies, so tests run either through `uv` or inside the `app`
-image on the compose network:
-
-```bash
-# with uv on the host
-uv sync --extra dev && uv run pytest tests/zen006a -q
-
-# without uv — same suite, inside the api image, on the compose network
-docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
-  -e PYTHONPATH=/srv \
-  -e ZENTRA_TEST_BASE_URL=http://app:8000 \
-  -e ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@postgres:5432/zentra \
-  zentra-app:latest \
-  sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
-```
-
-| Suite | Covers | Needs |
-|---|---|---|
-| [`tests/zen000`](tests/zen000) | Run lifecycle, sandbox driver, Internal Gateway, worker recovery, cold-start benchmark | `ZENTRA_TEST_BASE_URL`, `ZENTRA_TEST_DB_URL`; the driver tests need the `docker` CLI |
-| [`tests/zen006a`](tests/zen006a) | Console source guards, live routes, headless-Chrome E2E | the guards need nothing; routes need `ZENTRA_TEST_BASE_URL`; the E2E needs `node` + Chrome |
-| [`tests/zen008`](tests/zen008) | OCI registration, MCP facade, sandbox security, Console E2E | a registry on `:5010`, the `docker` CLI, `node` + Chrome |
-
-**Run anything that touches the database from inside the compose network.** A Postgres running on the host
-takes `127.0.0.1:5432` and masks the container's, so host-side tests silently connect to the wrong database —
-that is what the `ZENTRA_TEST_DB_URL` skips exist to prevent.
-
-Tests that only audit source files need no service and no application dependencies:
-
-```bash
-python3 -m pytest tests/zen006a/test_console_source_contract.py -q
-```
-
-If that one fails on the contract-version assertion, it is working as designed: `api-contract.md` has moved
-and the console has not been re-checked against the new version yet. Fix the console (or confirm nothing
-changed) and update the pin — do not just bump the string. Open findings live in
-[`coordination/BOARD.md`](coordination/BOARD.md).
+There is no automated test suite in the repo. Changes are verified by running the changed path on the real
+stack (curl or the Console); changes to the sandbox, credentials or network egress also run the smoke test
+above and the isolation checklist in [`.claude/commands/verify.md`](.claude/commands/verify.md).
 
 ---
 
@@ -410,10 +371,10 @@ changed) and update the pin — do not just bump the string. Open findings live 
 > REST + MCP，以及 Run 觀測 Console。除了 Console 切片之外**都還沒被驗收為 `DONE`**，
 > 哪些驗過、哪些還開著，以 [`coordination/BOARD.md`](coordination/BOARD.md) 為準。
 >
-> **已依 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md) 降維：** 內部工具、單租戶、信任的程式碼、八週 MVP。
+> **已依 [ADR-0005](specs/overview.md) 降維：** 內部工具、單租戶、信任的程式碼、八週 MVP。
 > 部署是**一台主機跑 `docker compose`**，不用 Kubernetes。
-> 前端再依 [ADR-0006](specs/adr/ADR-0006-vanilla-frontend.md) 改為**原生 HTML + CSS + ES modules，零建置**，
-> 由 API 自己服務 —— compose 是**五個服務**（[ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md)
+> 前端再依 [ADR-0006](specs/console-ui.md) 改為**原生 HTML + CSS + ES modules，零建置**，
+> 由 API 自己服務 —— compose 是**五個服務**（[ADR-0009](specs/agent-registry.md)
 > 的內部 Registry 是第五個）。
 > 下面五條立場一條沒動，但底下的基礎設施只剩四分之一。
 
@@ -431,36 +392,35 @@ changed) and update the pin — do not just bump the string. Open findings live 
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。收斂成一種，串流、事件 hook、觀測才只要寫一次。 |
 | **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由同一份定義生成。 |
 | **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段沒有對外路由，唯一對端是代持憑證的 **Internal Gateway**。 |
-| **P5** | **發布的版本不可變**。`agent@semver` 以 bundle 的 SHA-256 識別，發布後目錄設唯讀。 |
+| **P5** | **版本不可變**。以完整 OCI digest 識別；一筆版本紀錄的 digest 永不改寫，同版號重新註冊是新增一筆並取代舊的。 |
 
-### 架構圖
-
-![Zentra 系統架構](docs/architecture/zentra-architecture.svg)
+### 架構
 
 一台主機、一個 `docker compose`、**五個**長駐服務
 （postgres · redis · registry · api · worker），
-加上**每個 Run 動態建立、結束即銷毀**的沙盒容器。
+加上由 worker 動態建立的 Agent 容器：預設是每個版本一個**常駐容器**（同時跑多筆 Run、閒置自動回收），
+起不來時退回**一 Run 一盒**的一次性沙盒。
 沙盒掛在一個**沒有對外路由**的網段上，唯一的對端是 `app` 服務的 **Internal Gateway**——
 由它代持 LLM 金鑰、計量 token、回收事件。
 Console 沒有自己的容器，它是 `app` 服務出去的原生靜態檔，打的是跟外部系統同一份 `/v1` API。
-圖中標注各層的技術與關鍵參數（佇列、隔離層級、資源上限）。
+完整說明見 [`specs/overview.md`](specs/overview.md)。
 
 ### 兩個技術核心
 
-**沙盒隔離**（[ADR-0001](specs/adr/ADR-0001-sandbox-isolation.md)，範圍見 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md)）——
+**沙盒隔離**（[ADR-0001](specs/container-orchestration.md)，範圍見 [ADR-0005](specs/overview.md)）——
 四層 Docker 原生隔離，且**假設每一層都可能被突破**：internal 網段、`cap_drop ALL` + non-root、cgroups 限額、唯讀檔案系統，外加 SDK 攔截層。沙盒一 Run 一盒，絕不重用。
 **沒有 gVisor**——`capabilities()` 誠實回報 `l2_kernel_isolation: false`，對應的安全測試標 `skipped` 而非 `passed`。
 這個等級適用於**信任的程式碼**，不適用於公開多租戶。
 
-**Celery 與 LangGraph 的邊界**（[ADR-0002](specs/adr/ADR-0002-celery-langgraph-boundary.md)）——
+**Celery 與 LangGraph 的邊界**（[ADR-0002](specs/dispatch.md)）——
 一條判準：*跨機器、需排隊、需獨立擴縮 → Celery；只是同一 Agent 內部的下一步 → LangGraph node。*
 一次 Run 就是一個 Celery task，不管圖裡有幾個節點。
 
 ### 用 Claude Code 開發
 
 開發規則在 [`CLAUDE.md`](CLAUDE.md)，刻意保持很短：五條立場、規格去哪讀，以及一條測試規則 ——
-只跑改到的那個 suite，動到沙盒、憑證或網路出口才加跑冒煙測試與隔離清單。
-前後端各自對齊 [`api-contract.md`](specs/api-contract.md)（契約優先）。
+改到的路徑要實際跑一次，動到沙盒、憑證或網路出口才加跑冒煙測試與隔離清單。
+前後端各自對齊 [`specs/api.md`](specs/api.md)（契約優先）。
 
 ### 本機啟動與測試
 
@@ -504,14 +464,14 @@ docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
 
 Registry 發布在**主機 port 6000**，不是 registry 慣用的 5000：macOS 的 AirPlay Receiver
 在 `*:5000` 聽，會蓋掉它。容器內仍是 5000，換的只有主機端
-（[ADR-0009](specs/adr/ADR-0009-internal-registry-image-upload.md) R3）。
+（[ADR-0009](specs/agent-registry.md) R3）。
 確認要看 header 而不是「連得上」——別的服務也會回應：
 
 ```bash
 curl -sI http://127.0.0.1:6000/v2/ | grep -i docker-distribution-api-version
 ```
 
-維運細節見 [`docs/operations.md`](docs/operations.md)。
+維運細節見 [`specs/dispatcher-resources.md`](specs/dispatcher-resources.md)。
 
 兩個網段（含 internal 的 `zentra-sandbox-net`）都寫在 `compose.yaml` 裡，不用手動 `docker network create`。
 `.env` 是選用的。Console 的靜態檔包在 app 映像裡，所以**改前端要 `docker compose up -d --build app`** 才看得到。
@@ -567,7 +527,7 @@ def build(ctx) -> StateGraph:
 全部從它生成（P3）。改了它就要發新版本。
 
 模組必須能以 `agent` 這個名字被 import ——
-檔名可以不同，模組名不行（[ADR-0003](specs/adr/ADR-0003-agent-packaging-dual-interface.md)）。
+檔名可以不同，模組名不行（[ADR-0003](specs/agent-registry.md)）。
 
 #### 2. 寫 Dockerfile
 
@@ -608,7 +568,7 @@ docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
 **是不同的識別，不能互相代替**。
 
 **tag 建議用 semver。** 平台不強制，但這讓每個註冊過的 manifest 都留著一個 tag ——
-理由是 [`docs/operations.md`](docs/operations.md) 裡那個垃圾回收的陷阱。
+理由是 [`specs/dispatcher-resources.md`](specs/dispatcher-resources.md) 裡那個垃圾回收的陷阱。
 
 外部 Registry（GHCR、Docker Hub、企業自架）用法完全一樣。平台不在乎是哪一個，只要拉得到那個 digest。
 
@@ -637,8 +597,8 @@ curl -s "http://localhost:8000/v1/agents/$AID/versions/1.0.0" | python3 -c 'impo
 `PUBLISHED` 就能跑。`FAILED` 會把驗證容器的完整 traceback 放進 `error.message` ——
 **那是你唯一的除錯線索**，要讀它，不要用猜的。
 
-只收 digest：用 tag 會被 `VALIDATION_ERROR` 擋下；同一個 semver 重上回 `409`。
-已發布的版本不可變（P5），要改就發新 semver。
+只收 digest：用 tag 會被 `VALIDATION_ERROR` 擋下。同一個 semver 再送一次會在新 image 驗證通過後取代它
+（那個 semver 還在驗證中時才回 `409`）。
 
 #### 5. 執行
 
@@ -692,12 +652,13 @@ curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
 
 這樣能用 OpenAI 的**模型**。但**不能**用 OpenAI 的 **Agents SDK** 編排流程：
 `build()` 必須回傳未 compile 的 `StateGraph`，runtime 會實際檢查型別（P2）。
-理由與推翻它的代價評估見 [ADR-0010](specs/adr/ADR-0010-agent-framework-lock-in.md)。
+理由與推翻它的代價評估見 [ADR-0010](specs/overview.md)。
 
 #### 發新版本
 
-build、push、註冊一個新的 semver。舊版本照常運作，這正是不可變換來的東西。
-同一個 semver 重上是 `409`，而 registry 停用了刪除，所以已發布的版本不會從腳下被抽走。
+build、push、註冊。用新的 semver，舊版本照常運作。用已存在的 semver 會**取代**它：
+新 image 先驗證，通過才接手；已建立的 Run 照舊跑原本綁定的 image，跑完後舊 image 會被清掉。
+見 [`specs/agent-registry.md`](specs/agent-registry.md)。
 
 驗收腳本：一次貫穿加上隔離探測，預期 `通過 27 ／ 失敗 0 ／ 跳過 2`。
 那 2 個 skip 是 gVisor 核心隔離與容器逃逸，本架構不提供，因此**永遠是 skipped 而不是 passed**（ADR-0005）。
@@ -706,43 +667,13 @@ build、push、註冊一個新的 semver。舊版本照常運作，這正是不�
 bash scripts/verify-zen000.sh
 ```
 
-測試套件：主機的 Python 沒有應用相依，所以走 `uv`，或在 compose 網段內用 `app` 映像跑。
-
-```bash
-uv sync --extra dev && uv run pytest tests/zen006a -q
-
-docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
-  -e PYTHONPATH=/srv \
-  -e ZENTRA_TEST_BASE_URL=http://app:8000 \
-  -e ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@postgres:5432/zentra \
-  zentra-app:latest \
-  sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
-```
-
-| 套件 | 範圍 | 前置條件 |
-|---|---|---|
-| [`tests/zen000`](tests/zen000) | Run 生命週期、沙盒 driver、Internal Gateway、worker 復原、冷啟量測 | `ZENTRA_TEST_BASE_URL`、`ZENTRA_TEST_DB_URL`；driver 測試要 `docker` CLI |
-| [`tests/zen006a`](tests/zen006a) | Console 原始碼護欄、實際路由、headless Chrome E2E | 護欄不需要任何服務；路由要 `ZENTRA_TEST_BASE_URL`；E2E 要 `node` 與 Chrome |
-| [`tests/zen008`](tests/zen008) | OCI 註冊、MCP 門面、沙盒安全、Console E2E | `:5010` 的 registry、`docker` CLI、`node` 與 Chrome |
-
-**碰資料庫的測試一律在 compose 網段內跑。** 主機若有自己的 Postgres 會佔住 `127.0.0.1:5432`
-遮蔽容器那顆，從主機跑就會連到錯的資料庫——那些 `ZENTRA_TEST_DB_URL` 的 skip 就是在擋這件事。
-
-只稽核原始碼的測試不需要服務也不需要相依：
-
-```bash
-python3 -m pytest tests/zen006a/test_console_source_contract.py -q
-```
-
-它若在「契約版本」那條斷言上紅，是**護欄正常運作**：`api-contract.md` 版本動了，而 Console 還沒對新版重新核對過。
-請先修 Console（或確認真的沒變）再更新那個版本字串，**不要只把字串改掉**。
+repo 裡沒有自動化測試套件。改動靠實際跑起來驗證（curl 或 Console 把改到的路徑走一次）；
+動到沙盒、憑證或網路出口才加跑上面的冒煙測試與 [`.claude/commands/verify.md`](.claude/commands/verify.md) 的隔離清單。
 
 ### 從哪裡開始讀
 
-1. [`specs/SPEC.md`](specs/SPEC.md) — 這是什麼、五條核心立場
-2. [`docs/architecture/detailed-architecture.md`](docs/architecture/detailed-architecture.md) — 11 張架構圖
-3. [`specs/adr/`](specs/adr/) — 為什麼這樣做，而不是別的做法（**先讀 [ADR-0005](specs/adr/ADR-0005-mvp-single-host-scope.md)**，它說明砍了什麼）
-4. [`specs/features/ZEN-000/spec.md`](specs/features/ZEN-000/spec.md) — 第一個任務
+1. [`specs/overview.md`](specs/overview.md) — 這是什麼、五條核心立場、其他規格的地圖
+2. [`coordination/BOARD.md`](coordination/BOARD.md) — 做到哪、還開著什麼
 
 ---
 

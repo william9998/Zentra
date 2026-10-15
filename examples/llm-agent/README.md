@@ -54,7 +54,7 @@ Gateway 的順序是「Agent 自己的 → 平台預設」。
 ```
 
 平台要先設定 `ZENTRA_SECRET_KEY`（靜態加密用），否則會拒絕儲存而不是存明文。
-與 P5 的互動見 [ADR-0011](../../specs/adr/ADR-0011-per-agent-llm-credentials.md)。
+與 P5 的互動見 [ADR-0011](../../specs/gateway.md)。
 
 沒設金鑰的話，呼叫會回一個說得清楚的錯：
 
@@ -297,4 +297,4 @@ def route(state):
 | 用 OpenAI Agents SDK 編排 | ❌ P2：框架統一 LangChain + LangGraph |
 
 `build()` 必須回傳未 compile 的 `StateGraph`，runtime 會實際檢查型別。
-理由與代價評估見 [ADR-0010](../../specs/adr/ADR-0010-agent-framework-lock-in.md)。
+理由與代價評估見 [ADR-0010](../../specs/overview.md)。

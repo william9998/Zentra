@@ -9,17 +9,10 @@
 # 那正是 ZEN-009 的 Z9-A6 在防的事。長駐服務就是五個，不多不少。
 
 .DEFAULT_GOAL := help
-.PHONY: help up down ps logs images base runtime migrate smoke test clean-test-data console rebuild-app
+.PHONY: help up down ps logs images base runtime migrate smoke clean-test-data console rebuild-app
 
 API      := http://localhost:8000
 REGISTRY := 127.0.0.1:6000
-SUITE    ?=
-
-# 預設排除瀏覽器 E2E：它們要 node + Chrome，而 app 映像裡沒有，
-# 掃進來會變成一整片 error 而不是有用的結果。要跑就 make test IGNORE=
-# （並確認主機有 node 與 Chrome）。
-IGNORE   ?= --ignore=tests/zen008/test_zen008_console_e2e.py \
-            --ignore=tests/zen006a/test_run_observation_e2e.py
 
 help:  ## 列出所有指令
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -63,28 +56,6 @@ migrate:  ## 升 schema。既有庫先：bash scripts/adopt-legacy-schema.sh --d
 
 smoke: runtime  ## 冒煙測試：一次貫穿 + 隔離探測（預期 27 通過 / 0 失敗 / 2 跳過）
 	bash scripts/verify-zen000.sh
-
-test:  ## 跑指定 suite，例：make test SUITE=tests/zen008（不含瀏覽器 E2E）
-	@if [ -z "$(SUITE)" ]; then \
-		echo '要指定 SUITE，只跑你改到的：make test SUITE=tests/zen009'; \
-		echo '全套回歸要明講：make test SUITE=tests'; exit 2; \
-	fi
-	@if command -v uv >/dev/null 2>&1; then \
-		echo '用主機的 uv'; \
-		uv run pytest $(SUITE) $(IGNORE) -q; \
-	else \
-		echo '⚠️  主機沒有 uv —— 改在 app 映像裡跑（compose 網段內）。'; \
-		echo '    映像裡沒有 docker CLI，所以要開沙盒或推 image 的測試會 ERROR，'; \
-		echo '    那是環境限制不是程式壞掉。要完整跑：curl -LsSf https://astral.sh/uv/install.sh | sh'; \
-		echo '    平常建議只跑受影響的：make test SUITE=tests/zen009'; \
-		echo ''; \
-		docker run --rm --network zentra-net -v "$$PWD:/srv" -w /srv \
-			-e PYTHONPATH=/srv \
-			-e ZENTRA_TEST_BASE_URL=http://app:8000 \
-			-e ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@postgres:5432/zentra \
-			zentra-app:latest \
-			sh -c "pip install -q pytest pytest-asyncio anyio 2>/dev/null; pytest $(SUITE) $(IGNORE) -q"; \
-	fi
 
 clean-test-data:  ## 有在平台上建測試 Agent / Run 才需要（留 builtin fixture）
 	bash scripts/clean-test-data.sh
