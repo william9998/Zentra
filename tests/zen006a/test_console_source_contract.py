@@ -706,14 +706,6 @@ def test_dialogs_are_native_elements_not_custom_components() -> None:
             f"{_rel(path)} 自製了 modal，沒有用原生 <dialog>")
 
 
-def test_acceptance_file_is_present_for_this_task() -> None:
-    """G5: a REVIEW task without written acceptance criteria cannot be judged."""
-    for task in ("ZEN-006A", "ZEN-008"):
-        path = REPO / "specs" / "features" / task / "acceptance.md"
-        assert path.is_file(), task
-        assert "ui-contract" in _read(path), task
-
-
 def test_no_stray_json_config_in_console() -> None:
     assert [
         _rel(path) for path in _files(".json")

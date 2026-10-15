@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 清掉平台上的測試 Agent 與執行紀錄。
 #
-# **開發結束前必跑**（AGENTS.md §開發資料的清理）。測試套件與手動驗證都會在平台上
+# 這次有在平台上建 Agent / Run 才需要跑（CLAUDE.md §收工）。測試套件與手動驗證都會在平台上
 # 建立 Agent 與 Run，而且不會自己收 —— 不清的話 Console 會被塞滿到看不出哪個是真的。
 #
 #   bash scripts/clean-test-data.sh            # 清掉測試套件造的 Agent

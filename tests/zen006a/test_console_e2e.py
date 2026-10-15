@@ -89,7 +89,7 @@ EXPECTED_CHECKS = [
 # Open defects found during ZEN-006A verification. They are xfail (not deleted and not
 # skipped) so the suite stays green as a gate while the failure stays visible, and so it
 # turns XPASS the moment somebody fixes it. Every entry here is listed in
-# coordination/handoffs/ZEN-006A/qa-verifier-to-orchestrator.md with an owner.
+# coordination/BOARD.md with an owner.
 KNOWN_DEFECTS = {
     "run.running_elapsed_is_always_numeric":
         "ZEN-006A-D1 (@frontend-dev, minor, non-blocking): while RUNNING, elapsed renders "

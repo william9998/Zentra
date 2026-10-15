@@ -73,31 +73,15 @@ L3  Data               PostgreSQL · Redis · local volume (bundles / venvs)
 | [`examples/stock-agent/`](examples/stock-agent/) | A bounded retry loop: search, judge whether the answer is there, search again with what was missing |
 | [`specs/`](specs/) | **Single source of truth.** Master spec, API & UI contracts, glossary, ADRs, feature specs |
 | [`docs/architecture/`](docs/architecture/) | Mermaid diagrams and design deep-dives |
-| [`coordination/`](coordination/) | Task board, handoff notes, spec-drift audits |
-| [`.claude/agents/`](.claude/agents/) | Three role agents — architect, builder, reviewer |
-| [`.claude/commands/`](.claude/commands/) | `/task` `/verify` `/drift` `/handoff` |
-| [`.codex/agents/`](.codex/agents/) | The same three roles registered for Codex, pointing at the definitions above |
-| [`.agents/skills/`](.agents/skills/) | The same four workflows registered for Codex |
-| [`docs/codex.md`](docs/codex.md) | Codex setup, invocation examples, and collaboration limits |
+| [`coordination/BOARD.md`](coordination/BOARD.md) | Open tasks, known defects, and what is deliberately out of scope |
+| [`.claude/`](.claude/) | One `builder` agent and a `/verify` command for Claude Code |
 
-## Built by a team of AI agents
+## Built with Claude Code
 
-This repository is developed by role agents under Claude Code and Codex, both reading the same
-definitions. Three roles, not a bureaucracy:
-
-- **`architect`** owns the spec, the contracts and the ADRs — called only when a contract has to change
-- **`builder`** writes all the product code: backend, Console and sandbox
-- **`reviewer`** writes the acceptance criteria, runs the tests and audits the code for drift away from the spec
-
-The process is tiered on purpose: a small change is made directly, with no subagent and no handoff
-note. Only work that changes [`api-contract.md`](specs/api-contract.md), needs a new ADR, or touches
-the sandbox and credential boundary goes through the full architect → builder → reviewer path.
-
-What holds it together is **contract-first** development — frontend and backend both target
-[`api-contract.md`](specs/api-contract.md) instead of waiting on each other — plus a
-[task board](coordination/BOARD.md) and, for the larger pieces, handoff notes.
-
-The rules are in [`AGENTS.md`](AGENTS.md), which is deliberately short.
+Development rules live in [`CLAUDE.md`](CLAUDE.md), kept deliberately short: the five commitments,
+where to read the spec, and a test rule — run only the suite you touched, and add the smoke test and
+isolation checklist only when the sandbox, credentials or network egress change. Frontend and backend
+both target [`api-contract.md`](specs/api-contract.md) (contract-first).
 
 ## Stack
 
@@ -470,23 +454,11 @@ Console 沒有自己的容器，它是 `app` 服務出去的原生靜態檔，�
 一條判準：*跨機器、需排隊、需獨立擴縮 → Celery；只是同一 Agent 內部的下一步 → LangGraph node。*
 一次 Run 就是一個 Celery task，不管圖裡有幾個節點。
 
-### 由 AI agent 團隊協作開發
+### 用 Claude Code 開發
 
-這個 repo 由 Claude Code 與 Codex 的角色 agent 開發，兩邊讀同一份角色定義。三個角色，不是一套官僚流程：
-
-- **`architect`** 擁有規格、契約與 ADR —— 只在契約要改時才叫
-- **`builder`** 寫全部產品程式碼：後端、Console、沙盒
-- **`reviewer`** 寫驗收條件、跑測試、稽核程式碼有沒有偏離規格
-
-流程是**刻意分級**的：小改動直接做，不派 subagent、不寫交接單。
-只有會改 [`api-contract.md`](specs/api-contract.md)、需要新 ADR、或動到沙盒與憑證邊界的工作，
-才走完整的 architect → builder → reviewer。
-
-把這些串起來的是**契約優先**——前後端各自對齊 [`api-contract.md`](specs/api-contract.md)，不用互相等待——
-加上[任務看板](coordination/BOARD.md)，以及大功能才寫的交接單。
-
-規則寫在 [`AGENTS.md`](AGENTS.md)，刻意保持很短。
-Codex 的角色、skills 與操作範例見 [`docs/codex.md`](docs/codex.md)。
+開發規則在 [`CLAUDE.md`](CLAUDE.md)，刻意保持很短：五條立場、規格去哪讀，以及一條測試規則 ——
+只跑改到的那個 suite，動到沙盒、憑證或網路出口才加跑冒煙測試與隔離清單。
+前後端各自對齊 [`api-contract.md`](specs/api-contract.md)（契約優先）。
 
 ### 本機啟動與測試
 

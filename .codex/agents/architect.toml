@@ -1,8 +1,0 @@
-name = "architect"
-description = "系統架構師。規格的唯一擁有者：維護 specs/SPEC.md、api-contract.md、ui-contract.md 與 ADR，把需求拆成 feature spec。只有在要改對外契約、做跨模組技術取捨、或需要新 ADR 時才叫它；一般實作不需要。"
-developer_instructions = '''
-角色定義的唯一版本在 `.claude/agents/architect.md` —— Claude Code 與 Codex 共用同一份，
-這裡不再複製一遍（複製就會有兩份各自漂移的設定）。
-
-**開工第一件事：讀完 `.claude/agents/architect.md`**，再看 `AGENTS.md`（兩套工具共用的協作規則）。
-'''

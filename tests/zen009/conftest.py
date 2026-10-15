@@ -1,6 +1,6 @@
 """ZEN-009 驗收套件的共用 fixture。
 
-範圍見 `specs/features/ZEN-009/acceptance.md`。本輪（實作開始前）只寫得出
+範圍見 `specs/features/ZEN-009/spec.md`。本輪（實作開始前）只寫得出
 **靜態 + 單元**那一半；活服務與隔離斷言（acceptance §4 §5 §6 的執行期部分）
 要等 @platform-eng 把 `registry` 加進 compose 之後才寫得出證據。
 

@@ -24,7 +24,7 @@
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。所有 agent 最終都是一個 `CompiledStateGraph`。 |
 | **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由平台從同一份 `entrypoints` 自動生成。 |
 | **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段無對外路由，唯一對端是 **Internal Gateway**（`app` 的 `/internal/*`）。 |
-| **P5** | **Agent 版本不可變**。`version_id` = bundle 的 SHA-256，發布後目錄設唯讀，要改就發新版。 |
+| **P5** | **Agent 版本不可變**。以完整 OCI manifest digest 識別，不接受 tag-only；要改就發新版。 |
 
 ## 需要時才讀
 
@@ -36,7 +36,6 @@
 | 這個功能該怎麼做、契約長什麼樣 | [`specs/SPEC.md`](specs/SPEC.md)（唯一事實來源）、[`specs/api-contract.md`](specs/api-contract.md) |
 | 為什麼選 A 不選 B | [`specs/adr/`](specs/adr/)，先讀 ADR-0005（降維，砍了什麼） |
 | 現在該做什麼、什麼是刻意不做的 | [`coordination/BOARD.md`](coordination/BOARD.md) |
-| 什麼時候該叫 subagent、什麼時候自己做 | [`AGENTS.md`](AGENTS.md)（很短） |
 | Console 的 token 與元件規格 | [`specs/ui-contract.md`](specs/ui-contract.md) |
 
 ## 目錄地圖
@@ -57,7 +56,7 @@ packages/sdk/        使用者在沙盒內寫 agent 時用的 zentra_sdk
 tests/               依 feature 分目錄（tests/zen008/…）
 docs/architecture/   📐 架構圖（Mermaid，detailed-architecture.md 是主檔）
 coordination/BOARD.md 任務看板
-.claude/agents/      🤖 三個角色：architect · builder · reviewer
+.claude/agents/      🤖 builder（跨區域大改動才派）
 ```
 
 ## 開發鐵則
@@ -67,15 +66,23 @@ coordination/BOARD.md 任務看板
 3. **契約優先。** 前端不准猜欄位名，後端不准自創回應格式。兩邊都對 `specs/api-contract.md`。
 4. **誠實回報。** 測試沒過就說沒過，附輸出。沒做的明講。不要用「已完成」帶過。
 5. **不擴張範圍。** 發現順帶該修的 → 記在 BOARD 或回報裡，不要自己加戲。
-6. **收掉自己造的測試資料。** 開發結束前跑 `make clean-test-data` ——
-   在平台上建立的測試 Agent 與 Run 一律清掉（內建 fixture 留著）。
-   **這是交付的一部分**，不是附加的禮貌：測試每跑一次留下數十個 Agent，
-   實測累積到過 894 個，Console 完全看不出哪個是真的（見 `AGENTS.md` §開發資料的清理）。
+
+## 測試：只跑你改到的
+
+| 改了什麼 | 跑什麼 |
+|---|---|
+| 文件、規格、註解 | **不用跑** |
+| 一般程式碼 | 只跑對應的那個 suite：`make test SUITE=tests/zenXXX` |
+| 沙盒 / 憑證 / 網路出口 / Run 執行路徑 | 上面那個 + `make smoke` + [`/verify`](.claude/commands/verify.md) 的隔離清單 |
+
+- 不跑全套。全套回歸留給里程碑，由使用者決定什麼時候跑。
+- **這次有在平台上建 Agent / Run**（跑了 live 測試或手動試）→ 收工前 `make clean-test-data`。
+  沒建就不用跑。內建 fixture `builtin-echo` 它會自動留著，不要自己寫 SQL 全刪。
 
 ## 什麼時候叫 subagent
 
-小改動（單一區域、不動契約、不碰沙盒/憑證）**直接自己做**，跑受影響的測試就好，
-不用叫 subagent、不用寫交接單。跨區域或會改契約才派工 —— 分級表在 [`AGENTS.md`](AGENTS.md)。
+預設**自己做**。只有跨後端 + Console + 沙盒的大改動，才派一個 `builder` 一次做完。
+不寫交接單；要改 `api-contract.md` / 需要新 ADR → 先問使用者。
 
 ## 常用指令
 
@@ -93,9 +100,8 @@ docker compose up -d            # postgres + redis + registry + api + worker
 # 後端（要熱重載時把 api/worker 拿出來跑）
 uv sync && uv run uvicorn apps.api.main:app --reload   # 同時服務 Console 靜態檔
 uv run celery -A apps.worker.celery_app worker -Q q.run,q.build -l info
-uv run alembic upgrade head
-uv run pytest                   # 平常只跑受影響的 suite：uv run pytest tests/zen008
-make clean-test-data            # **開發完必跑**：清掉平台上的測試 Agent 與 Run
+make migrate                    # 純 SQL migration（ADR-0015，沒有 Alembic）
+make clean-test-data            # 有在平台上建測試 Agent / Run 才需要
 
 # Agent base image（使用者的 agent image 以此為基底，ADR-0009）
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .

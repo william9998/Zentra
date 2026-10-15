@@ -13,7 +13,7 @@
 
 API      := http://localhost:8000
 REGISTRY := 127.0.0.1:6000
-SUITE    ?= tests/zen000 tests/zen006a tests/zen008 tests/zen009
+SUITE    ?=
 
 # 預設排除瀏覽器 E2E：它們要 node + Chrome，而 app 映像裡沒有，
 # 掃進來會變成一整片 error 而不是有用的結果。要跑就 make test IGNORE=
@@ -64,7 +64,11 @@ migrate:  ## 把資料庫結構升到最新
 smoke: runtime  ## 冒煙測試：一次貫穿 + 隔離探測（預期 27 通過 / 0 失敗 / 2 跳過）
 	bash scripts/verify-zen000.sh
 
-test:  ## 跑測試，例：make test SUITE=tests/zen008（預設不含瀏覽器 E2E）
+test:  ## 跑指定 suite，例：make test SUITE=tests/zen008（不含瀏覽器 E2E）
+	@if [ -z "$(SUITE)" ]; then \
+		echo '要指定 SUITE，只跑你改到的：make test SUITE=tests/zen009'; \
+		echo '全套回歸要明講：make test SUITE=tests'; exit 2; \
+	fi
 	@if command -v uv >/dev/null 2>&1; then \
 		echo '用主機的 uv'; \
 		uv run pytest $(SUITE) $(IGNORE) -q; \
@@ -82,7 +86,7 @@ test:  ## 跑測試，例：make test SUITE=tests/zen008（預設不含瀏覽器
 			sh -c "pip install -q pytest pytest-asyncio anyio 2>/dev/null; pytest $(SUITE) $(IGNORE) -q"; \
 	fi
 
-clean-test-data:  ## **開發完必跑**：清掉平台上的測試 Agent 與 Run（留 builtin fixture）
+clean-test-data:  ## 有在平台上建測試 Agent / Run 才需要（留 builtin fixture）
 	bash scripts/clean-test-data.sh
 
 # ── 其他 ──────────────────────────────────────────────────────────────
