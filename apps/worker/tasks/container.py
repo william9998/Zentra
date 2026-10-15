@@ -66,7 +66,7 @@ def _destroy(manager: SandboxManager, container_uuid, docker_id: str | None) -> 
     targets = [t for t in (docker_id, f"zentra-serve-{container_uuid}") if t]
     for target in targets:
         try:
-            manager.destroy(SandboxHandle(id=target, name=target))
+            manager.driver_destroy(SandboxHandle(id=target, name=target))
         except Exception as exc:                  # noqa: BLE001
             log.warning("destroying container %s failed: %s", target, exc)
 
@@ -79,13 +79,13 @@ def _liveness(manager: SandboxManager, docker_id: str) -> tuple[bool, str]:
     """回 `(還活著嗎, 說明)`。死了的話說明帶上容器自己的輸出 —— 那是唯一的線索。"""
     time.sleep(_LIVENESS_GRACE_SECONDS)
     try:
-        container = manager.inspect(docker_id)
+        container = manager.driver_inspect(docker_id)
     except Exception as exc:                      # noqa: BLE001
         return False, f"could not inspect the container after starting it: {exc}"
     state = (container.get("State") or {})
     if state.get("Running"):
         return True, ""
-    logs = manager.logs(docker_id)
+    logs = manager.driver_logs(docker_id)
     return False, (
         f"the container exited with code {state.get('ExitCode')} right after starting. "
         f"Output: {logs.strip()[-1200:]}"
