@@ -13,14 +13,11 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-from apps.api.models import AgentVersion
+from apps.api import rows
 from apps.sandbox.drivers.base import OCI_RUNTIME_CONTRACT
 from tests.zen008.conftest import (
     containers_with_label,
-    db_url,
+    pg_connect,
     docker_json,
     new_agent,
     register_version,
@@ -47,15 +44,16 @@ def _forget_local(ref: str) -> None:
     subprocess.run(["docker", "image", "rm", "-f", ref], capture_output=True, text=True)
 
 
-async def _version_row(agent_id: str, semver: str) -> AgentVersion:
-    engine = create_async_engine(db_url())
+async def _version_row(agent_id: str, semver: str) -> rows.AgentVersion:
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            return (await session.execute(select(AgentVersion).where(
-                AgentVersion.agent_id == uuid.UUID(agent_id),
-                AgentVersion.semver == semver))).scalar_one()
+        rec = await conn.fetchrow(
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions "
+            "WHERE agent_id = $1 AND semver = $2",
+            uuid.UUID(agent_id), semver)
+        return rows.AgentVersion.from_row(rec)
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 # --------------------------------------------------------------------- Z8-06

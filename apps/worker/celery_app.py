@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_process_init
 
 from apps.api.config import get_settings
 
@@ -40,3 +41,10 @@ celery_app.conf.update(
         },
     },
 )
+
+
+@worker_process_init.connect
+def _discard_inherited_db_connection(**_kwargs: object) -> None:
+    from apps.worker.db import reset_connection
+
+    reset_connection()

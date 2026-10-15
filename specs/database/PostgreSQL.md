@@ -2,16 +2,22 @@
 
 | | |
 |---|---|
-| 對齊 schema | Alembic revision **`0007`**（`apps/api/migrations/versions/0007_resident_containers.py`） |
-| 對齊 Spec | `specs/SPEC.md v0.3.1`、`specs/api-contract.md v0.11.0` |
+| 對齊 schema | migration **`0008`**（Alembic revision `0008_agent_config_secrets_egress`；ZEN-020 後為 `apps/api/migrations/0008_agent_config_secrets_egress.sql`）。⚠️ **§2 尚未補上 `0008` 的五張表**，見 §6 第 6 點 |
+| 對齊 Spec | `specs/SPEC.md v0.6.0`、`specs/api-contract.md v0.12.1` |
 | 服務 | compose 的 `postgres`（image `pgvector/pgvector:pg16`，pgvector 擴充備而不用），只掛 `zentra-net`，volume `pgdata` |
 | 最後核對 | 2026-10-01，以 `\d+` 對照執行中的資料庫逐欄核對 |
 
 這份文件描述**資料怎麼存**：每張表、每個欄位、約束、索引、外鍵的刪除行為，以及它們為什麼長這樣。
 **行為**（狀態怎麼轉、API 回什麼）仍以 `SPEC.md` 與 `api-contract.md` 為準，這裡只引用不重述。
 
-> **改 schema 的順序**：先改 `apps/api/models.py` 與新增一支 migration → 跑起來 →
-> 回來更新這份文件與 §7 的變更紀錄。這份文件落後於 migration 就是 bug。
+> **schema 的唯一事實來源是 migration 的 `.sql` 檔**（[ADR-0015](../adr/ADR-0015-plain-sql-no-orm.md) §7），
+> 不是這份文件，也不是任何 Python 檔。
+>
+> **改 schema 的順序**：新增一支 `apps/api/migrations/NNNN_<name>.sql` → `make migrate` 跑起來 →
+> 同步 `apps/api/rows.py` 的欄位（有測試比對）→ 回來更新這份文件與 §7 的變更紀錄。
+> 已套用的 `.sql` 不得修改（runner 會比對 checksum 拒絕）。這份文件落後於 migration 就是 bug。
+>
+> schema 跟 `.sql`；列的形狀跟 `apps/api/rows.py`。
 
 ---
 
@@ -42,7 +48,15 @@
 | [`agent_api_keys`](#27-agent_api_keys) | 發給下游應用的一把 key（雜湊） | 每 Agent 數把 | ZEN-015 |
 | [`agent_containers`](#28-agent_containers) | 一個常駐容器 | 每 Agent 0～3 | ZEN-015 |
 
-另有 Alembic 自己的 `alembic_version`（一列，記目前的 revision）。
+另有兩張版本表（ADR-0015 §7）：
+
+| 表 | 說明 |
+|---|---|
+| `schema_migrations` | migration runner 的版本表，每支已套用的 `.sql` 一列：`version`（PK，如 `0008`）、`name`、`checksum`（檔案原始位元組的 SHA-256，小寫 hex）、`applied_at`。ZEN-020 起才有 |
+| `alembic_version` | Alembic 的遺留表，一列 `version_num='0008'`。**runner 不認得它**；既有資料庫由一次性腳本 `scripts/adopt-legacy-schema.sh` 讀一次，據此建出 `schema_migrations`，之後沒有人再碰。**凍結保留**作為退回舊 image 的退路；**`0009` 的第一條語句刪掉它**，腳本也在同一個 PR 刪除 |
+
+ZEN-019（`0008`）新增的五張表 `agent_settings`、`agent_secrets`、`agent_egress_rules`、`agent_email_sender`、`egress_calls`
+尚未寫進本文件 §2，見 §6 第 6 點。
 
 ### 1.3 ER 圖
 
@@ -448,8 +462,10 @@ Agent 的常駐容器（ZEN-015 / ADR-0012）。容器啟動後常駐，Run 經 
 
 | 項目 | 現況 |
 |---|---|
-| **連線** | 平台內用 `DATABASE_URL`（`postgresql+asyncpg://…@postgres:5432/zentra`）；Alembic 用同一個 URL 換成 `+psycopg` 同步 driver |
-| **Migration** | `uv run alembic upgrade head`（`make up` 會跑）。版本檔在 `apps/api/migrations/versions/` |
+| **連線** | 平台內用 `DATABASE_URL`（`postgresql://…@postgres:5432/zentra`；舊的 `postgresql+asyncpg://`／`+psycopg://` 前綴仍接受，啟動時剝掉）。`app` 用 asyncpg pool（`min_size=DB_POOL_SIZE`、`max_size=DB_POOL_SIZE+DB_MAX_OVERFLOW`，預設 10／30）；`worker` 每個 Celery 子行程一條 psycopg 連線（`--concurrency 10` → 10 條）；migration 1 條。三者加總要低於 `max_connections`（預設 100）。`pg_stat_activity.application_name` 分別是 `zentra-app`／`zentra-worker`／`zentra-migrate`（ADR-0015 §3） |
+| **連線借用規則** | **連線只在一個工作單元（一段 `transaction()`／`connection()` 區塊）內借出，工作單元內不做任何 HTTP、DNS、SMTP、Redis、sleep、Docker API 呼叫**（ADR-0015 §2 D1–D5）。查 `SELECT application_name, state, now() - xact_start FROM pg_stat_activity WHERE state = 'idle in transaction'`：平台的連線**正常情況下這裡永遠是空的** |
+| **安全網** | `zentra-app` 與 `zentra-worker` 連線設 `idle_in_transaction_session_timeout = 60s`（`SHOW` 回 `1min`）；`zentra-migrate` 不設（ADR-0015 D7）。交易內閒置超過 60 秒的 session 會被資料庫終止並回滾，`app` 該請求回 `500 INTERNAL_ERROR`。**log 裡出現這個代表有一處違反了借用規則，要修程式，不是調大這個值** |
+| **Migration** | `make migrate`（= `docker compose exec -T app python -m apps.api.migrations`；`make up` 會跑）。檔案在 `apps/api/migrations/NNNN_<name>.sql`，每支一個交易，**只有 up 沒有 down**；回退靠還原備份或寫新的前進 migration。`app`／`worker` 啟動時不會自動 migrate。**既有資料庫第一次升到 ZEN-020**：`make migrate` 會拒絕並指向一次性腳本 —— 先 `bash scripts/adopt-legacy-schema.sh --dry-run`，確認後不帶 `--dry-run` 跑一次（只接受 `alembic_version='0008'`，不執行任何 DDL），再 `make migrate`。ZEN-020 完成前仍是 `docker compose exec -T app alembic upgrade head` |
 | **備份** | **`pgdata` 與 `registrydata` 必須一起備份**（ADR-0009）：資料庫裡的 `image_ref` 指向 registry 裡的 manifest，只還原其中一個，已發布的版本會跑不起來。`ZENTRA_SECRET_KEY` 另外保管 |
 | **成長** | 會一直長的是 `run_events` > `runs` ≈ `llm_calls`。MVP 沒有自動清理或分區；刪 Agent 時其 Run 與事件會一起被刪 |
 | **測試資料** | `make clean-test-data` 依名稱前綴清掉測試建立的 Agent 與 Run，保留 `builtin-echo` fixture |
@@ -467,10 +483,15 @@ Agent 的常駐容器（ZEN-015 / ADR-0012）。容器啟動後常駐，Run 經 
    兩者目前都沒有使用（單租戶），真正啟用前要先統一。
 3. **`runs.session_id` 只建了欄位**，多輪對話本期不啟用。
 4. **`models.py` 少了幾個資料庫裡有的 CHECK**：`ck_llm_calls_*`、`ck_agent_containers_inflight`、
-   `ck_agent_containers_restarts` 只存在 migration 裡。資料庫行為正確，但以 models.py 為準的人會漏看；
-   Alembic autogenerate 預設也不比對 CHECK，不會提醒。
+   `ck_agent_containers_restarts` 只存在 migration 裡。資料庫行為正確，但以 models.py 為準的人會漏看。
+   **ZEN-020 從根本收掉這一點**：`models.py` 刪除，改定「migration 的 `.sql` 是 schema 唯一事實來源」，
+   約束只寫在 `.sql` 裡；取代它的 `rows.py` 只描述欄位（有測試比對欄位與資料庫一致），**不描述約束**，
+   所以不會再有「兩份 schema 定義不一致」這回事。ZEN-020 完成前這個落差仍在。
 5. **`docs/architecture/detailed-architecture.md` §8 的 ER 圖已過時**（只有 5 張表、`trigger` 仍含已移除的
    `CONSOLE`）。以本文件為準。
+6. **本文件 §1–§4 只寫到 `0007`**。`0008`（ZEN-019）新增的 `agent_settings`、`agent_secrets`、
+   `agent_egress_rules`、`agent_email_sender`、`egress_calls` 五張表尚未有 §2 的欄位說明、§1.3 的 ER 圖與 §3 的外鍵列。
+   在補上之前，以 `0008` 的 migration 為準（其中的設計理由見 ADR-0014 與 ZEN-019 spec）。
 
 ---
 
@@ -485,7 +506,10 @@ Agent 的常駐容器（ZEN-015 / ADR-0012）。容器啟動後常駐，Run 經 
 | `0005` | ZEN-002 | `llm_calls` |
 | `0006` | ZEN-012 | `agent_llm_credentials`；`llm_calls.credential_source` |
 | `0007` | ZEN-015 | `agent_containers`、`agent_api_keys`；`runs.api_key_id`、`session_id`、`container_id` |
+| `0008` | ZEN-019 | `agent_settings`、`agent_secrets`、`agent_egress_rules`、`agent_email_sender`、`egress_calls`（§2 尚未補，見 §6 第 6 點） |
+| — | ZEN-020 | **schema 零變更。** `0001`…`0008` 由 Alembic `.py` 一對一翻成 `.sql`；新增版本表 `schema_migrations`（空庫由 runner 建立、既有庫由 `scripts/adopt-legacy-schema.sh` 建立，不是編號 migration）；`alembic_version` 凍結保留 |
 
 | 文件版本 | 日期 | 變更 |
 |---|---|---|
 | v1.0 | 2026-10-01 | 初版，對齊 revision `0007` |
+| v1.1 | 2026-10-14 | 依 ADR-0015（ZEN-020）：schema 唯一事實來源改為 migration `.sql`；§5 連線、連線借用規則、安全網（`idle_in_transaction_session_timeout`）、Migration（含既有庫的一次性接管腳本）改寫；§1.2 新增版本表說明；§6 第 4 點改寫、新增第 6 點（`0008` 五張表未寫進 §2）；表頭對齊 `0008`、SPEC v0.6.0、api-contract v0.12.1 |

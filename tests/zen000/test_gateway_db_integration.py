@@ -1,7 +1,7 @@
 """Opt-in Postgres/Redis and Gateway contract tests for ZEN-000.
 
 Requires migrated test services. Example:
-ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@127.0.0.1:5432/zentra \
+ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@127.0.0.1:5432/zentra \
 ZENTRA_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
 ZENTRA_TEST_BASE_URL=http://127.0.0.1:8000 \
 python -m pytest tests/zen000/test_gateway_db_integration.py
@@ -11,12 +11,17 @@ import os
 from datetime import UTC, datetime
 from uuid import UUID
 
+# ingest_batch / finish 走 app 的 asyncpg pool；必須在 get_settings() 快取前對齊 DSN。
+_TEST_DB_URL = os.getenv("ZENTRA_TEST_DB_URL")
+if _TEST_DB_URL:
+    os.environ.setdefault("DATABASE_URL", _TEST_DB_URL)
+
 import httpx
 import pytest
 from redis.asyncio import Redis
-from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from apps.api import db
+from apps.api.config import normalize_database_url
 from apps.api.enums import (
     BUILTIN_AGENT_ID,
     BUILTIN_AGENT_VERSION_ID,
@@ -24,7 +29,6 @@ from apps.api.enums import (
     RunTrigger,
 )
 from apps.api.ids import uuid7
-from apps.api.models import Run, RunEvent
 from apps.api.schemas import SandboxEvent
 from apps.api.services import events, runtoken
 from apps.worker.tasks.run import finish
@@ -34,7 +38,43 @@ def _db_url() -> str:
     value = os.getenv("ZENTRA_TEST_DB_URL")
     if not value:
         pytest.skip("Set ZENTRA_TEST_DB_URL to run migrated Postgres tests")
-    return value
+    return normalize_database_url(value)
+
+
+async def _pg():
+    import json
+
+    import asyncpg
+
+    conn = await asyncpg.connect(_db_url())
+    for typ in ("json", "jsonb"):
+        await conn.set_type_codec(
+            typ, encoder=json.dumps, decoder=json.loads,
+            schema="pg_catalog", format="text")
+    return conn
+
+
+async def _insert_run(run_id: UUID, *, output=None, result_received_at=None) -> None:
+    conn = await _pg()
+    try:
+        await conn.execute(
+            "INSERT INTO runs (id, agent_id, agent_version_id, status, trigger, "
+            "entrypoint, input, timeout_seconds, started_at, output, result_received_at) "
+            "VALUES ($1, $2, $3, $4, $5, 'default', $6, 90, $7, $8, $9)",
+            run_id, UUID(BUILTIN_AGENT_ID), UUID(BUILTIN_AGENT_VERSION_ID),
+            RunStatus.RUNNING, RunTrigger.API, {"question": "hello"},
+            datetime.now(UTC), output, result_received_at,
+        )
+    finally:
+        await conn.close()
+
+
+async def _delete_runs(*run_ids: UUID) -> None:
+    conn = await _pg()
+    try:
+        await conn.execute("DELETE FROM runs WHERE id = ANY($1::uuid[])", list(run_ids))
+    finally:
+        await conn.close()
 
 
 def _redis_url() -> str:
@@ -51,32 +91,14 @@ def _base_url() -> str:
     return value
 
 
-def _run(run_id: UUID) -> Run:
-    """ZEN-008 更新：Run 一定綁一個 agent_version。
-
-    `/internal/runs/{id}/bootstrap` 現在會回該版本的 manifest（沙盒要用它），
-    所以 fixture 不能再留 `agent_version_id=NULL` —— 那是 Agent Registry
-    存在之前的形狀，API 已經產不出來了。
-    """
-    return Run(
-        id=run_id, agent_id=UUID(BUILTIN_AGENT_ID),
-        agent_version_id=UUID(BUILTIN_AGENT_VERSION_ID), status=RunStatus.RUNNING,
-        trigger=RunTrigger.API, entrypoint="default", input={"question": "hello"},
-        timeout_seconds=90, started_at=datetime.now(UTC),
-    )
-
-
 @pytest.mark.asyncio
 async def test_gateway_requires_run_scoped_token_and_accepts_array_events() -> None:
-    engine = create_async_engine(_db_url())
     redis = Redis.from_url(_redis_url(), decode_responses=True)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
     run_a, run_b = uuid7(), uuid7()
     token = None
     try:
-        async with sessions() as session:
-            session.add_all([_run(run_a), _run(run_b)])
-            await session.commit()
+        await _insert_run(run_a)
+        await _insert_run(run_b)
         token = await runtoken.issue(redis, run_a, 90)
         assert 0 < await redis.ttl(f"run_token:{token}") <= 90
         headers = {"Authorization": f"Bearer {token}"}
@@ -138,19 +160,19 @@ async def test_gateway_requires_run_scoped_token_and_accepts_array_events() -> N
             revoked = await client.get(f"/internal/runs/{run_a}/bootstrap", headers=headers)
             assert revoked.status_code == 401
 
-        async with sessions() as session:
-            assert await session.scalar(select(func.count()).select_from(RunEvent).where(
-                RunEvent.run_id == run_a, RunEvent.event_id == UUID(event_id),
-            )) == 1
-            assert (await session.get(Run, run_b)).output is None
+        conn = await _pg()
+        try:
+            assert await conn.fetchval(
+                "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_id = $2",
+                run_a, UUID(event_id)) == 1
+            assert (await conn.fetchval("SELECT output FROM runs WHERE id = $1", run_b)) is None
+        finally:
+            await conn.close()
     finally:
         if token is not None:
             await runtoken.revoke(redis, token)
-        async with sessions() as session:
-            await session.execute(delete(Run).where(Run.id.in_([run_a, run_b])))
-            await session.commit()
+        await _delete_runs(run_a, run_b)
         await redis.aclose()
-        await engine.dispose()
 
 
 class XaddFailsOnce:
@@ -171,63 +193,64 @@ class XaddFailsOnce:
 
 @pytest.mark.asyncio
 async def test_event_db_commit_survives_redis_failure_and_replay_reuses_seq() -> None:
-    engine = create_async_engine(_db_url())
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
     run_id, event_id = uuid7(), uuid7()
     notification = XaddFailsOnce()
     event = SandboxEvent(event_id=event_id, type="custom", payload={"name": "qa", "payload": {"n": 1}})
     try:
-        async with sessions() as session:
-            session.add(_run(run_id))
-            await session.commit()
-            with pytest.raises(RuntimeError, match="injected Redis XADD outage"):
-                await events.ingest_batch(session, notification, run_id, [event])
-        async with sessions() as session:
-            persisted = (await session.execute(select(RunEvent).where(
-                RunEvent.run_id == run_id, RunEvent.event_id == event_id,
-            ))).scalar_one()
-            original_seq = persisted.seq
-            assert persisted.published_at is None
-            replay = await events.ingest_batch(session, notification, run_id, [event])
-            assert replay == {"accepted": 0, "last_seq": original_seq}
-            assert len(notification.published) == 1
-            assert int(notification.published[0][1]["seq"]) == original_seq
-            assert await session.scalar(select(func.count()).select_from(RunEvent).where(
-                RunEvent.run_id == run_id, RunEvent.event_id == event_id,
-            )) == 1
+        await db.init_pool()
+        await _insert_run(run_id)
+        with pytest.raises(RuntimeError, match="injected Redis XADD outage"):
+            await events.ingest_batch(notification, run_id, [event])
+        conn = await _pg()
+        try:
+            persisted = await conn.fetchrow(
+                "SELECT seq, published_at FROM run_events WHERE run_id = $1 AND event_id = $2",
+                run_id, event_id)
+            original_seq = persisted["seq"]
+            assert persisted["published_at"] is None
+        finally:
+            await conn.close()
+        replay = await events.ingest_batch(notification, run_id, [event])
+        assert replay == {"accepted": 0, "last_seq": original_seq}
+        assert len(notification.published) == 1
+        assert int(notification.published[0][1]["seq"]) == original_seq
+        conn = await _pg()
+        try:
+            assert await conn.fetchval(
+                "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_id = $2",
+                run_id, event_id) == 1
+        finally:
+            await conn.close()
     finally:
-        async with sessions() as session:
-            await session.execute(delete(Run).where(Run.id == run_id))
-            await session.commit()
-        await engine.dispose()
+        await _delete_runs(run_id)
+        await db.close_pool()
 
 
 @pytest.mark.asyncio
 async def test_worker_alone_creates_one_terminal_event_and_redelivery_is_idempotent() -> None:
-    engine = create_async_engine(_db_url())
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
     run_id = uuid7()
     try:
-        async with sessions() as session:
-            run = _run(run_id)
-            run.output = {"echo": "hello"}
-            run.result_received_at = datetime.now(UTC)
-            session.add(run)
-            await session.commit()
-            await finish(session, run_id, 0, None)
-            completed = await session.get(Run, run_id)
-            assert completed.status == RunStatus.SUCCEEDED
-            assert completed.output == {"echo": "hello"}
-            terminal_count = await session.scalar(select(func.count()).select_from(RunEvent).where(
-                RunEvent.run_id == run_id, RunEvent.terminal.is_(True),
-            ))
+        await db.init_pool()
+        await _insert_run(run_id, output={"echo": "hello"}, result_received_at=datetime.now(UTC))
+        await finish(run_id, 0, None)
+        conn = await _pg()
+        try:
+            completed = await conn.fetchrow(
+                "SELECT status, output FROM runs WHERE id = $1", run_id)
+            assert completed["status"] == RunStatus.SUCCEEDED
+            assert completed["output"] == {"echo": "hello"}
+            terminal_count = await conn.fetchval(
+                "SELECT count(*) FROM run_events WHERE run_id = $1 AND terminal", run_id)
             assert terminal_count == 1
-            await finish(session, run_id, 0, None)
-            assert await session.scalar(select(func.count()).select_from(RunEvent).where(
-                RunEvent.run_id == run_id, RunEvent.terminal.is_(True),
-            )) == 1
+        finally:
+            await conn.close()
+        await finish(run_id, 0, None)
+        conn = await _pg()
+        try:
+            assert await conn.fetchval(
+                "SELECT count(*) FROM run_events WHERE run_id = $1 AND terminal", run_id) == 1
+        finally:
+            await conn.close()
     finally:
-        async with sessions() as session:
-            await session.execute(delete(Run).where(Run.id == run_id))
-            await session.commit()
-        await engine.dispose()
+        await _delete_runs(run_id)
+        await db.close_pool()

@@ -29,7 +29,8 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool, ToolResult
 
-from apps.api.db import SessionLocal
+from apps.api import db
+from apps.api.deps import load_run
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
 from apps.api.schemas import CreateRunRequest
@@ -62,10 +63,10 @@ class _EntrypointTool(Tool):
         args = dict(arguments)
         wants_async = bool(args.pop(ASYNC_FLAG, False))
 
-        async with SessionLocal() as session:
-            # create_run 會驗 input、解析已發布版本、寫入 Run 並 commit（與 REST 同一條路）
+        async with db.transaction() as conn:
+            # create_run 會驗 input、解析已發布版本、寫入 Run（與 REST 同一條路）
             run, version = await create_run(
-                session,
+                conn,
                 self.agent_id,
                 CreateRunRequest(entrypoint=self.entrypoint_name, input=args),
                 trigger=RunTrigger.MCP,
@@ -73,25 +74,24 @@ class _EntrypointTool(Tool):
             )
             run_id = str(run.id)
 
-            # Broker I/O 是同步的，不要跑在事件迴圈上（與 routers/runs.py 同樣的理由）
-            await asyncio.to_thread(dispatch_run, run_id)
+        # Broker I/O 是同步的，不要跑在事件迴圈上（與 routers/runs.py 同樣的理由）
+        await asyncio.to_thread(dispatch_run, run_id)
 
-            if wants_async:
-                return ToolResult(structured_content={
-                    "run_id": run_id,
-                    "status": str(RunStatus.QUEUED),
-                    "agent_version": version.semver,
-                })
+        if wants_async:
+            return ToolResult(structured_content={
+                "run_id": run_id,
+                "status": str(RunStatus.QUEUED),
+                "agent_version": version.semver,
+            })
 
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + INVOKE_TIMEOUT_SECONDS
-            while loop.time() < deadline:
-                await session.refresh(run)
-                if RunStatus(run.status).is_terminal:
-                    return _terminal_result(run, run_id)
-                # 與 routers/runs.py 的 invoke 同一條規則：sleep 期間不占連線。
-                await session.commit()
-                await asyncio.sleep(0.1)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + INVOKE_TIMEOUT_SECONDS
+        while loop.time() < deadline:
+            async with db.connection() as conn:
+                current = await load_run(run_id, conn)
+            if RunStatus(current.status).is_terminal:
+                return _terminal_result(current, run_id)
+            await asyncio.sleep(0.1)
 
         raise ToolError(
             f"{ErrorCode.SANDBOX_TIMEOUT}: synchronous invocation exceeded "
@@ -170,12 +170,12 @@ class _McpDispatch:
             }})
 
         try:
-            async with SessionLocal() as session:
-                agent = await agents_service.load_agent(session, agent_id)
-                version = await agents_service.resolve_published_version(session, agent.id, None)
-                # 認證與 REST 同一套規則：有帶就必須有效，沒帶預設放行（ZEN-015）。
-                key_id = await _resolve_key(session, agent, _bearer(scope))
-                server = _build_server(str(agent.id), version, key_id)
+            async with db.connection() as conn:
+                agent = await agents_service.load_agent(conn, agent_id)
+                version = await agents_service.resolve_published_version(conn, agent.id, None)
+            # 認證與 REST 同一套規則：有帶就必須有效，沒帶預設放行（ZEN-015）。
+            key_id = await _resolve_key(agent, _bearer(scope))
+            server = _build_server(str(agent.id), version, key_id)
         except ZentraError as exc:
             return await _plain(send, exc.http_status, exc.body())
 
@@ -192,8 +192,9 @@ class _McpDispatch:
             await app(inner, receive, send)
 
 
-async def _resolve_key(session: Any, agent: Any, presented: str) -> Any:
+async def _resolve_key(agent: Any, presented: str) -> Any:
     """把 Bearer token 換成 `api_key_id`。與 REST 的判斷一字不差。"""
+    from apps.api import db
     from apps.api.config import get_settings
 
     if not presented:
@@ -204,15 +205,16 @@ async def _resolve_key(session: Any, agent: Any, presented: str) -> Any:
                 401,
             )
         return None
-    row = await agent_api_keys.resolve(session, presented)
-    if row is None:
-        raise ZentraError(
-            ErrorCode.UNAUTHENTICATED, "the agent API key is invalid or revoked", 401)
-    if row.agent_id != agent.id:
-        raise ZentraError(
-            ErrorCode.PERMISSION_DENIED, "this API key belongs to a different agent", 403)
-    await agent_api_keys.touch(session, row)
-    return row.id
+    async with db.transaction() as conn:
+        row = await agent_api_keys.resolve(conn, presented)
+        if row is None:
+            raise ZentraError(
+                ErrorCode.UNAUTHENTICATED, "the agent API key is invalid or revoked", 401)
+        if row.agent_id != agent.id:
+            raise ZentraError(
+                ErrorCode.PERMISSION_DENIED, "this API key belongs to a different agent", 403)
+        await agent_api_keys.touch(conn, row)
+        return row.id
 
 
 async def _plain(send: Any, status: int, body: dict) -> None:

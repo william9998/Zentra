@@ -186,23 +186,22 @@ async def test_plaintext_never_reaches_the_database(agent_id: str) -> None:
     """K-2：DB 裡存的是雜湊。備份或 dump 外洩也還原不出可用的 key。"""
     import hashlib
 
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
+    import asyncpg
+
+    from apps.api.config import normalize_database_url
 
     issued = _issue(agent_id, "db-evidence")
     plaintext = issued["key"]
 
-    engine = create_async_engine(_db_url())
+    conn = await asyncpg.connect(normalize_database_url(_db_url()))
     try:
-        async with engine.connect() as conn:
-            row = (await conn.execute(
-                text("SELECT key_hash, key_prefix FROM agent_api_keys WHERE id = :i"),
-                {"i": issued["key_id"]},
-            )).one()
+        row = await conn.fetchrow(
+            "SELECT key_hash, key_prefix FROM agent_api_keys WHERE id = $1",
+            issued["key_id"])
     finally:
-        await engine.dispose()
+        await conn.close()
 
-    key_hash, key_prefix = row
+    key_hash, key_prefix = row["key_hash"], row["key_prefix"]
     assert key_hash == hashlib.sha256(plaintext.encode()).hexdigest()
     assert plaintext not in key_hash
     # key_prefix 是辨識用的，短到不能用來冒充
@@ -216,8 +215,9 @@ async def test_run_records_which_key_triggered_it() -> None:
 
     沒帶 key 的 Run 必須是 NULL —— 那不是錯誤，是「Console 發起的」。
     """
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
+    import asyncpg
+
+    from apps.api.config import normalize_database_url
 
     issued = _issue(BUILTIN_AGENT, "run-attribution")
     keyed = httpx.post(
@@ -228,15 +228,14 @@ async def test_run_records_which_key_triggered_it() -> None:
         f"{BASE_URL}/v1/agents/{BUILTIN_AGENT}/runs", json=BUILTIN_INPUT, timeout=30,
     ).json()["run_id"]
 
-    engine = create_async_engine(_db_url())
+    conn = await asyncpg.connect(normalize_database_url(_db_url()))
     try:
-        async with engine.connect() as conn:
-            rows = dict((await conn.execute(
-                text("SELECT id::text, api_key_id::text FROM runs WHERE id = ANY(:ids)"),
-                {"ids": [keyed, anon]},
-            )).all())
+        found = await conn.fetch(
+            "SELECT id::text, api_key_id::text FROM runs WHERE id = ANY($1::uuid[])",
+            [keyed, anon])
+        rows = {row["id"]: row["api_key_id"] for row in found}
     finally:
-        await engine.dispose()
+        await conn.close()
         httpx.delete(f"{_keys_url(BUILTIN_AGENT)}/{issued['key_id']}", timeout=30)
 
     assert rows[keyed] == issued["key_id"]

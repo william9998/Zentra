@@ -41,21 +41,21 @@ ANON = ("gpt-4o-mini", 30, 10, "0.000045", 200, None)
 
 
 async def _seed(run_id: str, rows) -> None:
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
+    import asyncpg
 
-    engine = create_async_engine(DB_URL)
+    from apps.api.config import normalize_database_url
+
+    conn = await asyncpg.connect(normalize_database_url(DB_URL))
     try:
-        async with engine.begin() as conn:
+        async with conn.transaction():
             for model, tin, tout, cost, code, error in rows:
-                await conn.execute(text(
+                await conn.execute(
                     "INSERT INTO llm_calls (id, run_id, model, input_tokens, output_tokens,"
                     " cost_usd, latency_ms, status_code, error, credential_source)"
-                    " VALUES (:i, :r, :m, :ti, :to, :c, 100, :sc, :e, 'AGENT')"
-                ), {"i": uuid.uuid4(), "r": run_id, "m": model, "ti": tin, "to": tout,
-                    "c": cost, "sc": code, "e": error})
+                    " VALUES ($1, $2, $3, $4, $5, $6, 100, $7, $8, 'AGENT')",
+                    uuid.uuid4(), run_id, model, tin, tout, cost, code, error)
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 def _start_run(key: str | None) -> str:

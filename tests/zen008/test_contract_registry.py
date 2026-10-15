@@ -10,11 +10,9 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from apps.api.models import AgentVersion
-from tests.zen008.conftest import db_url, new_agent, register_version, wait_version
+from apps.api import rows
+from tests.zen008.conftest import new_agent, pg_connect, register_version, wait_version
 
 DIGEST = "sha256:" + "ab" * 32
 REPO = "registry.example.com/acme/agent"
@@ -128,14 +126,14 @@ async def test_non_canonical_digest_is_rejected(api: httpx.Client, image_ref: st
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
-    engine = create_async_engine(db_url())
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            count = await session.scalar(select(func.count()).select_from(AgentVersion)
-                                         .where(AgentVersion.agent_id == uuid.UUID(agent_id)))
+        count = await conn.fetchval(
+            "SELECT count(*) FROM agent_versions WHERE agent_id = $1",
+            uuid.UUID(agent_id))
         assert count == 0, "被拒絕的 image_ref 仍然寫了一列 agent_versions"
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 @pytest.mark.parametrize("extra", [
@@ -218,15 +216,15 @@ async def test_duplicate_semver_conflicts_and_keeps_one_row(api: httpx.Client) -
     assert duplicate.status_code == 409, duplicate.text
     assert duplicate.json()["error"]["code"] == "VERSION_CONFLICT"
 
-    engine = create_async_engine(db_url())
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            rows = (await session.execute(select(AgentVersion).where(
-                AgentVersion.agent_id == uuid.UUID(agent_id)))).scalars().all()
-        assert len(rows) == 1
-        assert rows[0].image_digest == DIGEST, "重送覆寫了既有版本的 digest（違反 P5）"
+        found = await conn.fetch(
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions WHERE agent_id = $1",
+            uuid.UUID(agent_id))
+        assert len(found) == 1
+        assert found[0]["image_digest"] == DIGEST, "重送覆寫了既有版本的 digest（違反 P5）"
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 def test_same_digest_can_be_registered_by_another_agent(api: httpx.Client) -> None:
@@ -248,29 +246,29 @@ async def test_published_version_columns_are_stable_after_republish_attempt(
 ) -> None:
     """成功發布後再打一次同 semver：409，而且 DB 的不可變欄位一個字都不能變。"""
     agent_id = published_agent["agent_id"]
-    engine = create_async_engine(db_url())
+    conn = await pg_connect()
     fields = ("semver", "image_ref", "image_digest", "runtime_contract",
               "manifest", "entrypoints", "published_at")
     try:
-        async with async_sessionmaker(engine)() as session:
-            row = (await session.execute(select(AgentVersion).where(
-                AgentVersion.agent_id == uuid.UUID(agent_id),
-                AgentVersion.semver == published_agent["semver"]))).scalar_one()
-            before = {name: getattr(row, name) for name in fields}
+        rec = await conn.fetchrow(
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions "
+            "WHERE agent_id = $1 AND semver = $2",
+            uuid.UUID(agent_id), published_agent["semver"])
+        before = {name: rec[name] for name in fields}
 
         conflict = register_version(api, agent_id, published_agent["semver"],
                                     f"{REPO}@{'sha256:' + 'ef' * 32}")
         assert conflict.status_code == 409
         assert conflict.json()["error"]["code"] == "VERSION_CONFLICT"
 
-        async with async_sessionmaker(engine)() as session:
-            row = (await session.execute(select(AgentVersion).where(
-                AgentVersion.agent_id == uuid.UUID(agent_id),
-                AgentVersion.semver == published_agent["semver"]))).scalar_one()
-            after = {name: getattr(row, name) for name in fields}
+        rec = await conn.fetchrow(
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions "
+            "WHERE agent_id = $1 AND semver = $2",
+            uuid.UUID(agent_id), published_agent["semver"])
+        after = {name: rec[name] for name in fields}
         assert before == after
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 # ------------------------------------------------- Z8-04 schema 不藏 image/憑證
@@ -279,33 +277,32 @@ async def test_published_version_columns_are_stable_after_republish_attempt(
 async def test_schema_has_no_image_bytes_or_registry_credential_columns() -> None:
     """Z8-04：DB 只存 metadata。出現 blob/layer/password 欄位就是把 Registry 憑證
     或 image 內容搬進了資料層。"""
-    engine = create_async_engine(db_url())
+    conn = await pg_connect()
     banned = ("blob", "layer", "archive", "tarball", "bundle",
               "password", "secret", "token", "auth", "credential")
     try:
-        async with async_sessionmaker(engine)() as session:
-            rows = (await session.execute(text(
-                "SELECT table_name, column_name, data_type FROM information_schema.columns "
-                "WHERE table_schema='public' AND table_name IN ('agents','agent_versions')"
-            ))).all()
-        assert rows, "agents/agent_versions 不存在"
-        for table, column, data_type in rows:
+        found = await conn.fetch(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name IN ('agents','agent_versions')")
+        assert found, "agents/agent_versions 不存在"
+        for rec in found:
+            table, column, data_type = rec["table_name"], rec["column_name"], rec["data_type"]
             for word in banned:
                 assert word not in column.lower(), f"{table}.{column} 看起來在存 {word}"
             assert data_type != "bytea", f"{table}.{column} 是 bytea，疑似存 image bytes"
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 async def test_published_row_contains_no_credential_material(published_agent: dict) -> None:
-    engine = create_async_engine(db_url())
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            row = (await session.execute(select(AgentVersion).where(
-                AgentVersion.agent_id == uuid.UUID(published_agent["agent_id"])))).scalar_one()
-            serialized = str({c.name: getattr(row, c.name) for c in row.__table__.columns}).lower()
+        rec = await conn.fetchrow(
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions WHERE agent_id = $1",
+            uuid.UUID(published_agent["agent_id"]))
+        serialized = str(dict(rec)).lower()
     finally:
-        await engine.dispose()
+        await conn.close()
     for word in ("authorization", "bearer ", "identitytoken", "registrytoken",
                  "password", "docker.sock", "postgresql://", "redis://"):
         assert word not in serialized, f"agent_versions 列裡出現 {word!r}"

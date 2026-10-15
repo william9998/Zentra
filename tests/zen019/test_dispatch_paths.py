@@ -28,8 +28,8 @@ import pathlib
 import pytest
 
 from tests.zen019.conftest import (
-    auth, issue_run_token, make_published_version, make_run, new_id, purge_agent,
-    requires_db,
+    auth, insert_agent, insert_container, issue_run_token,
+    make_published_version, make_run, new_id, purge_agent, requires_db,
 )
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -37,28 +37,28 @@ CONFIG = {"symbols": ["BTCUSDT", "ETHUSDT"], "interval": "1h",
           "nested": {"a": [1, 2, None]}, "flag": True, "nothing": None}
 
 
-async def _agent_with_settings(session):
-    from apps.api.models import Agent
+async def _agent_with_settings():
     from apps.api.services import agent_secrets, agent_settings
 
-    agent = Agent(id=new_id(), name=f"zen019-dispatch-{os.urandom(5).hex()}")
-    session.add(agent)
-    await session.commit()
-    await agent_settings.replace(session, agent.id, dict(CONFIG))
-    # 刻意用非字母序存，驗 `secret_names` 真的排序過。
-    await agent_secrets.set_secret(session, agent.id, "SMTP_PASSWORD", "pw-value")
-    await agent_secrets.set_secret(session, agent.id, "BINANCE_KEY", "key-value")
+    agent = await insert_agent(name=f"zen019-dispatch-{os.urandom(5).hex()}")
+    from apps.api import db
+
+    async with db.transaction() as conn:
+        await agent_settings.replace(conn, agent.id, dict(CONFIG))
+        # 刻意用非字母序存，驗 `secret_names` 真的排序過。
+        await agent_secrets.set_secret(conn, agent.id, "SMTP_PASSWORD", "pw-value")
+        await agent_secrets.set_secret(conn, agent.id, "BINANCE_KEY", "key-value")
     return agent
 
 
 # ── Z19-04：路徑一 —— 一次性沙盒的 bootstrap ──────────────────────────
 
 @requires_db
-async def test_path_one_oneshot_sandbox_bootstrap(app_client, session, redis_client):
-    agent = await _agent_with_settings(session)
+async def test_path_one_oneshot_sandbox_bootstrap(app_client, redis_client):
+    agent = await _agent_with_settings()
     try:
-        version = await make_published_version(session, agent.id)
-        run = await make_run(session, agent.id, version.id)
+        version = await make_published_version(agent.id)
+        run = await make_run(agent.id, version.id)
         token = await issue_run_token(redis_client, run.id)
 
         response = await app_client.get(
@@ -76,28 +76,31 @@ async def test_path_one_oneshot_sandbox_bootstrap(app_client, session, redis_cli
         assert "pw-value" not in response.text and "key-value" not in response.text
         assert "ciphertext" not in response.text and "last_four" not in response.text
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent(agent.id)
 
 
 @requires_db
 async def test_changing_config_takes_effect_on_the_next_bootstrap(
-    app_client, session, redis_client,
+    app_client, redis_client,
 ):
     """Z19-07 的 bootstrap 版：**改設定不用重發版本、不用重啟任何東西。**"""
     from apps.api.services import agent_settings
 
-    agent = await _agent_with_settings(session)
+    agent = await _agent_with_settings()
     try:
-        version = await make_published_version(session, agent.id)
-        first = await make_run(session, agent.id, version.id)
+        version = await make_published_version(agent.id)
+        first = await make_run(agent.id, version.id)
         first_token = await issue_run_token(redis_client, first.id)
         before = (await app_client.get(
             f"/internal/runs/{first.id}/bootstrap", headers=auth(first_token))).json()
         assert before["config"]["interval"] == "1h"
 
-        await agent_settings.replace(session, agent.id, {"interval": "4h"})
+        from apps.api import db
 
-        second = await make_run(session, agent.id, version.id)
+        async with db.transaction() as conn:
+            await agent_settings.replace(conn, agent.id, {"interval": "4h"})
+
+        second = await make_run(agent.id, version.id)
         second_token = await issue_run_token(redis_client, second.id)
         after = (await app_client.get(
             f"/internal/runs/{second.id}/bootstrap", headers=auth(second_token))).json()
@@ -108,7 +111,7 @@ async def test_changing_config_takes_effect_on_the_next_bootstrap(
         # config 本身每次取都重算（契約 §2.6 第 4 點），所以不斷言 before == after。
         assert before["manifest"] == after["manifest"]
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent(agent.id)
 
 
 # ── Z19-05：路徑二 —— 常駐容器的工作項 ────────────────────────────────
@@ -118,9 +121,9 @@ def test_path_two_worker_helpers_read_the_same_values(session_sync_agent):
     """(a) worker 用的那兩個同步查詢對真 DB 回對的值。"""
     from apps.worker.tasks.run import _agent_config, _secret_names
 
-    sync_session, agent_id = session_sync_agent
-    assert _agent_config(sync_session, agent_id) == CONFIG
-    assert _secret_names(sync_session, agent_id) == ["BINANCE_KEY", "SMTP_PASSWORD"]
+    agent_id = session_sync_agent
+    assert _agent_config(agent_id) == CONFIG
+    assert _secret_names(agent_id) == ["BINANCE_KEY", "SMTP_PASSWORD"]
 
 
 def test_path_two_work_item_literally_carries_both_fields():
@@ -147,13 +150,13 @@ def test_path_two_work_item_literally_carries_both_fields():
         assert "secret_names" in keys, "工作項少了 secret_names"
 
     # 值要來自那兩個查詢函式，不是寫死的 {} / []
-    assert "_agent_config(session, run.agent_id)" in source
-    assert "_secret_names(session, run.agent_id)" in source
+    assert "_agent_config(run.agent_id)" in source
+    assert "_secret_names(run.agent_id)" in source
 
 
 @requires_db
 async def test_path_two_work_item_survives_the_gateway(
-    app_client, session, redis_client,
+    app_client, redis_client,
 ):
     """(c) 工作項經 Redis → `GET /internal/agents/{id}/work` **原樣**回來。
 
@@ -161,48 +164,33 @@ async def test_path_two_work_item_survives_the_gateway(
     所以這裡驗的是「不會在中途被吃掉」。
     """
     import os as _os
-    from datetime import UTC, datetime
 
     from redis import Redis as SyncRedis
 
-    from apps.api.models import AgentContainer
     from apps.api.services import containertoken, work
     from apps.worker.tasks.run import _agent_config, _secret_names
 
-    agent = await _agent_with_settings(session)
+    agent = await _agent_with_settings()
     sync = SyncRedis.from_url(
         _os.environ.get("ZENTRA_TEST_REDIS_URL", "redis://redis:6379/0"),
         decode_responses=True)
     try:
-        version = await make_published_version(session, agent.id)
-        run = await make_run(session, agent.id, version.id)
+        version = await make_published_version(agent.id)
+        run = await make_run(agent.id, version.id)
         token = await issue_run_token(redis_client, run.id)
 
-        container = AgentContainer(
-            id=new_id(), agent_id=agent.id, agent_version_id=version.id,
-            container_id="fake-container", status="READY", inflight_runs=0,
-            started_at=datetime.now(UTC),
-        )
-        session.add(container)
-        await session.commit()
+        container = await insert_container(agent.id, version.id)
         container_token = containertoken.issue_sync(sync, agent.id, 300, container.id)
 
         # worker 端做的事：用同一組 helper 組工作項再 push。
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import Session as SyncSession
-
-        engine = create_engine(
-            _os.environ["ZENTRA_TEST_DB_URL"].replace("+asyncpg", "+psycopg"))
-        with SyncSession(engine) as sync_session:
-            item = {
-                "run_id": str(run.id), "run_token": token,
-                "entrypoint": "default", "input": {},
-                "manifest": version.manifest or {},
-                "default_model": "gpt-4o-mini",
-                "config": _agent_config(sync_session, agent.id),
-                "secret_names": _secret_names(sync_session, agent.id),
-            }
-        engine.dispose()
+        item = {
+            "run_id": str(run.id), "run_token": token,
+            "entrypoint": "default", "input": {},
+            "manifest": version.manifest or {},
+            "default_model": "gpt-4o-mini",
+            "config": _agent_config(agent.id),
+            "secret_names": _secret_names(agent.id),
+        }
         work.push_sync(sync, agent.id, version.id, item)
 
         # Redis 裡的原文也要有那兩個欄位
@@ -220,7 +208,7 @@ async def test_path_two_work_item_survives_the_gateway(
     finally:
         sync.delete(f"agent_work:{agent.id}:{new_id()}")
         sync.close()
-        await purge_agent(session, agent.id)
+        await purge_agent(agent.id)
 
 
 # ── Z19-06：路徑三 —— validation 沙盒一律空的（U2）────────────────────
@@ -327,22 +315,14 @@ def test_sdk_no_longer_reads_config_out_of_the_manifest():
 # ── 給路徑二 (a) 的同步 session ───────────────────────────────────────
 
 @pytest.fixture
-async def session_sync_agent(session):
-    """建好資料之後交一個**同步** session 給 worker 的那兩個函式。
+async def session_sync_agent():
+    """建好資料之後把 agent_id 交給 worker 的同步查詢函式。
 
     worker 是同步的（Celery），所以那兩個函式也必須是同步的 ——
     用 async session 測等於測了另一條不存在的路徑。
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session as SyncSession
-
-    agent = await _agent_with_settings(session)
-    engine = create_engine(
-        os.environ["ZENTRA_TEST_DB_URL"].replace("+asyncpg", "+psycopg"))
-    sync_session = SyncSession(engine)
+    agent = await _agent_with_settings()
     try:
-        yield sync_session, agent.id
+        yield agent.id
     finally:
-        sync_session.close()
-        engine.dispose()
-        await purge_agent(session, agent.id)
+        await purge_agent(agent.id)

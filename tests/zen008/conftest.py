@@ -7,7 +7,7 @@
 環境（實測過的，不要改成別的）：
 
     ZENTRA_TEST_BASE_URL   http://127.0.0.1:8000
-    ZENTRA_TEST_DB_URL     postgresql+asyncpg://zentra:zentra@127.0.0.1:15432/zentra
+    ZENTRA_TEST_DB_URL     postgresql://zentra:zentra@127.0.0.1:15432/zentra
     ZENTRA_TEST_REDIS_URL  redis://127.0.0.1:16379/0
     ZENTRA_TEST_REGISTRY   localhost:5010
 
@@ -48,7 +48,22 @@ def db_url() -> str:
     value = os.getenv("ZENTRA_TEST_DB_URL")
     if not value:
         pytest.skip("Set ZENTRA_TEST_DB_URL to run PostgreSQL assertions")
-    return value
+    from apps.api.config import normalize_database_url
+
+    return normalize_database_url(value)
+
+
+async def pg_connect():
+    import json
+
+    import asyncpg
+
+    conn = await asyncpg.connect(db_url())
+    for typ in ("json", "jsonb"):
+        await conn.set_type_codec(
+            typ, encoder=json.dumps, decoder=json.loads,
+            schema="pg_catalog", format="text")
+    return conn
 
 
 def redis_url() -> str:

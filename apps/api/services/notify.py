@@ -29,15 +29,15 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 from typing import Any
 
+import asyncpg
 from pydantic import ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api import db
 from apps.api.config import get_settings
 from apps.api.enums import EgressKind, EgressReason, ErrorCode
-from apps.api.models import AgentEmailSender, EgressCall
+from apps.api.rows import AgentEmailSender
 from apps.api.schemas import NotifyEmailRequest
-from apps.api.services import agent_secrets, egress
+from apps.api.services import agent_secrets, egress, egress_rules
 
 MAX_RECIPIENTS_PER_MESSAGE = 10
 MAX_SUBJECT_LENGTH = 200
@@ -89,7 +89,7 @@ def _send_blocking(
 
 
 async def _count(
-    session: AsyncSession, *, run_id: uuid.UUID | None = None,
+    conn: asyncpg.Connection, *, run_id: uuid.UUID | None = None,
     agent_id: uuid.UUID | None = None, since: datetime | None = None,
 ) -> int:
     """**嘗試**過幾封（契約 §4.4 第 3 點 / U6）。
@@ -101,16 +101,25 @@ async def _count(
     每小時是**滾動 60 分鐘窗口**，不是整點桶：整點桶允許 `:59` 寄 60 封、
     `:01` 再寄 60 封，兩分鐘 120 封，那正是這條上限存在的理由。
     """
-    statement = select(func.count(EgressCall.call_id)).where(
-        EgressCall.kind == str(EgressKind.EMAIL),
-    )
+    clauses = ["kind = $1"]
+    args: list[Any] = [str(EgressKind.EMAIL)]
+    n = 2
     if run_id is not None:
-        statement = statement.where(EgressCall.run_id == run_id)
+        clauses.append(f"run_id = ${n}")
+        args.append(run_id)
+        n += 1
     if agent_id is not None:
-        statement = statement.where(EgressCall.agent_id == agent_id)
+        clauses.append(f"agent_id = ${n}")
+        args.append(agent_id)
+        n += 1
     if since is not None:
-        statement = statement.where(EgressCall.created_at >= since)
-    return int((await session.execute(statement)).scalar_one())
+        clauses.append(f"created_at >= ${n}")
+        args.append(since)
+    value = await conn.fetchval(
+        f"SELECT count(call_id) FROM egress_calls WHERE {' AND '.join(clauses)}",
+        *args,
+    )
+    return int(value or 0)
 
 
 def _peek_recipients(payload: Any) -> str:
@@ -119,9 +128,7 @@ def _peek_recipients(payload: Any) -> str:
     return "(invalid request)"
 
 
-async def send(
-    session: AsyncSession, *, run_id: uuid.UUID, agent_id: uuid.UUID, payload: Any,
-) -> str:
+async def send(*, run_id: uuid.UUID, agent_id: uuid.UUID, payload: Any) -> str:
     """寄一封信，回 `message_id`。
 
     每一個通過認證的請求都寫一列 `egress_calls`，**`422` 與被擋下的都要寫**
@@ -131,16 +138,21 @@ async def send(
     settings = get_settings()
     run_id_text = str(run_id)
 
-    sender: AgentEmailSender | None = await session.get(AgentEmailSender, agent_id)
+    async with db.connection() as conn:
+        sender: AgentEmailSender | None = await egress_rules.get_sender(conn, agent_id)
     host = sender.smtp_host if sender is not None else _NO_SENDER_HOST
     audit_path = _peek_recipients(payload)
 
+    async def write(**kwargs) -> None:
+        async with db.transaction() as conn:
+            await egress.record(
+                conn, run_id=run_id, agent_id=agent_id, kind=EgressKind.EMAIL,
+                host=kwargs.pop("host", host), path=kwargs.pop("path", audit_path),
+                **kwargs,
+            )
+
     async def block(reason: EgressReason, message: str, request_bytes: int = 0, **details):
-        await egress.record(
-            session, run_id=run_id, agent_id=agent_id, kind=EgressKind.EMAIL,
-            host=host, path=audit_path, request_bytes=request_bytes,
-            error=egress.block_error_text(reason),
-        )
+        await write(request_bytes=request_bytes, error=egress.block_error_text(reason))
         return egress.blocked(reason, message, run_id_text, **details)
 
     try:
@@ -149,11 +161,7 @@ async def send(
         error = exc.errors()[0]
         location = ".".join(str(part) for part in error.get("loc", ())) or "body"
         detail = f"{location}: {error.get('msg', 'invalid')}"
-        await egress.record(
-            session, run_id=run_id, agent_id=agent_id, kind=EgressKind.EMAIL,
-            host=host, path=audit_path,
-            error=egress.invalid_error_text(detail),
-        )
+        await write(error=egress.invalid_error_text(detail))
         raise egress.invalid(
             f"the email request is malformed ({detail}). The sender address, SMTP "
             "host and password are decided by the platform -- they cannot be set "
@@ -195,23 +203,22 @@ async def send(
             f"text + html is {body_bytes} bytes, the limit is "
             f"{settings.email_max_body_bytes}", request_bytes=body_bytes)
 
-    per_run = await _count(session, run_id=run_id)
+    async with db.connection() as conn:
+        per_run = await _count(conn, run_id=run_id)
+        per_hour = await _count(
+            conn, agent_id=agent_id, since=datetime.now(UTC) - timedelta(hours=1))
+        password = await agent_secrets.resolve(conn, agent_id, sender.password_secret_name)
     if per_run >= settings.email_max_per_run:
         raise await block(
             EgressReason.RUN_EMAIL_LIMIT,
             f"this run already attempted {per_run} emails, the limit is "
             f"{settings.email_max_per_run}", request_bytes=body_bytes)
-
-    since = datetime.now(UTC) - timedelta(hours=1)
-    per_hour = await _count(session, agent_id=agent_id, since=since)
     if per_hour >= settings.email_max_per_hour:
         raise await block(
             EgressReason.HOURLY_EMAIL_LIMIT,
             f"this agent attempted {per_hour} emails in the last 60 minutes, "
             f"the limit is "
             f"{settings.email_max_per_hour}", request_bytes=body_bytes)
-
-    password = await agent_secrets.resolve(session, agent_id, sender.password_secret_name)
     if password is None:
         raise await block(
             EgressReason.SENDER_NOT_CONFIGURED,
@@ -231,8 +238,6 @@ async def send(
     if html:
         message.add_alternative(html, subtype="html")
 
-    # SMTP 對話最久要 email_timeout_seconds。別在等它時占著池子裡的連線（見 llm.proxy）。
-    await session.commit()
     started = time.monotonic()
     try:
         await asyncio.to_thread(
@@ -255,8 +260,7 @@ async def send(
         ) from exc
     except (smtplib.SMTPException, OSError) as exc:
         latency = int((time.monotonic() - started) * 1000)
-        await egress.record(
-            session, run_id=run_id, agent_id=agent_id, kind=EgressKind.EMAIL,
+        await write(
             host=sender.smtp_host, path=audit_path, request_bytes=body_bytes,
             latency_ms=latency,
             error=f"{ErrorCode.EGRESS_FAILED}: {type(exc).__name__}: {exc}",
@@ -266,8 +270,7 @@ async def send(
             run_id_text) from exc
 
     latency = int((time.monotonic() - started) * 1000)
-    await egress.record(
-        session, run_id=run_id, agent_id=agent_id, kind=EgressKind.EMAIL,
+    await write(
         host=sender.smtp_host, path=audit_path, request_bytes=body_bytes,
         latency_ms=latency,
     )

@@ -5,8 +5,9 @@
 以及引用了已刪除的常數）。沒有測試釘住，下一次動它會再壞一次，而且是
 「四個服務全部起不來」等級的壞。
 
-作法：每條測試開一個**全新的空資料庫**，在 api 容器裡跑 `alembic upgrade head`。
-不是讀 migration 原始碼，是真的讓 PostgreSQL 執行它。
+作法：每條測試開一個**全新的空資料庫**，在 api 容器裡跑
+`python -m apps.api.migrations`。不是讀 migration 原始碼，是真的讓 PostgreSQL
+執行它。
 """
 
 from __future__ import annotations
@@ -15,20 +16,27 @@ import json
 import re
 import subprocess
 import uuid
+from pathlib import Path
 
 import asyncpg
+import psycopg
 import pytest
+from psycopg.rows import dict_row
 
+from apps.api.migrations.__main__ import SCHEMA_MIGRATIONS_DDL, checksum
 from tests.zen008.conftest import db_url
 
 API_CONTAINER = "zentra-app-1"
 BUILTIN_AGENT_ID = "01930000-0000-7000-8000-000000000001"
 BUILTIN_VERSION_ID = "01930000-0000-7000-8000-000000000002"
+MIGRATIONS = Path(__file__).resolve().parents[2] / "apps/api/migrations"
 
 
 def _dsn(database: str | None = None) -> str:
-    """把 SQLAlchemy URL 轉成 asyncpg DSN（測試從主機經 socat 代理連）。"""
-    raw = db_url().replace("postgresql+asyncpg://", "postgresql://")
+    """把測試 URL 轉成 asyncpg / psycopg DSN（測試從主機經 socat 代理連）。"""
+    from apps.api.config import normalize_database_url
+
+    raw = normalize_database_url(db_url())
     if database is None:
         return raw
     return re.sub(r"/[^/?]+$", f"/{database}", raw)
@@ -36,7 +44,7 @@ def _dsn(database: str | None = None) -> str:
 
 def _container_url(database: str) -> str:
     """api 容器內的連線字串：它走 compose 網段的 `postgres`，不是代理。"""
-    return f"postgresql+asyncpg://zentra:zentra@postgres:5432/{database}"
+    return f"postgresql://zentra:zentra@postgres:5432/{database}"
 
 
 async def _admin():
@@ -61,10 +69,10 @@ async def fresh_database() -> str:
         await admin.close()
 
 
-def _alembic(database: str, *args: str) -> subprocess.CompletedProcess:
+def _migrate(database: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", "exec", "-e", f"DATABASE_URL={_container_url(database)}",
-         API_CONTAINER, "sh", "-c", f"cd /srv && alembic {' '.join(args)}"],
+         API_CONTAINER, "python", "-m", "apps.api.migrations"],
         capture_output=True, text=True, timeout=300)
 
 
@@ -73,7 +81,29 @@ def _needs_api_container() -> None:
     probe = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", API_CONTAINER],
                            capture_output=True, text=True)
     if probe.stdout.strip() != "true":
-        pytest.skip(f"{API_CONTAINER} 沒有在跑，無法用產品映像執行 alembic")
+        pytest.skip(f"{API_CONTAINER} 沒有在跑，無法用產品映像執行 runner")
+
+
+def _sql_file(version: str) -> Path:
+    matches = sorted(MIGRATIONS.glob(f"{version}_*.sql"))
+    assert len(matches) == 1, matches
+    return matches[0]
+
+
+def _apply_through(database: str, last: str) -> None:
+    """在空庫上套用 0001…last，並寫進 schema_migrations（給後續 runner 接著跑）。"""
+    with psycopg.connect(
+        _dsn(database), autocommit=True, row_factory=dict_row,
+        cursor_factory=psycopg.ClientCursor,
+    ) as conn:
+        conn.execute(SCHEMA_MIGRATIONS_DDL)
+        for version in [f"{n:04d}" for n in range(1, int(last) + 1)]:
+            path = _sql_file(version)
+            conn.execute(path.read_text(encoding="utf-8"))
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, checksum) VALUES (%s, %s, %s)",
+                (version, path.stem.split("_", 1)[1], checksum(path)),
+            )
 
 
 # --------------------------------------------------------------------- 主線
@@ -81,16 +111,20 @@ def _needs_api_container() -> None:
 
 async def test_migrations_apply_to_an_empty_database(fresh_database: str) -> None:
     """乾淨 DB 一路 migrate 到 head。三個已修 bug 的直接回歸點。"""
-    result = _alembic(fresh_database, "upgrade", "head")
+    result = _migrate(fresh_database)
     assert result.returncode == 0, result.stdout + result.stderr
 
-    current = _alembic(fresh_database, "current")
-    assert "0004" in current.stdout, current.stdout + current.stderr
-    assert "head" in current.stdout
+    connection = await asyncpg.connect(_dsn(fresh_database))
+    try:
+        versions = {row["version"] for row in await connection.fetch(
+            "SELECT version FROM schema_migrations")}
+        assert versions == {f"{n:04d}" for n in range(1, 9)}, versions
+    finally:
+        await connection.close()
 
 
 async def test_head_schema_matches_the_zen008_contract(fresh_database: str) -> None:
-    assert _alembic(fresh_database, "upgrade", "head").returncode == 0
+    assert _migrate(fresh_database).returncode == 0
     connection = await asyncpg.connect(_dsn(fresh_database))
     try:
         tables = {row["table_name"] for row in await connection.fetch(
@@ -128,12 +162,12 @@ async def test_head_schema_matches_the_zen008_contract(fresh_database: str) -> N
 
 
 async def test_builtin_seed_row_is_inserted_with_correct_types(fresh_database: str) -> None:
-    """三個已修 bug 之二：uuid 欄位收 `str`、`text()` 把 JSON 的 `:true` 當綁定參數。
+    """三個已修 bug 之二：uuid 欄位收 `str`、JSON 的 `:true` 被當成綁定參數。
 
     兩者都只在 seed 真的執行時才會炸，所以這裡必須讀出 seed 的值，
     不能只確認 migration 回傳 0。
     """
-    assert _alembic(fresh_database, "upgrade", "head").returncode == 0
+    assert _migrate(fresh_database).returncode == 0
     connection = await asyncpg.connect(_dsn(fresh_database))
     try:
         agent = await connection.fetchrow(
@@ -152,25 +186,29 @@ async def test_builtin_seed_row_is_inserted_with_correct_types(fresh_database: s
         assert version["runtime_contract"] == "zentra.image/v1"
         assert version["published_at"] is not None
 
-        manifest = json.loads(version["manifest"])
+        manifest = version["manifest"]
+        if isinstance(manifest, str):
+            manifest = json.loads(manifest)
         assert manifest["builtin"] is True, (
-            "JSON 字面值裡的 `\"builtin\": true` 被 SQLAlchemy 當成綁定參數了", manifest)
+            "JSON 字面值裡的 `\"builtin\": true` 被當成綁定參數了", manifest)
         assert manifest["agent_version"] == "0.0.0-builtin"
 
-        entrypoints = json.loads(version["entrypoints"])
+        entrypoints = version["entrypoints"]
+        if isinstance(entrypoints, str):
+            entrypoints = json.loads(entrypoints)
         assert [item["name"] for item in entrypoints] == ["default"]
         assert entrypoints[0]["input_schema"]["required"] == ["question"]
     finally:
         await connection.close()
 
 
-async def test_downgrade_then_upgrade_is_repeatable(fresh_database: str) -> None:
-    """migration 不能只在「第一次、乾淨環境」成立。"""
-    assert _alembic(fresh_database, "upgrade", "head").returncode == 0
-    down = _alembic(fresh_database, "downgrade", "0003")
-    assert down.returncode == 0, down.stdout + down.stderr
-    up = _alembic(fresh_database, "upgrade", "head").returncode
-    assert up == 0
+async def test_runner_is_idempotent_on_a_second_apply(fresh_database: str) -> None:
+    """runner 沒有 downgrade。第二次套用必須是 no-op，不能重跑 DDL。"""
+    assert _migrate(fresh_database).returncode == 0
+    second = _migrate(fresh_database)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "套用" not in second.stdout
+    assert "已存在 0008" in second.stdout
 
 
 # -------------------------------------------------- 已知缺口：孤兒 runs
@@ -194,9 +232,9 @@ async def _seed_orphan_run(database: str) -> None:
 async def test_0004_applies_to_a_database_that_already_has_orphan_runs(
     fresh_database: str
 ) -> None:
-    assert _alembic(fresh_database, "upgrade", "0003").returncode == 0
+    _apply_through(fresh_database, "0003")
     await _seed_orphan_run(fresh_database)
-    result = _alembic(fresh_database, "upgrade", "head")
+    result = _migrate(fresh_database)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -206,9 +244,9 @@ async def test_a_failed_0004_upgrade_leaves_no_partial_schema(fresh_database: st
     擋住的錯：升級炸在半路、`agents` 表建好了但 FK 沒加，
     營運方以為只是重跑一次就好，實際上資料庫已經處在沒有人設計過的中間狀態。
     """
-    assert _alembic(fresh_database, "upgrade", "0003").returncode == 0
+    _apply_through(fresh_database, "0003")
     await _seed_orphan_run(fresh_database)
-    result = _alembic(fresh_database, "upgrade", "head")
+    result = _migrate(fresh_database)
     assert result.returncode != 0, "前提改變了：0004 現在吃得下孤兒 runs（請刪掉這條測試）"
 
     connection = await asyncpg.connect(_dsn(fresh_database))
@@ -217,7 +255,8 @@ async def test_a_failed_0004_upgrade_leaves_no_partial_schema(fresh_database: st
             "SELECT table_name FROM information_schema.tables WHERE table_schema='public'")}
         assert "agents" not in tables and "agent_versions" not in tables, (
             "0004 失敗後留下了半套 schema", sorted(tables))
-        version = await connection.fetchval("SELECT version_num FROM alembic_version")
-        assert version == "0003", version
+        versions = {row["version"] for row in await connection.fetch(
+            "SELECT version FROM schema_migrations")}
+        assert versions == {"0001", "0002", "0003"}, versions
     finally:
         await connection.close()

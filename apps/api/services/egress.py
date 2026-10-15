@@ -55,16 +55,16 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
+import asyncpg
 import httpx
 from pydantic import ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api import db
 from apps.api.config import get_settings
 from apps.api.enums import EgressKind, EgressReason, ErrorCode
 from apps.api.errors import ZentraError
 from apps.api.ids import uuid7
-from apps.api.models import AgentEgressRule, EgressCall
+from apps.api.rows import AgentEgressRule
 from apps.api.schemas import EgressRequest
 from apps.api.services import agent_secrets, egress_rules
 
@@ -123,7 +123,7 @@ def invalid(message: str, run_id: str, **details) -> ZentraError:
 
 
 async def record(
-    session: AsyncSession,
+    conn: asyncpg.Connection,
     *,
     run_id: uuid.UUID,
     agent_id: uuid.UUID,
@@ -150,14 +150,17 @@ async def record(
       · `EGRESS_FAILED: <細節>`     上游打不通
       · `None`                      送出去了（**即使上游回 4xx／5xx**）
     """
-    session.add(EgressCall(
-        call_id=uuid7(), run_id=run_id, agent_id=agent_id, kind=str(kind),
-        rule_id=rule_id, method=method, host=host, path=path,
-        status_code=status_code, request_bytes=request_bytes,
-        response_bytes=response_bytes, latency_ms=latency_ms, error=error,
-        created_at=datetime.now(UTC),
-    ))
-    await session.commit()
+    await conn.execute(
+        f"""
+        INSERT INTO egress_calls
+            (call_id, run_id, agent_id, kind, rule_id, method, host, path,
+             status_code, request_bytes, response_bytes, latency_ms, error, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        """,
+        uuid7(), run_id, agent_id, str(kind), rule_id, method, host, path,
+        status_code, request_bytes, response_bytes, latency_ms, error,
+        datetime.now(UTC),
+    )
 
 
 def block_error_text(reason: EgressReason) -> str:
@@ -170,7 +173,7 @@ def invalid_error_text(detail: str) -> str:
 
 
 async def attempt_count(
-    session: AsyncSession, run_id: uuid.UUID, kind: EgressKind,
+    conn: asyncpg.Connection, run_id: uuid.UUID, kind: EgressKind,
 ) -> int:
     """這筆 Run **嘗試**過幾次（契約 §4.2 第 6 點 / U5）。
 
@@ -180,12 +183,11 @@ async def attempt_count(
     只算成功的話，一個一直打非白名單主機的迴圈就完全不受限，
     而**會失控的迴圈通常正是一直失敗的那個**。
     """
-    return int((await session.execute(
-        select(func.count(EgressCall.call_id)).where(
-            EgressCall.run_id == run_id,
-            EgressCall.kind == str(kind),
-        )
-    )).scalar_one())
+    value = await conn.fetchval(
+        "SELECT count(call_id) FROM egress_calls WHERE run_id = $1 AND kind = $2",
+        run_id, str(kind),
+    )
+    return int(value or 0)
 
 
 def is_public_address(address: str) -> bool:
@@ -283,7 +285,6 @@ def _peek_url(payload: Any) -> str:
 
 
 async def perform(
-    session: AsyncSession,
     *,
     run_id: uuid.UUID,
     agent_id: uuid.UUID,
@@ -307,11 +308,12 @@ async def perform(
         audit_host = "(unparsed)"
 
     async def write(**kwargs) -> None:
-        await record(
-            session, run_id=run_id, agent_id=agent_id, kind=EgressKind.HTTP,
-            host=kwargs.pop("host", audit_host), path=kwargs.pop("path", audit_path),
-            **kwargs,
-        )
+        async with db.transaction() as conn:
+            await record(
+                conn, run_id=run_id, agent_id=agent_id, kind=EgressKind.HTTP,
+                host=kwargs.pop("host", audit_host), path=kwargs.pop("path", audit_path),
+                **kwargs,
+            )
 
     # ── 2. body / timeout_seconds 的格式（422，不夾值；U4）─────────────
     try:
@@ -352,7 +354,9 @@ async def perform(
                 run_id_text, header=key)
 
     # ── 4. 這個 Agent 有沒有規則（1. run token 由 deps 擋掉，那條不寫稽核）──
-    if not await egress_rules.has_rules(session, agent_id):
+    async with db.connection() as conn:
+        agent_has_rules = await egress_rules.has_rules(conn, agent_id)
+    if not agent_has_rules:
         raise await block(
             EgressReason.NO_RULES,
             "this agent has no egress rules, so it cannot reach any external host. "
@@ -371,7 +375,8 @@ async def perform(
         raise await block(EgressReason.HOST_NOT_ALLOWED, "the URL has no host")
 
     # ── 6. host 命中哪一條規則 ────────────────────────────────────────
-    rule: AgentEgressRule | None = await egress_rules.match_rule(session, agent_id, host)
+    async with db.connection() as conn:
+        rule: AgentEgressRule | None = await egress_rules.match_rule(conn, agent_id, host)
     if rule is None:
         raise await block(
             EgressReason.HOST_NOT_ALLOWED,
@@ -401,7 +406,8 @@ async def perform(
             f"{settings.egress_max_request_bytes}", rule=rule)
 
     # ── 9. 這筆 Run 的次數上限（**含被擋下的嘗試**；U5）─────────────────
-    used = await attempt_count(session, run_id, EgressKind.HTTP)
+    async with db.connection() as conn:
+        used = await attempt_count(conn, run_id, EgressKind.HTTP)
     if used >= settings.egress_max_calls_per_run:
         raise await block(
             EgressReason.RUN_CALL_LIMIT,
@@ -412,8 +418,6 @@ async def perform(
 
     # ── 10. DNS 解析 → 位址是不是內網 ─────────────────────────────────
     port = parts.port or 443
-    # DNS 與上游都可能慢。別在等它們時占著池子裡的連線（見 llm.proxy）。
-    await session.commit()
     try:
         addresses = await resolve_addresses(host, port)
     except OSError as exc:
@@ -441,7 +445,8 @@ async def perform(
     send_headers["User-Agent"] = USER_AGENT
     if rule.auth_secret_name and rule.auth_header:
         # **平台注入認證。** 機密從頭到尾沒進過沙盒（E3）。
-        value = await agent_secrets.resolve(session, agent_id, rule.auth_secret_name)
+        async with db.connection() as conn:
+            value = await agent_secrets.resolve(conn, agent_id, rule.auth_secret_name)
         if value is None:
             raise await block(
                 EgressReason.HOST_NOT_ALLOWED,
@@ -451,7 +456,6 @@ async def perform(
         send_headers[rule.auth_header] = value
 
     target = _connect_url(parts.scheme, address, port, parts.path, parts.query)
-    await session.commit()
     started = time.monotonic()
     max_response = settings.egress_max_response_bytes
     try:

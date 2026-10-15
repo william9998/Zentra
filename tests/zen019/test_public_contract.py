@@ -20,15 +20,17 @@ from __future__ import annotations
 import os
 
 import pytest
-from sqlalchemy import text
 
-from tests.zen019.conftest import BASE_URL, new_id, purge_agent, requires_db
+from tests.zen019.conftest import (
+    BASE_URL, insert_egress_call, make_published_version, make_run,
+    purge_agent, requires_db, table_count,
+)
 
 pytestmark = requires_db
 
 
 @pytest.fixture
-async def agent_id(app_client, session):
+async def agent_id(app_client):
     response = await app_client.post("/v1/agents", json={
         "name": f"zen019-contract-{os.urandom(5).hex()}", "description": "ZEN-019"})
     assert response.status_code == 201, response.text
@@ -36,7 +38,7 @@ async def agent_id(app_client, session):
     yield value
     import uuid as _uuid
 
-    await purge_agent(session, _uuid.UUID(value))
+    await purge_agent(_uuid.UUID(value))
 
 
 # ── §2.6 設定（Z19-01 / Z19-02 / Z19-03）──────────────────────────────
@@ -403,26 +405,15 @@ async def test_email_sender_bounds(app_client, agent_id, patch, status):
 
 # ── §2.10 稽核查詢（Z19-48）───────────────────────────────────────────
 
-async def test_egress_calls_filters_and_cursor(app_client, session, agent_id):
+async def test_egress_calls_filters_and_cursor(app_client, agent_id):
     """造五列再翻頁。`errors_only` 要同時涵蓋 `error IS NOT NULL` 與
     `status_code >= 400`（§2.10 第 3 點）。"""
     import uuid as _uuid
     from datetime import UTC, datetime, timedelta
 
-    from apps.api.models import AgentVersion, EgressCall, Run
-
     agent_uuid = _uuid.UUID(agent_id)
-    version = AgentVersion(
-        id=new_id(), agent_id=agent_uuid, semver="1.0.0",
-        image_ref="localhost:6000/x@sha256:" + "a" * 64,
-        image_digest="sha256:" + "a" * 64, version_id="a" * 12,
-        status="PUBLISHED", published_at=datetime.now(UTC))
-    session.add(version)
-    await session.commit()
-    run = Run(id=new_id(), agent_id=agent_uuid, agent_version_id=version.id,
-              status="SUCCEEDED", trigger="API", entrypoint="default", input={})
-    session.add(run)
-    await session.commit()
+    version = await make_published_version(agent_uuid)
+    run = await make_run(agent_uuid, version.id, status="SUCCEEDED")
 
     base = datetime.now(UTC) - timedelta(minutes=10)
     rows = [
@@ -440,10 +431,9 @@ async def test_egress_calls_filters_and_cursor(app_client, session, agent_id):
              error="EGRESS_BLOCKED: RECIPIENT_NOT_ALLOWED", latency_ms=None),
     ]
     for index, row in enumerate(rows):
-        session.add(EgressCall(call_id=new_id(), run_id=run.id, agent_id=agent_uuid,
-                               request_bytes=1, response_bytes=2,
-                               created_at=base + timedelta(seconds=index), **row))
-    await session.commit()
+        await insert_egress_call(
+            agent_uuid, run.id, request_bytes=1, response_bytes=2,
+            created_at=base + timedelta(seconds=index), **row)
 
     everything = await app_client.get(f"/v1/agents/{agent_id}/egress-calls")
     assert everything.status_code == 200
@@ -489,9 +479,10 @@ async def test_egress_calls_filters_and_cursor(app_client, session, agent_id):
 
 # ── §2.5 刪 Agent 要帶走五張表（Z19-50）──────────────────────────────
 
-async def test_deleting_the_agent_removes_all_five_tables(app_client, session):
+async def test_deleting_the_agent_removes_all_five_tables(app_client):
     """C-7：被刪掉的 Agent 沒理由還握著能用的密碼。"""
     import uuid as _uuid
+    from datetime import UTC, datetime
 
     created = await app_client.post("/v1/agents", json={
         "name": f"zen019-delete-{os.urandom(5).hex()}"})
@@ -506,28 +497,14 @@ async def test_deleting_the_agent_removes_all_five_tables(app_client, session):
     await app_client.put(f"/v1/agents/{agent_id}/email-sender", json={
         **SENDER, "password_secret_name": "S"})
 
-    from datetime import UTC, datetime
-
-    from apps.api.models import AgentVersion, EgressCall, Run
-
-    version = AgentVersion(
-        id=new_id(), agent_id=agent_uuid, semver="1.0.0",
-        image_ref="localhost:6000/x@sha256:" + "b" * 64,
-        image_digest="sha256:" + "b" * 64, version_id="b" * 12,
-        status="PUBLISHED", published_at=datetime.now(UTC))
-    session.add(version)
-    await session.commit()
-    run = Run(id=new_id(), agent_id=agent_uuid, agent_version_id=version.id,
-              status="SUCCEEDED", trigger="API", entrypoint="default", input={})
-    session.add(run)
-    await session.commit()
-    session.add(EgressCall(
-        call_id=new_id(), run_id=run.id, agent_id=agent_uuid, kind="HTTP",
+    version = await make_published_version(agent_uuid)
+    run = await make_run(agent_uuid, version.id, status="SUCCEEDED")
+    await insert_egress_call(
+        agent_uuid, run.id, kind="HTTP",
         rule_id=_uuid.UUID(rule.json()["rule_id"]), method="GET",
         host="api.binance.com", path="/api/v3/x", status_code=200,
         request_bytes=0, response_bytes=1, latency_ms=5,
-        created_at=datetime.now(UTC)))
-    await session.commit()
+        created_at=datetime.now(UTC))
 
     # ON DELETE SET NULL：刪規則**不抹掉**稽核紀錄
     await app_client.delete(
@@ -539,10 +516,7 @@ async def test_deleting_the_agent_removes_all_five_tables(app_client, session):
     assert (await app_client.delete(f"/v1/agents/{agent_id}")).status_code == 204
     for table in ("agent_settings", "agent_secrets", "agent_egress_rules",
                   "agent_email_sender", "egress_calls"):
-        count = (await session.execute(
-            text(f"SELECT count(*) FROM {table} WHERE agent_id = :id"),
-            {"id": agent_uuid})).scalar_one()
-        assert count == 0, table
+        assert await table_count(table, agent_uuid) == 0, table
 
 
 # ── 對跑著的服務確認一次（契約層：真 HTTP，不是 ASGI）────────────────

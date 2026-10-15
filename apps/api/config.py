@@ -1,8 +1,26 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_database_url(url: str) -> str:
+    """剝掉 +driver，一律變成 postgresql://。asyncpg 與 psycopg 都只接受這個。
+
+    接受 postgresql://、postgres://、postgresql+asyncpg://、postgresql+psycopg://、
+    postgresql+psycopg2://。其他 scheme 在啟動時報錯。
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.split("+", 1)[0]
+    if scheme not in ("postgresql", "postgres"):
+        raise ValueError(
+            f"unsupported DATABASE_URL scheme {parsed.scheme!r}; "
+            "expected postgresql://, postgres://, postgresql+asyncpg://, "
+            "or postgresql+psycopg://"
+        )
+    return urlunparse(parsed._replace(scheme="postgresql"))
 
 # apps/api/config.py → apps/ → apps/console。容器內是 /srv/apps/console（api.Dockerfile
 # 的 WORKDIR /srv），本機 uvicorn 則不管從哪個 cwd 啟動都解析得到。
@@ -14,7 +32,7 @@ class Settings(BaseSettings):
 
     zentra_env: str = "dev"
 
-    database_url: str = "postgresql+asyncpg://zentra:zentra@postgres:5432/zentra"
+    database_url: str = "postgresql://zentra:zentra@postgres:5432/zentra"
     redis_url: str = "redis://redis:6379/0"
 
     # app 的連線池（只有一個 uvicorn 行程，所以這就是整個 HTTP 端的上限）。
@@ -137,10 +155,15 @@ class Settings(BaseSettings):
     # 這裡只做計量；留空不影響 token 數的正確性。
     llm_prices: dict[str, dict[str, str]] = {}
 
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url(cls, value: str) -> str:
+        return normalize_database_url(value)
+
     @property
-    def sync_database_url(self) -> str:
-        """Alembic 用同步 driver。"""
-        return self.database_url.replace("+asyncpg", "+psycopg")
+    def dsn(self) -> str:
+        """正規化後的 postgresql://…，給 asyncpg / psycopg / runner 用。"""
+        return self.database_url
 
 
 @lru_cache

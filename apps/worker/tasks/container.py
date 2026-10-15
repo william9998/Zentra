@@ -17,16 +17,14 @@ from datetime import UTC, datetime, timedelta
 import docker
 import httpx
 from redis import Redis
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from apps.api.config import get_settings
-from apps.api.models import AgentContainer, AgentVersion
+from apps.api.rows import AgentContainer, AgentVersion
 from apps.api.services import containertoken
 from apps.sandbox.drivers.docker_driver import DockerSandboxDriver
 from apps.sandbox.manager import SandboxManager
+from apps.worker import db
 from apps.worker.celery_app import celery_app
-from apps.worker.db import SessionSync
 
 log = logging.getLogger(__name__)
 settings = get_settings()
@@ -47,6 +45,14 @@ def _manager(redis: Redis) -> SandboxManager:
     )
 
 
+def _load_container(conn, container_uuid: uuid.UUID) -> AgentContainer | None:
+    rec = conn.execute(
+        f"SELECT {AgentContainer.returning()} FROM agent_containers WHERE id = %(id)s",
+        {"id": container_uuid},
+    ).fetchone()
+    return AgentContainer.from_row(rec) if rec is not None else None
+
+
 def _destroy(manager: SandboxManager, container_uuid, docker_id: str | None) -> None:
     """銷毀這個 Agent 的常駐容器。**必須冪等** —— 重啟、停止、失敗清理都會走到這裡。
 
@@ -60,7 +66,7 @@ def _destroy(manager: SandboxManager, container_uuid, docker_id: str | None) -> 
     targets = [t for t in (docker_id, f"zentra-serve-{container_uuid}") if t]
     for target in targets:
         try:
-            manager.driver_destroy(SandboxHandle(id=target, name=target))
+            manager.destroy(SandboxHandle(id=target, name=target))
         except Exception as exc:                  # noqa: BLE001
             log.warning("destroying container %s failed: %s", target, exc)
 
@@ -73,13 +79,13 @@ def _liveness(manager: SandboxManager, docker_id: str) -> tuple[bool, str]:
     """回 `(還活著嗎, 說明)`。死了的話說明帶上容器自己的輸出 —— 那是唯一的線索。"""
     time.sleep(_LIVENESS_GRACE_SECONDS)
     try:
-        container = manager.driver_inspect(docker_id)
+        container = manager.inspect(docker_id)
     except Exception as exc:                      # noqa: BLE001
         return False, f"could not inspect the container after starting it: {exc}"
     state = (container.get("State") or {})
     if state.get("Running"):
         return True, ""
-    logs = manager.driver_logs(docker_id)
+    logs = manager.logs(docker_id)
     return False, (
         f"the container exited with code {state.get('ExitCode')} right after starting. "
         f"Output: {logs.strip()[-1200:]}"
@@ -91,35 +97,49 @@ def apply_container(self, container_uuid: str, action: str) -> dict:
     """把容器帶到期望狀態。`action` 是 start | restart | stop。"""
     redis = Redis.from_url(settings.redis_url)
     manager = _manager(redis)
+    cid = uuid.UUID(container_uuid)
 
-    with SessionSync() as session:
-        row = session.get(AgentContainer, uuid.UUID(container_uuid))
-        if row is None:
-            return {"container_id": container_uuid, "status": "MISSING"}
+    with db.connection() as conn:
+        row = _load_container(conn, cid)
+    if row is None:
+        return {"container_id": container_uuid, "status": "MISSING"}
 
-        # 停止與重啟都要先拆掉現有的東西。撤銷 token 排在銷毀容器之前：
-        # 先撤銷的話，就算銷毀失敗，那個容器也已經拿不到任何新工作了。
-        if action in ("stop", "restart"):
-            # 只撤銷這一個容器的 token —— 照 agent 撤會把兄弟容器一起弄啞
-            containertoken.revoke_container_sync(redis, row.id)
-            _destroy(manager, row.id, row.container_id)
-            row.container_id = None
-            if action == "stop":
-                row.status = "STOPPED"
-                row.inflight_runs = 0
-                session.commit()
-                return {"container_id": container_uuid, "status": "STOPPED"}
+    # 停止與重啟都要先拆掉現有的東西。撤銷 token 排在銷毀容器之前：
+    # 先撤銷的話，就算銷毀失敗，那個容器也已經拿不到任何新工作了。
+    if action in ("stop", "restart"):
+        # 只撤銷這一個容器的 token —— 照 agent 撤會把兄弟容器一起弄啞
+        containertoken.revoke_container_sync(redis, row.id)
+        _destroy(manager, row.id, row.container_id)
+        if action == "stop":
+            with db.transaction() as conn:
+                conn.execute(
+                    """
+                    UPDATE agent_containers SET
+                        container_id = NULL, status = 'STOPPED',
+                        inflight_runs = 0
+                    WHERE id = %(id)s
+                    """,
+                    {"id": cid},
+                )
+            return {"container_id": container_uuid, "status": "STOPPED"}
+        with db.transaction() as conn:
+            conn.execute(
+                "UPDATE agent_containers SET container_id = NULL WHERE id = %(id)s",
+                {"id": cid},
+            )
 
-        status = start_container(session, redis, manager, row)
-        return {
-            "container_id": container_uuid,
-            "status": status,
-            "docker_id": row.container_id,
-        }
+    status = start_container(redis, manager, cid)
+    with db.connection() as conn:
+        row = _load_container(conn, cid)
+    return {
+        "container_id": container_uuid,
+        "status": status,
+        "docker_id": row.container_id if row else None,
+    }
 
 
 def start_container(
-    session: Session, redis: Redis, manager: SandboxManager, row: AgentContainer,
+    redis: Redis, manager: SandboxManager, container_uuid: uuid.UUID,
 ) -> str:
     """把一列 `agent_containers` 實際帶到 READY（或 FAILED）。回傳最終狀態。
 
@@ -127,12 +147,32 @@ def start_container(
     而第一筆 Run 會直接在 `q.run` 的任務裡呼叫它（ZEN-015 的自動啟動）。
     那條路徑不能改走 `q.build` —— worker 的兩個佇列共用同一個行程池，
     等待中的 Run 佔滿位子時，`q.build` 的啟動任務就永遠排不到，會死鎖。
+
+    Docker／token 都在工作單元外。
     """
-    version = session.get(AgentVersion, row.agent_version_id)
+    with db.connection() as conn:
+        row = _load_container(conn, container_uuid)
+        version = None
+        if row is not None:
+            rec = conn.execute(
+                f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE id = %(id)s",
+                {"id": row.agent_version_id},
+            ).fetchone()
+            version = AgentVersion.from_row(rec) if rec is not None else None
+    if row is None:
+        return "MISSING"
     if version is None or not version.image_ref:
-        row.status = "FAILED"
-        row.error = "the agent version this container targets no longer exists"
-        session.commit()
+        with db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE agent_containers SET
+                    status = 'FAILED',
+                    error = %(error)s
+                WHERE id = %(id)s
+                """,
+                {"id": container_uuid,
+                 "error": "the agent version this container targets no longer exists"},
+            )
         return "FAILED"
 
     # 啟動前先清殘骸。`start` 也要做，不只 `restart`：從 FAILED 重新啟動時
@@ -154,31 +194,51 @@ def start_container(
         # 建不起來就撤銷剛發的 token —— 留著一把沒有容器在用的憑證沒有意義，
         # 而且它會在索引裡累積成雜訊。
         containertoken.revoke_container_sync(redis, row.id)
-        row.status = "FAILED"
-        row.error = f"{type(exc).__name__}: {exc}"[:2000]
-        session.commit()
+        with db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE agent_containers SET
+                    status = 'FAILED',
+                    error = %(error)s
+                WHERE id = %(id)s
+                """,
+                {"id": container_uuid, "error": f"{type(exc).__name__}: {exc}"[:2000]},
+            )
         log.warning("starting container for agent %s failed: %s", row.agent_id, exc)
         return "FAILED"
 
-    row.container_id = handle.id
-    row.started_at = datetime.now(UTC)
-    row.inflight_runs = 0
-    row.error = None
-
-    # **建立成功 ≠ 活著。** 容器可能一啟動就退出（image 太舊、沒有 serve 模式、
-    # 程式碼在 import 階段就炸）。標成 READY 而它其實死了，是最誤導的狀態 ——
-    # 畫面說好的，派工卻永遠沒人接。所以這裡實際回頭看一眼。
+    now = datetime.now(UTC)
     alive, detail = _liveness(manager, handle.id)
     if alive:
-        row.status = "READY"
-        row.last_health_at = datetime.now(UTC)
-    else:
-        containertoken.revoke_container_sync(redis, row.id)
-        row.status = "FAILED"
-        row.error = detail[:2000]
-        log.warning("container for agent %s exited immediately: %s", row.agent_id, detail)
-    session.commit()
-    return row.status
+        with db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE agent_containers SET
+                    container_id = %(docker_id)s, started_at = %(now)s,
+                    inflight_runs = 0, error = NULL,
+                    status = 'READY', last_health_at = %(now)s
+                WHERE id = %(id)s
+                """,
+                {"id": container_uuid, "docker_id": handle.id, "now": now},
+            )
+        return "READY"
+
+    containertoken.revoke_container_sync(redis, row.id)
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            UPDATE agent_containers SET
+                container_id = %(docker_id)s, started_at = %(now)s,
+                inflight_runs = 0, status = 'FAILED', error = %(error)s
+            WHERE id = %(id)s
+            """,
+            {
+                "id": container_uuid, "docker_id": handle.id, "now": now,
+                "error": detail[:2000],
+            },
+        )
+    log.warning("container for agent %s exited immediately: %s", row.agent_id, detail)
+    return "FAILED"
 
 
 @celery_app.task(name="zentra.container.sweep_idle", max_retries=0)
@@ -204,9 +264,9 @@ def sweep_idle_containers() -> dict:
         return {"swept": 0, "reason": "disabled"}
 
     cutoff = datetime.now(UTC) - timedelta(seconds=idle_seconds)
-    swept = []
-    with SessionSync() as session:
-        rows = session.execute(text("""
+    with db.connection() as conn:
+        rows = conn.execute(
+            """
             SELECT c.id
             FROM agent_containers c
             WHERE c.status = 'READY'
@@ -214,27 +274,40 @@ def sweep_idle_containers() -> dict:
               AND COALESCE(
                     (SELECT max(r.created_at) FROM runs r WHERE r.container_id = c.id),
                     c.started_at
-                  ) < :cutoff
-        """), {"cutoff": cutoff}).scalars().all()
+                  ) < %(cutoff)s
+            """,
+            {"cutoff": cutoff},
+        ).fetchall()
 
-        redis = Redis.from_url(settings.redis_url)
-        manager = _manager(redis)
-        try:
-            for container_uuid in rows:
-                row = session.get(AgentContainer, container_uuid)
-                if row is None or row.status != "READY" or row.inflight_runs > 0:
-                    continue          # 掃描與停止之間又有工作進來了
-                containertoken.revoke_container_sync(redis, row.id)
-                _destroy(manager, row.id, row.container_id)
-                row.status = "STOPPED"
-                row.container_id = None
-                row.inflight_runs = 0
-                row.error = None
-                session.commit()
-                swept.append(str(container_uuid))
-                log.info("stopped idle container %s (agent %s)", container_uuid, row.agent_id)
-        finally:
-            redis.close()
+    redis = Redis.from_url(settings.redis_url)
+    manager = _manager(redis)
+    swept = []
+    try:
+        for rec in rows:
+            container_uuid = rec["id"]
+            with db.connection() as conn:
+                row = _load_container(conn, container_uuid)
+            if row is None or row.status != "READY" or row.inflight_runs > 0:
+                continue          # 掃描與停止之間又有工作進來了
+            containertoken.revoke_container_sync(redis, row.id)
+            _destroy(manager, row.id, row.container_id)
+            with db.transaction() as conn:
+                updated = conn.execute(
+                    """
+                    UPDATE agent_containers SET
+                        status = 'STOPPED', container_id = NULL,
+                        inflight_runs = 0, error = NULL
+                    WHERE id = %(id)s AND status = 'READY' AND inflight_runs <= 0
+                    RETURNING id
+                    """,
+                    {"id": container_uuid},
+                ).fetchone()
+            if updated is None:
+                continue
+            swept.append(str(container_uuid))
+            log.info("stopped idle container %s (agent %s)", container_uuid, row.agent_id)
+    finally:
+        redis.close()
     return {"swept": len(swept), "containers": swept}
 
 

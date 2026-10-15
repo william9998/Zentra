@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from redis.asyncio import Redis
 
+from apps.api import db
 from apps.api.config import get_settings
 from apps.api.errors import ZentraError, internal_error_handler, validation_error_handler, zentra_error_handler
 from apps.api.routers import agents, internal, runs
@@ -16,9 +17,11 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    await db.init_pool()
     try:
         yield
     finally:
+        await db.close_pool()
         await app.state.redis.aclose()
 
 

@@ -14,15 +14,12 @@ import httpx
 import pytest
 from celery import Celery
 from redis import Redis
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
+from apps.api import rows
 from apps.api.enums import ErrorCode, RunStatus
-from apps.api.models import Run, RunEvent
 from apps.sandbox.manager import INFLIGHT_KEY
 from tests.zen008.conftest import (
     containers_with_label,
-    db_url,
+    pg_connect,
     docker_json,
     new_agent,
     redis_url,
@@ -50,28 +47,29 @@ def broker() -> Celery:
     return app
 
 
-def _engine():
-    return create_async_engine(db_url())
-
-
-async def _run_row(run_id: str) -> Run:
-    engine = _engine()
+async def _run_row(run_id: str) -> rows.Run:
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            return (await session.execute(select(Run).where(
-                Run.id == uuid.UUID(run_id)))).scalar_one()
+        rec = await conn.fetchrow(
+            f"SELECT {rows.Run.returning()} FROM runs WHERE id = $1",
+            uuid.UUID(run_id))
+        return rows.Run.from_row(rec)
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
-async def _events(run_id: str) -> list[RunEvent]:
-    engine = _engine()
+async def _events(run_id: str) -> list[rows.RunEvent]:
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            return list((await session.execute(select(RunEvent).where(
-                RunEvent.run_id == uuid.UUID(run_id)).order_by(RunEvent.seq))).scalars().all())
+        return [
+            rows.RunEvent.from_row(rec)
+            for rec in await conn.fetch(
+                f"SELECT {rows.RunEvent.returning()} FROM run_events "
+                "WHERE run_id = $1 ORDER BY seq",
+                uuid.UUID(run_id))
+        ]
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 def _publish(api: httpx.Client, image_ref: str, prefix: str) -> str:

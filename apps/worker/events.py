@@ -12,56 +12,92 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+import psycopg
+from psycopg.pq import TransactionStatus
+from psycopg.types.json import Jsonb
 from redis import Redis
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from apps.api.enums import EventType
 from apps.api.ids import uuid7
-from apps.api.models import Run, RunEvent
+from apps.api.rows import Run, RunEvent
 from apps.api.services.events import STREAM_TTL_SECONDS, stream_key
 
 
-def lock_run(session: Session, run_id: uuid.UUID) -> Run:
-    return session.execute(
-        select(Run).where(Run.id == run_id).with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one()
+class RunNotFound(Exception):
+    """lock_run 找不到這一列。對齊舊 scalar_one() 的 NoResultFound。"""
 
 
-def add_status_event(session: Session, run: Run, *, terminal: bool = False) -> RunEvent:
+def _require_txn(conn: psycopg.Connection) -> None:
+    if conn.info.transaction_status != TransactionStatus.INTRANS:
+        raise RuntimeError("lock functions must be called inside db.transaction()")
+
+
+def lock_run(conn: psycopg.Connection, run_id: uuid.UUID) -> Run:
+    """鎖住這一列 Run。**需在交易內呼叫。**"""
+    _require_txn(conn)
+    rec = conn.execute(
+        f"SELECT {Run.returning()} FROM runs WHERE id = %(id)s FOR UPDATE",
+        {"id": run_id},
+    ).fetchone()
+    if rec is None:
+        raise RunNotFound(str(run_id))
+    return Run.from_row(rec)
+
+
+def add_status_event(
+    conn: psycopg.Connection, run: Run, *, terminal: bool = False,
+) -> RunEvent:
     """呼叫端必須持有 Run 的 row lock，並把狀態與事件一起 commit。
 
     `terminal=True` 只能出現一次 —— 資料庫的 partial unique index 會兜底。
     """
-    row = RunEvent(
-        run_id=run.id, event_id=uuid7(), type=EventType.RUN_STATUS,
-        payload={"status": str(run.status)}, terminal=terminal,
-    )
-    session.add(row)
-    return row
+    rec = conn.execute(
+        f"""
+        INSERT INTO run_events (run_id, event_id, type, payload, terminal)
+        VALUES (%(run_id)s, %(event_id)s, %(type)s, %(payload)s, %(terminal)s)
+        RETURNING {RunEvent.returning()}
+        """,
+        {
+            "run_id": run.id,
+            "event_id": uuid7(),
+            "type": str(EventType.RUN_STATUS),
+            "payload": Jsonb({"status": str(run.status)}),
+            "terminal": terminal,
+        },
+    ).fetchone()
+    return RunEvent.from_row(rec)
 
 
-def publish_pending(session: Session, redis: Redis, run_id: uuid.UUID) -> None:
-    """把還沒進 Redis 的事件補發出去，不重新配 event_id 或 seq。
+def publish_pending(redis: Redis, run_id: uuid.UUID) -> None:
+    """把尚未通知 SSE 的事件推上 Redis，再標記 published_at。
 
-    XADD 成功但 commit 失敗時會重複通知 —— 那是安全的：
-    消費端是用 seq 去資料庫取有序的列，不是直接信 Redis 的內容。
+    Redis 是喚醒，不是真相。XADD 失敗時 `published_at` 保持 NULL，下次補發；
+    XADD 成功但標記失敗時，重複通知是安全的（消費者用 DB seq 去重）。
+    **不在交易內等 Redis。**
     """
-    rows = session.execute(
-        select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.published_at.is_(None))
-        .order_by(RunEvent.seq).with_for_update()
-    ).scalars().all()
+    from apps.worker import db
+
+    with db.connection() as conn:
+        rows = conn.execute(
+            f"SELECT {RunEvent.returning()} FROM run_events "
+            "WHERE run_id = %(id)s AND published_at IS NULL ORDER BY seq",
+            {"id": run_id},
+        ).fetchall()
+    if not rows:
+        return
+    events = [RunEvent.from_row(row) for row in rows]
     try:
         key = stream_key(run_id)
-        for row in rows:
+        for row in events:
             redis.xadd(key, {
                 "seq": str(row.seq), "type": row.type,
                 "data": json.dumps(row.payload, ensure_ascii=False),
             })
             redis.expire(key, STREAM_TTL_SECONDS)
-            row.published_at = datetime.now(UTC)
-        session.commit()
     except BaseException:
-        session.rollback()
         raise
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE run_events SET published_at = %(ts)s WHERE seq = ANY(%(seqs)s)",
+            {"ts": datetime.now(UTC), "seqs": [row.seq for row in events]},
+        )

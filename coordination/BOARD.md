@@ -8,7 +8,6 @@
 
 | ID | 任務 | 狀態 | 備註 |
 |---|---|---|---|
-| ZEN-020 | 拿掉 SQLAlchemy 與 Alembic（[ADR-0015](../specs/adr/ADR-0015-plain-sql-no-orm.md)） | `REVIEW` | 剩：`docker compose up -d --build app worker` → `bash scripts/adopt-legacy-schema.sh --dry-run` → 確認後實跑 → `make migrate` → `make test SUITE="tests/zen020 tests/zen019"` |
 | ZEN-019 | 每個 Agent 自己的設定、機密與對外能力（[ADR-0014](../specs/adr/ADR-0014-per-agent-config-secrets-and-egress.md)） | `REVIEW` | [spec](../specs/features/ZEN-019/spec.md) · [acceptance](../specs/features/ZEN-019/acceptance.md) |
 | ZEN-008 | OCI image 型 Agent：digest 註冊 → validate → REST/MCP | `REVIEW` | 被 ZEN008-ISO-01 擋（見下） |
 | ZEN-000 / 002 / 009 / 012 / 013 / 014 / 015 / 018 | 已交付，未正式驗收 | `REVIEW` | 使用者自己用過沒問題就直接刪列 |
@@ -29,6 +28,7 @@
 |---|---|
 | ZEN008-ISO-01 🔴 | 使用者 image 的 Dockerfile 宣告 `VOLUME` → Docker 建出可寫匿名 volume，`read_only` 擋不住，沙盒銷毀後仍留在宿主機。重現：`tests/zen008/test_image_volume_escape.py` |
 | AGENT-D1 | `agents.name` 無條件 `UNIQUE` + 軟刪除 → 刪掉的名稱永久被佔。ZEN-018 改硬刪後可能已不成立 |
+| DEV-DB-ECHO | 開發庫沒有 `builtin-echo`（空庫跑 runner 會 seed，舊庫曾被清掉）→ `make smoke` 404、`tests/zen015` 用到它的測試失敗。不是產品缺陷；要嘛手動補回，要嘛等 ZEN-010 退休它 |
 | ZEN-006A-D1 | RUNNING 時「已耗時」可能顯示 `—` 一秒（時鐘偏差）。修法：`Math.max(0, …)`。`tests/zen006a/test_console_e2e.py` 以 xfail 追蹤 |
 
 ## 未決問題（要問使用者）

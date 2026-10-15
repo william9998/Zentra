@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ZEN-000 驗收閘門。任何人都能重跑，不需要本機裝 Python 相依。
-#   前置：docker compose up -d && docker compose exec api alembic upgrade head
+#   前置：docker compose up -d && make migrate
 #   用法：bash scripts/verify-zen000.sh
 set -uo pipefail
 

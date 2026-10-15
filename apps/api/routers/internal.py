@@ -1,16 +1,17 @@
 """Token-authenticated Gateway; reachable on port 8000, hidden from OpenAPI."""
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Request, Response
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.db import get_session
+from apps.api import db
 from apps.api.deps import (
     get_redis, require_container_token, require_run_token, require_run_token_only,
+    require_validation_token,
 )
-from apps.api.models import Run
+from apps.api.rows import AgentVersion, Run
 from apps.api.schemas import (
     BootstrapResponse, EgressResponseEnvelope, NotifyEmailResponse, SandboxEvent,
     SandboxResult, ValidationPayload,
@@ -21,33 +22,35 @@ from apps.api.services import (
 )
 from apps.api.services.runs import save_result
 from apps.api.services.validation import save_validation
-from apps.api.deps import require_validation_token
-from apps.api.models import AgentVersion
 
 router = APIRouter(prefix="/internal", tags=["internal"], include_in_schema=False)
 
 
 @router.get("/runs/{run_id}/bootstrap", response_model=BootstrapResponse)
-async def bootstrap(
-    run: Run = Depends(require_run_token),
-    session: AsyncSession = Depends(get_session),
-) -> BootstrapResponse:
-    version = await session.get(AgentVersion, run.agent_version_id)
-    if version is None or version.manifest is None:
-        from apps.api.errors import ZentraError
-        from apps.api.enums import ErrorCode
-        raise ZentraError(ErrorCode.INTERNAL_ERROR, "run version manifest is missing", 500,
-                          run_id=str(run.id))
+async def bootstrap(run: Run = Depends(require_run_token)) -> BootstrapResponse:
+    async with db.connection() as conn:
+        rec = await conn.fetchrow(
+            f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE id = $1",
+            run.agent_version_id,
+        )
+        if rec is None or rec["manifest"] is None:
+            from apps.api.errors import ZentraError
+            from apps.api.enums import ErrorCode
+            raise ZentraError(ErrorCode.INTERNAL_ERROR, "run version manifest is missing", 500,
+                              run_id=str(run.id))
+        default_model = await agent_credentials.default_model_for(conn, run.agent_id)
+        config = await agent_settings.config_for(conn, run.agent_id)
+        secret_names = await agent_secrets.names_for(conn, run.agent_id)
     return BootstrapResponse(
         run_id=str(run.id), entrypoint=run.entrypoint, input=run.input,
-        manifest=version.manifest,
-        default_model=await agent_credentials.default_model_for(session, run.agent_id),
+        manifest=rec["manifest"],
+        default_model=default_model,
         # **頂層欄位，不得合併進 manifest**（契約 §4.1 第 1 點）：manifest 是版本
         # 的不可變內容，把可變設定攪進去會讓 P5 在 runtime 這一側失去實體。
         # 每筆 Run 重算 —— 中途改設定，下一筆就生效。
-        config=await agent_settings.config_for(session, run.agent_id),
+        config=config,
         # **只有名字**：沒有值、沒有長度、沒有尾四碼（§4.1 第 5 點）。
-        secret_names=await agent_secrets.names_for(session, run.agent_id),
+        secret_names=secret_names,
     )
 
 
@@ -55,19 +58,21 @@ async def bootstrap(
 async def ingest_events(
     body: list[SandboxEvent],
     run: Run = Depends(require_run_token),
-    session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> dict:
-    return await events.ingest_batch(session, redis, run.id, body)
+    return await events.ingest_batch(redis, run.id, body)
 
 
 @router.post("/runs/{run_id}/result", status_code=202)
 async def ingest_result(
     body: SandboxResult,
     run: Run = Depends(require_run_token),
-    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await save_result(session, run.id, body)
+    async with db.transaction() as conn:
+        should_finalize = await save_result(conn, run.id, body)
+    if should_finalize:
+        from apps.api.tasks import dispatch_finalize
+        await asyncio.to_thread(dispatch_finalize, str(run.id))
     return {"accepted": True}
 
 
@@ -75,9 +80,9 @@ async def ingest_result(
 async def ingest_validation(
     body: ValidationPayload,
     version: AgentVersion = Depends(require_validation_token),
-    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await save_validation(session, version.id, body)
+    async with db.transaction() as conn:
+        await save_validation(conn, version.id, body)
     return {"accepted": True}
 
 
@@ -86,7 +91,6 @@ async def llm_proxy(
     upstream_path: str,
     request: Request,
     run: Run = Depends(require_run_token_only),
-    session: AsyncSession = Depends(get_session),
 ) -> Response:
     """OpenAI 相容的 LLM 代理（契約 §4，SPEC §7.3）。
 
@@ -101,7 +105,7 @@ async def llm_proxy(
     """
     body = await request.json()
     status, headers, raw = await llm.proxy(
-        session, run.id, run.agent_id, upstream_path.strip("/"), body, request.headers
+        run.id, run.agent_id, upstream_path.strip("/"), body, request.headers
     )
     return Response(
         content=raw,
@@ -115,7 +119,6 @@ async def llm_proxy(
 async def egress_request(
     request: Request,
     run: Run = Depends(require_run_token_only),
-    session: AsyncSession = Depends(get_session),
 ) -> EgressResponseEnvelope:
     """對外 HTTP 代打（契約 §4.2 / ADR-0014 §3）。
 
@@ -137,7 +140,7 @@ async def egress_request(
     except ValueError:
         payload = None
     envelope = await egress.perform(
-        session, run_id=run.id, agent_id=run.agent_id, payload=payload)
+        run_id=run.id, agent_id=run.agent_id, payload=payload)
     return EgressResponseEnvelope(
         status=envelope.status, headers=envelope.headers, body=envelope.body)
 
@@ -146,7 +149,6 @@ async def egress_request(
 async def notify_email(
     request: Request,
     run: Run = Depends(require_run_token_only),
-    session: AsyncSession = Depends(get_session),
 ) -> NotifyEmailResponse:
     """寄信（契約 §4.4 / ADR-0014 §4）。
 
@@ -162,8 +164,7 @@ async def notify_email(
         payload = await request.json()
     except ValueError:
         payload = None
-    message_id = await notify.send(
-        session, run_id=run.id, agent_id=run.agent_id, payload=payload)
+    message_id = await notify.send(run_id=run.id, agent_id=run.agent_id, payload=payload)
     return NotifyEmailResponse(accepted=True, message_id=message_id)
 
 
@@ -172,7 +173,6 @@ async def take_work(
     agent_id: str,
     bound: tuple[str, str] = Depends(require_container_token),
     redis: Redis = Depends(get_redis),
-    session: AsyncSession = Depends(get_session),
 ) -> Response:
     """常駐容器 long-poll 取工作（ZEN-015 / ADR-0012）。
 
@@ -195,12 +195,12 @@ async def take_work(
     # **要知道這個容器綁哪個版本**：佇列是一個版本一條（P5）。
     # 舊 token（沒帶容器 id）時退回「這個 Agent 只有一個活著的容器」那種情況 ——
     # 那正是多版本並存還不會發生的狀態，所以退回去是安全的。
-    row = await container_service.resolve_for_work(session, _uuid.UUID(bound_agent_id), taker)
-    if row is None:
-        # 容器的那一列不見了（被停掉或清掉）。回 204 讓它繼續 poll，
-        # 平台側的狀態機會在下一次動作時收拾它。
-        return Response(status_code=204)
-    await container_service.touch_health(session, row.id)
+    async with db.transaction() as conn:
+        row = await container_service.resolve_for_work(
+            conn, _uuid.UUID(bound_agent_id), taker)
+        if row is None:
+            return Response(status_code=204)
+        await container_service.touch_health(conn, row.id)
 
     item = await work.pop(redis, bound_agent_id, row.agent_version_id)
     if item is None:
@@ -209,7 +209,8 @@ async def take_work(
     # **記在真正取走它的容器頭上。** 佇列是 per-agent 的（多個容器共用一條，
     # 先空出來的先拿），所以派工端猜的那個容器不一定就是執行的那個。
     # 不校正的話，畫面會顯示一個閒著的容器滿載、一個滿載的容器閒著。
-    await container_service.attribute_run(session, row.id, item.get("run_id"))
+    async with db.transaction() as conn:
+        await container_service.attribute_run(conn, row.id, item.get("run_id"))
 
     return Response(
         content=json.dumps(item),

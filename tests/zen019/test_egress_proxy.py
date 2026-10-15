@@ -26,10 +26,10 @@ import os
 
 import httpx
 import pytest
-from sqlalchemy import select
 
 from tests.zen019.conftest import (
-    auth, issue_run_token, make_published_version, make_run, new_id, purge_agent,
+    auth, fetch_egress_calls, insert_agent, insert_egress_rule,
+    issue_run_token, make_published_version, make_run, new_id, purge_agent,
     requires_db,
 )
 
@@ -94,52 +94,36 @@ def ok_json(body="[[1,2,3]]", headers=None):
     return handler
 
 
-async def setup_agent(session, redis_client, *, rules=None):
+async def setup_agent(redis_client, *, rules=None):
     """建一個 Agent + 已發布版本 + RUNNING 的 Run + run token。"""
-    from apps.api.models import Agent, AgentEgressRule
-    from datetime import UTC, datetime
-
-    agent = Agent(id=new_id(), name=f"zen019-egress-{os.urandom(5).hex()}")
-    session.add(agent)
-    await session.commit()
-    version = await make_published_version(session, agent.id)
-    run = await make_run(session, agent.id, version.id)
+    agent = await insert_agent(name=f"zen019-egress-{os.urandom(5).hex()}")
+    version = await make_published_version(agent.id)
+    run = await make_run(agent.id, version.id)
     token = await issue_run_token(redis_client, run.id)
-    now = datetime.now(UTC)
     for rule in rules or []:
-        session.add(AgentEgressRule(
-            rule_id=new_id(), agent_id=agent.id, host=rule.get("host", HOST),
-            methods=rule.get("methods", ["GET"]),
-            path_prefix=rule.get("path_prefix"),
-            auth_secret_name=rule.get("auth_secret_name"),
-            auth_header=rule.get("auth_header"),
-            created_at=now, updated_at=now,
-        ))
-    await session.commit()
+        await insert_egress_rule(agent.id, host=rule.get("host", HOST), **{
+            key: rule[key] for key in ("methods", "path_prefix",
+                                       "auth_secret_name", "auth_header")
+            if key in rule
+        })
     return agent, run, token
 
 
-async def cleanup(session, agent_id):
-    await purge_agent(session, agent_id)
+async def cleanup(agent_id):
+    await purge_agent(agent_id)
 
 
-async def audit_rows(session, run_id):
-    from apps.api.models import EgressCall
-
-    rows = (await session.execute(
-        select(EgressCall).where(EgressCall.run_id == run_id)
-        .order_by(EgressCall.created_at)
-    )).scalars().all()
-    return list(rows)
+async def audit_rows(run_id):
+    return await fetch_egress_calls(run_id)
 
 
 # ── E-1：預設拒絕（Z19-24）─────────────────────────────────────────────
 
 async def test_no_rules_blocks_everything_and_writes_an_audit_row(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     wire([PUBLIC_IP], ok_json())
-    agent, run, token = await setup_agent(session, redis_client)
+    agent, run, token = await setup_agent(redis_client)
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -150,14 +134,14 @@ async def test_no_rules_blocks_everything_and_writes_an_audit_row(
         assert error["retryable"] is False
         assert error["run_id"] == str(run.id)
 
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert len(rows) == 1
         assert rows[0].error == "EGRESS_BLOCKED: NO_RULES"
         assert rows[0].status_code is None
         # E-5：連 DNS 都還沒發出去
         assert wire.state["calls"] == 0
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 @pytest.mark.parametrize("bad_url,reason", [
@@ -169,27 +153,27 @@ async def test_no_rules_blocks_everything_and_writes_an_audit_row(
     (f"https://{HOST}/api/v1/x", "PATH_NOT_ALLOWED"),
 ])
 async def test_policy_rejections(
-    app_client, session, redis_client, wire, bad_url, reason,
+    app_client, redis_client, wire, bad_url, reason,
 ):
     wire([PUBLIC_IP], ok_json())
     agent, run, token = await setup_agent(
-        session, redis_client, rules=[{"path_prefix": "/api/v3/"}])
+        redis_client, rules=[{"path_prefix": "/api/v3/"}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": bad_url}, headers=auth(token))
         assert response.status_code == 403, response.text
         assert response.json()["error"]["details"]["reason"] == reason
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert len(rows) == 1 and rows[0].error == f"EGRESS_BLOCKED: {reason}"
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_method_not_on_the_rule_is_blocked(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     wire([PUBLIC_IP], ok_json())
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request",
@@ -197,24 +181,24 @@ async def test_method_not_on_the_rule_is_blocked(
         assert response.status_code == 403
         assert response.json()["error"]["details"]["reason"] == "METHOD_NOT_ALLOWED"
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-5：host 沒命中時**不准發 DNS 查詢**（Z19-30）─────────────────────
 
 async def test_resolver_is_not_called_when_the_host_is_not_allowed(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     """沙盒可以用任意網址驅動 `app` 發 DNS 查詢 —— 那本身就是一條外洩通道。"""
     wire([PUBLIC_IP], ok_json())
-    agent, _, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, _, token = await setup_agent(redis_client, rules=[{}])
     try:
         await app_client.post("/internal/egress/request",
                               json={"url": "https://evil.example.net/x"},
                               headers=auth(token))
         assert wire.state["calls"] == 0
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-4：解析後檢查 + 連那個 IP（Z19-28 / Z19-29）──────────────────────
@@ -224,7 +208,7 @@ async def test_resolver_is_not_called_when_the_host_is_not_allowed(
     "169.254.169.254", "::1", "fd00::1", "::ffff:127.0.0.1",
 ])
 async def test_private_resolution_is_blocked_and_nothing_is_sent(
-    app_client, session, redis_client, wire, address,
+    app_client, redis_client, wire, address,
 ):
     recorder = None
 
@@ -232,7 +216,7 @@ async def test_private_resolution_is_blocked_and_nothing_is_sent(
         raise AssertionError("the proxy must not connect to a private address")
 
     recorder = wire([address], handler)
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -241,18 +225,18 @@ async def test_private_resolution_is_blocked_and_nothing_is_sent(
         assert details["reason"] == "PRIVATE_ADDRESS"
         assert details["resolved"] == address
         assert recorder.requests == []       # **一個位元組都沒送出去**
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert rows[0].error == "EGRESS_BLOCKED: PRIVATE_ADDRESS"
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_a_private_address_hidden_behind_a_public_one_is_still_blocked(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     """round-robin DNS 把內網位址藏在第二筆 —— 只看第一筆等於沒檢查。"""
     recorder = wire([PUBLIC_IP, "127.0.0.1"], ok_json())
-    agent, _, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, _, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -260,11 +244,11 @@ async def test_a_private_address_hidden_behind_a_public_one_is_still_blocked(
         assert response.json()["error"]["details"]["reason"] == "PRIVATE_ADDRESS"
         assert recorder.requests == []
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_the_proxy_connects_to_the_address_it_checked(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     """**DNS rebinding（Z19-29）。**
 
@@ -273,7 +257,7 @@ async def test_the_proxy_connects_to_the_address_it_checked(
     而檢查完全沒發生。
     """
     recorder = wire([PUBLIC_IP], ok_json())
-    agent, _, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, _, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -289,14 +273,14 @@ async def test_the_proxy_connects_to_the_address_it_checked(
         # query string 原樣帶過去
         assert "symbol=BTCUSDT" in str(sent.url)
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-6：信封語意（Z19-32）────────────────────────────────────────────
 
 @pytest.mark.parametrize("status", [200, 418, 429, 500])
 async def test_upstream_status_comes_back_in_the_envelope(
-    app_client, session, redis_client, wire, status,
+    app_client, redis_client, wire, status,
 ):
     """上游回 418／429／500 **不是平台錯誤** —— 這是備援能實作的前提。"""
     def handler(request):
@@ -304,7 +288,7 @@ async def test_upstream_status_comes_back_in_the_envelope(
                               headers={"content-type": "application/json"})
 
     wire([PUBLIC_IP], handler)
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -312,17 +296,17 @@ async def test_upstream_status_comes_back_in_the_envelope(
         envelope = response.json()
         assert envelope["status"] == status
         assert envelope["body"] == '{"ok":false}'
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         # 送出去了 → `error` 是 None，即使上游回 4xx／5xx（§2.10 第 4 點）
         assert rows[0].error is None
         assert rows[0].status_code == status
         assert rows[0].latency_ms is not None
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_response_headers_are_a_whitelisted_subset(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     def handler(request):
         return httpx.Response(200, text="{}", headers=[
@@ -335,7 +319,7 @@ async def test_response_headers_are_a_whitelisted_subset(
         ])
 
     wire([PUBLIC_IP], handler)
-    agent, _, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, _, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -350,19 +334,19 @@ async def test_response_headers_are_a_whitelisted_subset(
         assert "x-internal" not in headers
         assert "leak" not in json.dumps(headers)
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-3：不跟隨 redirect（Z19-26）─────────────────────────────────────
 
 async def test_redirects_are_blocked_and_not_followed(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     def handler(request):
         return httpx.Response(302, headers={"location": "https://evil.example.net/x"})
 
     recorder = wire([PUBLIC_IP], handler)
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -372,20 +356,20 @@ async def test_redirects_are_blocked_and_not_followed(
         assert details["location"] == "https://evil.example.net/x"
         # **stub 只收到一個請求** —— 證明沒有跟過去
         assert len(recorder.requests) == 1
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert rows[0].error == "EGRESS_BLOCKED: REDIRECT"
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-2：沙盒不得自帶 header（Z19-27 / U1）────────────────────────────
 
 @pytest.mark.parametrize("header", ["Authorization", "Cookie", "X-Api-Key", "User-Agent"])
 async def test_sandbox_supplied_headers_are_422_and_named(
-    app_client, session, redis_client, wire, header,
+    app_client, redis_client, wire, header,
 ):
     recorder = wire([PUBLIC_IP], ok_json())
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request",
@@ -399,19 +383,19 @@ async def test_sandbox_supplied_headers_are_422_and_named(
         assert "reason" not in error["details"]
         assert recorder.requests == []
         # U3：422 也要寫稽核
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert len(rows) == 1
         assert rows[0].error.startswith("VALIDATION_ERROR:")
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_accept_and_content_type_are_allowed_through(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     """反向斷言。少了它，一個「全部拒絕」的實作也會全綠。"""
     recorder = wire([PUBLIC_IP], ok_json())
-    agent, _, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, _, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request",
@@ -421,44 +405,41 @@ async def test_accept_and_content_type_are_allowed_through(
         assert recorder.requests[0].headers["accept"] == "application/json"
         assert recorder.requests[0].headers["user-agent"] == "Zentra-Egress/1"
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_the_platform_injects_the_rule_credential(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     """機密**從頭到尾沒進過沙盒**：沙盒送的 body 裡沒有它，平台才加上去。"""
     from apps.api.services import agent_secrets
 
     recorder = wire([PUBLIC_IP], ok_json())
-    agent, _, token = await setup_agent(session, redis_client)
+    agent, _, token = await setup_agent(redis_client)
     try:
-        await agent_secrets.set_secret(session, agent.id, "EXCHANGE_KEY", "s3cret-value")
-        from datetime import UTC, datetime
+        from apps.api import db
 
-        from apps.api.models import AgentEgressRule
-        now = datetime.now(UTC)
-        session.add(AgentEgressRule(
-            rule_id=new_id(), agent_id=agent.id, host=HOST, methods=["GET"],
-            auth_secret_name="EXCHANGE_KEY", auth_header="X-MBX-APIKEY",
-            created_at=now, updated_at=now))
-        await session.commit()
+        async with db.transaction() as conn:
+            await agent_secrets.set_secret(conn, agent.id, "EXCHANGE_KEY", "s3cret-value")
+        await insert_egress_rule(
+            agent.id, host=HOST, methods=["GET"],
+            auth_secret_name="EXCHANGE_KEY", auth_header="X-MBX-APIKEY")
 
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
         assert response.status_code == 200, response.text
         assert recorder.requests[0].headers["x-mbx-apikey"] == "s3cret-value"
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-6：上限（Z19-34 / U4 / U5）──────────────────────────────────────
 
 async def test_timeout_over_the_limit_is_422_not_clamped(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     wire([PUBLIC_IP], ok_json())
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         for bad in (16, 0, 10.5, "10"):
             response = await app_client.post(
@@ -467,13 +448,13 @@ async def test_timeout_over_the_limit_is_422_not_clamped(
             assert response.status_code == 422, (bad, response.text)
             assert response.json()["error"]["code"] == "VALIDATION_ERROR"
         # 每一次都要留下一列（U3）
-        assert len(await audit_rows(session, run.id)) == 4
+        assert len(await audit_rows( run.id)) == 4
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_request_and_response_size_limits(
-    app_client, session, redis_client, wire, monkeypatch,
+    app_client, redis_client, wire, monkeypatch,
 ):
     from apps.api.config import get_settings
 
@@ -483,7 +464,7 @@ async def test_request_and_response_size_limits(
 
     wire([PUBLIC_IP], ok_json(body="x" * 4096))
     agent, run, token = await setup_agent(
-        session, redis_client, rules=[{"methods": ["GET", "POST"]}])
+        redis_client, rules=[{"methods": ["GET", "POST"]}])
     try:
         oversized = await app_client.post(
             "/internal/egress/request",
@@ -499,11 +480,11 @@ async def test_request_and_response_size_limits(
         # **不截斷**：回的是錯誤，不是半截 body
         assert "body" not in big_response.json()
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_run_call_limit_counts_blocked_attempts_too(
-    app_client, session, redis_client, wire, monkeypatch,
+    app_client, redis_client, wire, monkeypatch,
 ):
     """U5：**被擋下的也算。** 只計成功的話，一個一直打非白名單主機的迴圈
     完全不受限 —— 而會失控的迴圈通常正是一直失敗的那個。"""
@@ -511,7 +492,7 @@ async def test_run_call_limit_counts_blocked_attempts_too(
 
     monkeypatch.setattr(get_settings(), "egress_max_calls_per_run", 2, raising=False)
     wire([PUBLIC_IP], ok_json())
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         first = await app_client.post("/internal/egress/request",
                                       json={"url": "https://nope.example.org/x"},
@@ -526,27 +507,23 @@ async def test_run_call_limit_counts_blocked_attempts_too(
         assert third.json()["error"]["details"]["reason"] == "RUN_CALL_LIMIT"
 
         # 換一筆 Run，計數歸零
-        version_id = (await session.execute(
-            select(__import__("apps.api.models", fromlist=["Run"]).Run.agent_version_id)
-            .where(__import__("apps.api.models", fromlist=["Run"]).Run.id == run.id)
-        )).scalar_one()
-        other = await make_run(session, agent.id, version_id)
+        other = await make_run(agent.id, run.agent_version_id)
         other_token = await issue_run_token(redis_client, other.id)
         fresh = await app_client.post("/internal/egress/request",
                                       json={"url": URL}, headers=auth(other_token))
         assert fresh.status_code == 200
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 async def test_upstream_failure_is_egress_failed_and_retryable(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     def handler(request):
         raise httpx.ConnectError("connection refused")
 
     wire([PUBLIC_IP], handler)
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     try:
         response = await app_client.post(
             "/internal/egress/request", json={"url": URL}, headers=auth(token))
@@ -554,19 +531,19 @@ async def test_upstream_failure_is_egress_failed_and_retryable(
         error = response.json()["error"]
         assert error["code"] == "EGRESS_FAILED"
         assert error["retryable"] is True
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert rows[0].error.startswith("EGRESS_FAILED:")
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── E-7：稽核（Z19-45 / Z19-46 / Z19-49）──────────────────────────────
 
 async def test_audit_covers_every_attempt_and_strips_the_query_string(
-    app_client, session, redis_client, wire,
+    app_client, redis_client, wire,
 ):
     wire([PUBLIC_IP], ok_json())
-    agent, run, token = await setup_agent(session, redis_client, rules=[{}])
+    agent, run, token = await setup_agent(redis_client, rules=[{}])
     sentinel = "s3nt1nel-t0ken"
     try:
         await app_client.post(
@@ -577,7 +554,7 @@ async def test_audit_covers_every_attempt_and_strips_the_query_string(
             "/internal/egress/request",
             json={"url": "https://nope.example.org/x"}, headers=auth(token))
 
-        rows = await audit_rows(session, run.id)
+        rows = await audit_rows( run.id)
         assert len(rows) == 2
         assert rows[0].path == "/api/v3/klines", "query string 不入庫"
         assert sentinel not in json.dumps([r.path for r in rows])
@@ -595,23 +572,20 @@ async def test_audit_covers_every_attempt_and_strips_the_query_string(
         assert all(item["path"].startswith("/") for item in body["items"])
         assert sentinel not in listing.text
     finally:
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)
 
 
 # ── token scope（Z19-53）──────────────────────────────────────────────
 
 async def test_container_and_validation_tokens_cannot_use_egress(
-    app_client, session, redis_client,
+    app_client, redis_client,
 ):
-    from apps.api.models import Agent
     from apps.api.services import containertoken, validationtoken
     from redis import Redis as SyncRedis
     import os as _os
 
-    agent = Agent(id=new_id(), name=f"zen019-scope-{os.urandom(5).hex()}")
-    session.add(agent)
-    await session.commit()
-    version = await make_published_version(session, agent.id)
+    agent = await insert_agent(name=f"zen019-scope-{os.urandom(5).hex()}")
+    version = await make_published_version(agent.id)
     sync = SyncRedis.from_url(
         _os.environ.get("ZENTRA_TEST_REDIS_URL", "redis://redis:6379/0"),
         decode_responses=True)
@@ -630,4 +604,4 @@ async def test_container_and_validation_tokens_cannot_use_egress(
             assert response.status_code == 401
     finally:
         sync.close()
-        await cleanup(session, agent.id)
+        await cleanup(agent.id)

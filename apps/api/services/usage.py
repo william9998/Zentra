@@ -17,10 +17,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncpg
 
-from apps.api.models import AgentApiKey, LlmCall, Run
 from apps.api.services import pagination
 
 
@@ -46,32 +44,38 @@ class CallFilters:
     errors_only: bool = False
 
 
-def _apply(statement: Select, agent_id: uuid.UUID, filters: CallFilters) -> Select:
-    statement = statement.where(Run.agent_id == agent_id)
+def _filters_sql(agent_id: uuid.UUID, filters: CallFilters, start: int = 1) -> tuple[str, list[Any]]:
+    """動態片段只從程式碼常數挑；值一律走參數。"""
+    clauses = [f"r.agent_id = ${start}"]
+    args: list[Any] = [agent_id]
+    n = start + 1
     if filters.api_key_id is not None:
-        statement = statement.where(Run.api_key_id == filters.api_key_id)
+        clauses.append(f"r.api_key_id = ${n}")
+        args.append(filters.api_key_id)
+        n += 1
     if filters.since is not None:
-        statement = statement.where(LlmCall.created_at >= filters.since)
+        clauses.append(f"c.created_at >= ${n}")
+        args.append(filters.since)
+        n += 1
     if filters.until is not None:
-        statement = statement.where(LlmCall.created_at <= filters.until)
+        clauses.append(f"c.created_at <= ${n}")
+        args.append(filters.until)
+        n += 1
     if filters.model:
-        statement = statement.where(LlmCall.model == filters.model)
+        clauses.append(f"c.model = ${n}")
+        args.append(filters.model)
+        n += 1
     if filters.credential_source:
-        statement = statement.where(LlmCall.credential_source == filters.credential_source)
+        clauses.append(f"c.credential_source = ${n}")
+        args.append(filters.credential_source)
+        n += 1
     if filters.status_code is not None:
-        statement = statement.where(LlmCall.status_code == filters.status_code)
+        clauses.append(f"c.status_code = ${n}")
+        args.append(filters.status_code)
+        n += 1
     if filters.errors_only:
-        statement = statement.where(
-            (LlmCall.error.is_not(None)) | (LlmCall.status_code >= 400))
-    return statement
-
-
-_TOTALS = (
-    func.count(LlmCall.id),
-    func.coalesce(func.sum(LlmCall.input_tokens), 0),
-    func.coalesce(func.sum(LlmCall.output_tokens), 0),
-    func.coalesce(func.sum(LlmCall.cost_usd), 0),
-)
+        clauses.append("(c.error IS NOT NULL OR c.status_code >= 400)")
+    return " AND ".join(clauses), args
 
 
 def _row(count: int, input_tokens: int, output_tokens: int, cost: Decimal) -> dict[str, Any]:
@@ -84,102 +88,101 @@ def _row(count: int, input_tokens: int, output_tokens: int, cost: Decimal) -> di
 
 
 async def aggregate(
-    session: AsyncSession, agent_id: uuid.UUID, filters: CallFilters,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, filters: CallFilters,
 ) -> dict[str, Any]:
-    """一次回三種切面：總計、依 key、依 model。
-
-    分三支查詢而不是讓呼叫端傳 `group_by`：除錯時這三個是一起看的
-    （「這把 key 花了多少」「花在哪個模型上」），拆成三次往返只是把拼裝工作
-    推給前端，而且中間資料還會變動。
-    """
-    base = select(*_TOTALS).select_from(LlmCall).join(Run, Run.id == LlmCall.run_id)
-    totals = (await session.execute(_apply(base, agent_id, filters))).one()
-
-    by_key_stmt = _apply(
-        select(Run.api_key_id, AgentApiKey.name, AgentApiKey.key_prefix, *_TOTALS)
-        .select_from(LlmCall)
-        .join(Run, Run.id == LlmCall.run_id)
-        # outerjoin：Console 發起的 Run 是 NULL，那一列必須留著，
-        # 不然「沒歸戶的用量」會從報表裡消失，而那通常正是要找的東西。
-        .outerjoin(AgentApiKey, AgentApiKey.id == Run.api_key_id),
-        agent_id, filters,
-    ).group_by(Run.api_key_id, AgentApiKey.name, AgentApiKey.key_prefix)
+    """一次回三種切面：總計、依 key、依 model。"""
+    where, args = _filters_sql(agent_id, filters)
+    totals = await conn.fetchrow(
+        "SELECT count(c.id) AS n, coalesce(sum(c.input_tokens), 0) AS tin, "
+        "coalesce(sum(c.output_tokens), 0) AS tout, coalesce(sum(c.cost_usd), 0) AS cost "
+        f"FROM llm_calls c JOIN runs r ON r.id = c.run_id WHERE {where}",
+        *args,
+    )
+    by_key_rows = await conn.fetch(
+        "SELECT r.api_key_id, k.name, k.key_prefix, "
+        "count(c.id) AS n, coalesce(sum(c.input_tokens), 0) AS tin, "
+        "coalesce(sum(c.output_tokens), 0) AS tout, coalesce(sum(c.cost_usd), 0) AS cost "
+        "FROM llm_calls c JOIN runs r ON r.id = c.run_id "
+        "LEFT JOIN agent_api_keys k ON k.id = r.api_key_id "
+        f"WHERE {where} "
+        "GROUP BY r.api_key_id, k.name, k.key_prefix",
+        *args,
+    )
     by_key = [
         {
-            "key_id": str(key_id) if key_id else None,
-            "name": name,
-            "key_prefix": prefix,
-            **_row(count, tin, tout, cost),
+            "key_id": str(row["api_key_id"]) if row["api_key_id"] else None,
+            "name": row["name"],
+            "key_prefix": row["key_prefix"],
+            **_row(row["n"], row["tin"], row["tout"], row["cost"]),
         }
-        for key_id, name, prefix, count, tin, tout, cost
-        in (await session.execute(by_key_stmt)).all()
+        for row in by_key_rows
     ]
 
-    by_model_stmt = _apply(
-        select(LlmCall.model, *_TOTALS).select_from(LlmCall).join(Run, Run.id == LlmCall.run_id),
-        agent_id, filters,
-    ).group_by(LlmCall.model)
+    by_model_rows = await conn.fetch(
+        "SELECT c.model, count(c.id) AS n, coalesce(sum(c.input_tokens), 0) AS tin, "
+        "coalesce(sum(c.output_tokens), 0) AS tout, coalesce(sum(c.cost_usd), 0) AS cost "
+        "FROM llm_calls c JOIN runs r ON r.id = c.run_id "
+        f"WHERE {where} GROUP BY c.model",
+        *args,
+    )
     by_model = [
-        {"model": model, **_row(count, tin, tout, cost)}
-        for model, count, tin, tout, cost
-        in (await session.execute(by_model_stmt)).all()
+        {"model": row["model"], **_row(row["n"], row["tin"], row["tout"], row["cost"])}
+        for row in by_model_rows
     ]
 
-    # 花最多的排前面——看報表的人要找的就是那一個
     by_key.sort(key=lambda r: Decimal(r["cost_usd"]), reverse=True)
     by_model.sort(key=lambda r: Decimal(r["cost_usd"]), reverse=True)
-    return {"totals": _row(*totals), "by_key": by_key, "by_model": by_model}
+    return {
+        "totals": _row(totals["n"], totals["tin"], totals["tout"], totals["cost"]),
+        "by_key": by_key,
+        "by_model": by_model,
+    }
 
 
 async def list_calls(
-    session: AsyncSession,
+    conn: asyncpg.Connection,
     agent_id: uuid.UUID,
     filters: CallFilters,
     *,
     limit: int,
     cursor: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """逐筆列出 LLM 呼叫，最新的在前。回 `(items, next_cursor)`。
-
-    每一列都帶著 `run_id` 與 `api_key_id`，所以「這把 key 的哪一筆出錯了」
-    看完這張表就能直接跳到那個 Run。
-    """
-    statement = _apply(
-        select(LlmCall, Run.api_key_id, Run.status)
-        .join(Run, Run.id == LlmCall.run_id),
-        agent_id, filters,
-    )
+    """逐筆列出 LLM 呼叫，最新的在前。回 `(items, next_cursor)`。"""
+    where, args = _filters_sql(agent_id, filters)
     if cursor:
         cursor_created_at, cursor_id = pagination.decode(cursor)
-        statement = statement.where(
-            (LlmCall.created_at < cursor_created_at)
-            | ((LlmCall.created_at == cursor_created_at) & (LlmCall.id < cursor_id))
-        )
-    rows = (await session.execute(
-        statement.order_by(LlmCall.created_at.desc(), LlmCall.id.desc()).limit(limit + 1)
-    )).all()
-
+        n = len(args) + 1
+        where += f" AND (c.created_at < ${n} OR (c.created_at = ${n} AND c.id < ${n + 1}))"
+        args.extend([cursor_created_at, cursor_id])
+    rows = await conn.fetch(
+        "SELECT c.id, c.run_id, r.api_key_id, r.status AS run_status, c.model, "
+        "c.input_tokens, c.output_tokens, c.cost_usd, c.latency_ms, c.status_code, "
+        "c.error, c.credential_source, c.created_at "
+        "FROM llm_calls c JOIN runs r ON r.id = c.run_id "
+        f"WHERE {where} ORDER BY c.created_at DESC, c.id DESC LIMIT ${len(args) + 1}",
+        *args, limit + 1,
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
     items = [
         {
-            "call_id": str(call.id),
-            "run_id": str(call.run_id),
-            "run_status": run_status,
-            "api_key_id": str(api_key_id) if api_key_id else None,
-            "model": call.model,
-            "input_tokens": call.input_tokens,
-            "output_tokens": call.output_tokens,
-            "cost_usd": _money(call.cost_usd),
-            "latency_ms": call.latency_ms,
-            "status_code": call.status_code,
-            "error": call.error,
-            "credential_source": call.credential_source,
-            "created_at": call.created_at,
+            "call_id": str(row["id"]),
+            "run_id": str(row["run_id"]),
+            "run_status": row["run_status"],
+            "api_key_id": str(row["api_key_id"]) if row["api_key_id"] else None,
+            "model": row["model"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "cost_usd": _money(row["cost_usd"]),
+            "latency_ms": row["latency_ms"],
+            "status_code": row["status_code"],
+            "error": row["error"],
+            "credential_source": row["credential_source"],
+            "created_at": row["created_at"],
         }
-        for call, api_key_id, run_status in rows
+        for row in rows
     ]
     next_cursor = (
-        pagination.encode(rows[-1][0].created_at, rows[-1][0].id) if has_more and rows else None
+        pagination.encode(rows[-1]["created_at"], rows[-1]["id"]) if has_more and rows else None
     )
     return items, next_cursor

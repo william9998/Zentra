@@ -1,22 +1,22 @@
 """Run creation and result persistence; never imports image code."""
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncpg
 
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
 from apps.api.ids import uuid7
-from apps.api.models import AgentVersion, Run
-from apps.api.schemas import CreateRunRequest, SandboxResult
-from apps.api.services.events import lock_run, require_active
-from apps.api.services import agents, llm
-
+from apps.api.rows import AgentVersion, Run
+from apps.api.schemas import CreateRunRequest, RunResponse, SandboxResult
+from apps.api.services import agents, llm, pagination
+from apps.api.services.events import lock_run, require_active, status_event
 
 
 async def create_run(
-    session: AsyncSession,
+    conn: asyncpg.Connection,
     agent_id: str,
     body: CreateRunRequest,
     *,
@@ -29,28 +29,30 @@ async def create_run(
     那不是錯誤：MVP 的 Console 沒有 key，契約 §0 也還沒要求 `/v1` 認證。
     這個欄位買到的是「用量歸戶」，不是「擋住未授權的人」。
     """
-    agent = await agents.load_agent(session, agent_id)
-    version = await agents.resolve_published_version(session, agent.id, body.version)
+    agent = await agents.load_agent(conn, agent_id)
+    version = await agents.resolve_published_version(conn, agent.id, body.version)
     selected = agents.entrypoint(version, body.entrypoint)
     agents.validate_input(selected["input_schema"], body.input)
 
     run_id = uuid7()
-    run = Run(
-        id=run_id, agent_id=agent.id, agent_version_id=version.id,
-        status=RunStatus.QUEUED, trigger=trigger,
-        entrypoint=body.entrypoint, input=body.input,
-        timeout_seconds=body.config.timeout_seconds, celery_task_id=str(run_id),
-        api_key_id=api_key_id,
+    rec = await conn.fetchrow(
+        f"""
+        INSERT INTO runs
+            (id, agent_id, agent_version_id, status, trigger, entrypoint,
+             input, timeout_seconds, celery_task_id, api_key_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING {Run.returning()}
+        """,
+        run_id, agent.id, version.id, str(RunStatus.QUEUED), str(trigger),
+        body.entrypoint, body.input, body.config.timeout_seconds,
+        str(run_id), api_key_id,
     )
-    session.add(run)
-    await session.flush()
-    from apps.api.services import events
-    events.status_event(session, run)
-    await session.commit()
+    run = Run.from_row(rec)
+    await status_event(conn, run)
     return run, version
 
 
-async def save_result(session: AsyncSession, run_id: UUID, body: SandboxResult) -> None:
+async def save_result(conn: asyncpg.Connection, run_id: UUID, body: SandboxResult) -> bool:
     """保存沙盒回報的 output / error，**但 usage 由平台自己算**。
 
     沙盒也會在 body 裡送 usage，那是使用者程式碼算出來的數字，沒有理由被當成帳。
@@ -59,25 +61,123 @@ async def save_result(session: AsyncSession, run_id: UUID, body: SandboxResult) 
 
     冪等比對因此只看 `output` / `error`：usage 是平台算的，重送同一份結果時
     它可能已經因為期間又有一次 LLM 呼叫而變大，那不是衝突。
+
+    回傳是否該通知 worker 做常駐容器終態裁決（有 `container_id`）。
     """
-    run = await lock_run(session, run_id)
+    run = await lock_run(conn, run_id)
     require_active(run)
-    usage = await llm.aggregate_usage(session, run_id)
+    usage = await llm.aggregate_usage(conn, run_id)
     if run.result_received_at is not None:
         if (run.output, run.error) != (body.output, body.error):
             raise ZentraError(ErrorCode.VALIDATION_ERROR, "result has already been submitted", 422,
                               run_id=str(run_id), details={"field": "output/error"})
-        run.usage = usage
-    else:
-        run.output, run.error = body.output, body.error
-        run.usage = usage
-        run.result_received_at = datetime.now(UTC)
-    await session.commit()
+        await conn.execute(
+            "UPDATE runs SET usage = $2 WHERE id = $1", run_id, usage)
+        return False
+    await conn.execute(
+        """
+        UPDATE runs SET output = $2, error = $3, usage = $4, result_received_at = $5
+        WHERE id = $1
+        """,
+        run_id, body.output, body.error, usage, datetime.now(UTC),
+    )
+    return run.container_id is not None
 
-    # 常駐容器（ZEN-015）沒有「容器退出」這個訊號，所以沒有 worker 在等它。
-    # 結果進來就是終態的觸發點 —— 但**裁決權仍在 worker**（契約 §4：
-    # `/result` 只保存，不轉狀態）。Gateway 自己轉的話，沙盒等於能宣告自己成功。
-    if run.container_id is not None:
-        from apps.api.tasks import dispatch_finalize
-        import asyncio
-        await asyncio.to_thread(dispatch_finalize, str(run_id))
+
+async def load_run(conn: asyncpg.Connection, run_id: UUID) -> Run | None:
+    rec = await conn.fetchrow(
+        f"SELECT {Run.returning()} FROM runs WHERE id = $1", run_id)
+    return Run.from_row(rec) if rec is not None else None
+
+
+async def version_semver(conn: asyncpg.Connection, version_id: UUID | None) -> str | None:
+    if version_id is None:
+        return None
+    return await conn.fetchval(
+        "SELECT semver FROM agent_versions WHERE id = $1", version_id)
+
+
+def to_response(run: Run, semver: str) -> RunResponse:
+    return RunResponse(
+        run_id=str(run.id), agent_id=str(run.agent_id), agent_version=semver,
+        status=run.status, trigger=run.trigger, input=run.input,
+        output=run.output, error=run.error, usage=run.usage,
+        created_at=run.created_at, started_at=run.started_at, finished_at=run.finished_at,
+    )
+
+
+async def list_runs(
+    conn: asyncpg.Connection,
+    *,
+    agent_id: UUID | None,
+    api_key_id: UUID | None,
+    status: RunStatus | None,
+    trigger: RunTrigger | None,
+    created_after: datetime | None,
+    created_before: datetime | None,
+    limit: int,
+    cursor: str | None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    where = ["TRUE"]
+    args: list[Any] = []
+    n = 1
+    if agent_id is not None:
+        where.append(f"r.agent_id = ${n}")
+        args.append(agent_id)
+        n += 1
+    if api_key_id is not None:
+        where.append(f"r.api_key_id = ${n}")
+        args.append(api_key_id)
+        n += 1
+    if status is not None:
+        where.append(f"r.status = ${n}")
+        args.append(str(status))
+        n += 1
+    if trigger is not None:
+        where.append(f"r.trigger = ${n}")
+        args.append(str(trigger))
+        n += 1
+    if created_after is not None:
+        where.append(f"r.created_at >= ${n}")
+        args.append(created_after)
+        n += 1
+    if created_before is not None:
+        where.append(f"r.created_at <= ${n}")
+        args.append(created_before)
+        n += 1
+    if cursor:
+        cursor_created_at, cursor_id = pagination.decode(cursor)
+        where.append(
+            f"(r.created_at < ${n} OR (r.created_at = ${n} AND r.id < ${n + 1}))")
+        args.extend([cursor_created_at, cursor_id])
+        n += 2
+    rows = await conn.fetch(
+        "SELECT r.id, r.agent_id, a.name AS agent_name, v.semver, r.status, r.trigger, "
+        "r.created_at, r.started_at, r.finished_at "
+        "FROM runs r "
+        "JOIN agent_versions v ON v.id = r.agent_version_id "
+        "JOIN agents a ON a.id = r.agent_id "
+        f"WHERE {' AND '.join(where)} "
+        f"ORDER BY r.created_at DESC, r.id DESC LIMIT ${n}",
+        *args, limit + 1,
+    )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = [
+        {
+            "run_id": str(row["id"]),
+            "agent_id": str(row["agent_id"]),
+            "agent_name": row["agent_name"],
+            "agent_version": row["semver"],
+            "status": row["status"],
+            "trigger": row["trigger"],
+            "created_at": row["created_at"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+        }
+        for row in rows
+    ]
+    next_cursor = (
+        pagination.encode(rows[-1]["created_at"], rows[-1]["id"]) if has_more and rows else None
+    )
+    return items, next_cursor

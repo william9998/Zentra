@@ -116,21 +116,17 @@ async def test_console_run_is_recorded_as_api_trigger(e2e) -> None:
     """
     import uuid
 
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from apps.api.models import Run
-    from tests.zen008.conftest import db_url
+    from tests.zen008.conftest import pg_connect
 
     run_id = e2e.get("runId")
     assert run_id, e2e
-    engine = create_async_engine(db_url())
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            run = (await session.execute(select(Run).where(
-                Run.id == uuid.UUID(run_id)))).scalar_one()
-        assert run.trigger == "API", run.trigger
-        assert run.status == "SUCCEEDED", run.status
-        assert str(run.agent_id) == e2e["agentId"]
+        run = await conn.fetchrow(
+            "SELECT trigger, status, agent_id FROM runs WHERE id = $1",
+            uuid.UUID(run_id))
+        assert run["trigger"] == "API", run["trigger"]
+        assert run["status"] == "SUCCEEDED", run["status"]
+        assert str(run["agent_id"]) == e2e["agentId"]
     finally:
-        await engine.dispose()
+        await conn.close()

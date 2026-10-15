@@ -12,14 +12,12 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from apps.api import rows
 from apps.api.enums import ErrorCode, EventType, RunStatus, RunTrigger
-from apps.api.models import Run, RunEvent
 from tests.zen008.conftest import (
-    db_url,
     new_agent,
+    pg_connect,
     register_version,
     wait_run,
     wait_version,
@@ -28,18 +26,13 @@ from tests.zen008.conftest import (
 REMOVED_VALUES = ("WAITING_INPUT", "tool.call", "tool.result", "interrupt", "tier")
 
 
-def _db():
-    return create_async_engine(db_url())
-
-
 async def _count_runs(agent_id: str) -> int:
-    engine = _db()
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            return await session.scalar(select(func.count()).select_from(Run)
-                                        .where(Run.agent_id == uuid.UUID(agent_id)))
+        return await conn.fetchval(
+            "SELECT count(*) FROM runs WHERE agent_id = $1", uuid.UUID(agent_id))
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 # --------------------------------------------------------------------- Z8-26
@@ -210,24 +203,27 @@ async def test_terminal_run_has_exactly_one_terminal_event_and_legal_types(
     run = wait_run(api, created["run_id"])
     assert run["status"] == RunStatus.SUCCEEDED
 
-    engine = _db()
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            rows = (await session.execute(select(RunEvent).where(
-                RunEvent.run_id == uuid.UUID(created["run_id"]))
-                .order_by(RunEvent.seq))).scalars().all()
+        found = [
+            rows.RunEvent.from_row(rec)
+            for rec in await conn.fetch(
+                f"SELECT {rows.RunEvent.returning()} FROM run_events "
+                "WHERE run_id = $1 ORDER BY seq",
+                uuid.UUID(created["run_id"]))
+        ]
     finally:
-        await engine.dispose()
+        await conn.close()
 
-    assert rows, "Run 沒有任何事件"
-    assert sum(1 for row in rows if row.terminal) == 1, "終局事件不是恰好一個"
-    assert rows[-1].terminal is True, "終局事件不是最後一筆"
+    assert found, "Run 沒有任何事件"
+    assert sum(1 for row in found if row.terminal) == 1, "終局事件不是恰好一個"
+    assert found[-1].terminal is True, "終局事件不是最後一筆"
     legal = {value.value for value in EventType}
-    assert {row.type for row in rows} <= legal, {row.type for row in rows} - legal
-    assert len({row.event_id for row in rows}) == len(rows), "同一 Run 出現重複 event_id"
-    assert [row.seq for row in rows] == sorted(row.seq for row in rows)
+    assert {row.type for row in found} <= legal, {row.type for row in found} - legal
+    assert len({row.event_id for row in found}) == len(found), "同一 Run 出現重複 event_id"
+    assert [row.seq for row in found] == sorted(row.seq for row in found)
 
-    statuses = [row.payload.get("status") for row in rows if row.type == EventType.RUN_STATUS]
+    statuses = [row.payload.get("status") for row in found if row.type == EventType.RUN_STATUS]
     assert statuses[-1] == RunStatus.SUCCEEDED
     assert set(statuses) <= {value.value for value in RunStatus}
 

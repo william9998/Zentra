@@ -16,8 +16,10 @@ import docker
 import httpx
 from docker.errors import NotFound
 
-from apps.api.models import Run
-from apps.worker.db import SessionSync
+import psycopg
+from psycopg.rows import dict_row
+
+from apps.api.config import normalize_database_url
 
 
 AGENT_ID = "01930000-0000-7000-8000-000000000001"
@@ -66,10 +68,15 @@ def main() -> None:
                 assert final.json()["status"] == "SUCCEEDED", final.text
                 assert final.json()["output"] == {"echo": f"cold-start-{index}"}
 
-                with SessionSync() as session:
-                    run = session.get(Run, UUID(run_id))
-                    assert run is not None and run.sandbox_id
-                    container_id = run.sandbox_id
+                dsn = normalize_database_url(os.environ["DATABASE_URL"] if "DATABASE_URL" in os.environ
+                                            else os.environ["ZENTRA_TEST_DB_URL"])
+                with psycopg.connect(dsn, row_factory=dict_row) as conn:
+                    run = conn.execute(
+                        "SELECT sandbox_id FROM runs WHERE id = %(id)s",
+                        {"id": UUID(run_id)},
+                    ).fetchone()
+                    assert run is not None and run["sandbox_id"]
+                    container_id = run["sandbox_id"]
                 wait_destroyed(docker_client, container_id)
                 durations.append(first_node - started)
                 sandbox_ids.append(container_id)

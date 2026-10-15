@@ -35,7 +35,7 @@ NEW_BACKEND_FILES = [
     "apps/api/services/agent_secrets.py",
     "apps/api/services/agent_settings.py",
     "apps/api/services/notify.py",
-    "apps/api/migrations/versions/0008_agent_config_secrets_egress.py",
+    "apps/api/migrations/0008_agent_config_secrets_egress.sql",
 ]
 NEW_CONSOLE_FILES = [
     "apps/console/static/js/components/agent-config-card.js",
@@ -202,38 +202,31 @@ def test_the_proxy_does_not_parse_or_execute_what_it_relays():
 # ── G-5：P5 —— 三層綁 Agent 不綁版本 ────────────────────────────────
 
 def test_the_five_new_tables_have_no_version_column():
-    from apps.api.models import (
-        AgentEgressRule, AgentEmailSender, AgentSecret, AgentSettings, EgressCall,
-    )
+    from apps.api import rows
 
-    for model in (AgentSettings, AgentSecret, AgentEgressRule, AgentEmailSender,
-                  EgressCall):
-        columns = set(model.__table__.columns.keys())
-        assert "agent_version_id" not in columns, model.__tablename__
-        assert "agent_id" in columns, model.__tablename__
+    for cls in (rows.AgentSettings, rows.AgentSecret, rows.AgentEgressRule,
+                rows.AgentEmailSender, rows.EgressCall):
+        columns = set(cls.COLUMNS)
+        assert "agent_version_id" not in columns, cls.TABLE
+        assert "agent_id" in columns, cls.TABLE
 
 
-def test_the_migration_can_be_downgraded():
-    """Alembic 的 downgrade 要把五張表都拿掉。沒有 downgrade 的 migration
-    在出事的時候是沒辦法回頭的。"""
-    source = (REPO / "apps/api/migrations/versions/"
-              "0008_agent_config_secrets_egress.py").read_text()
-    downgrade = source.split("def downgrade()")[1]
+def test_0008_sql_creates_the_five_tables():
+    """runner 只有 up。五張表必須出現在 0008.sql，且綁 Agent 不綁版本。"""
+    source = (REPO / "apps/api/migrations/0008_agent_config_secrets_egress.sql").read_text()
     for table in ("egress_calls", "agent_email_sender", "agent_egress_rules",
                   "agent_secrets", "agent_settings"):
-        assert f'drop_table("{table}")' in downgrade, table
+        assert f"CREATE TABLE {table}" in source, table
+        assert "agent_version_id" not in source
 
 
 def test_the_audit_table_keeps_rows_when_a_rule_is_deleted():
     """`egress_calls.rule_id` 是 `ON DELETE SET NULL`，**不是 CASCADE** ——
     刪一條白名單不該抹掉它過去的稽核紀錄。"""
-    from apps.api.models import EgressCall
-
-    foreign_keys = {fk.column.table.name: fk.ondelete
-                    for fk in EgressCall.__table__.foreign_keys}
-    assert foreign_keys["agent_egress_rules"] == "SET NULL"
-    assert foreign_keys["runs"] == "CASCADE"
-    assert foreign_keys["agents"] == "CASCADE"
+    source = (REPO / "apps/api/migrations/0008_agent_config_secrets_egress.sql").read_text()
+    assert "REFERENCES agent_egress_rules (rule_id) ON DELETE SET NULL" in source
+    assert "REFERENCES runs (id) ON DELETE CASCADE" in source
+    assert "REFERENCES agents (id) ON DELETE CASCADE" in source
 
 
 # ── 契約一致性（Z19-56）─────────────────────────────────────────────

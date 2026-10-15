@@ -21,15 +21,14 @@ from __future__ import annotations
 import os
 import socket
 import threading
-import uuid as uuidlib
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
 
 from tests.zen019.conftest import (
-    auth, issue_run_token, make_published_version, make_run, new_id, purge_agent,
-    requires_db,
+    auth, fetch_egress_calls, insert_agent, insert_egress_call,
+    insert_email_sender, issue_run_token, make_published_version, make_run,
+    purge_agent, requires_db,
 )
 
 pytestmark = requires_db
@@ -120,48 +119,39 @@ def smtp_stub(_smtp_server):
     return _smtp_server
 
 
-async def _setup(session, redis_client, *, sender=None, recipients=("ok@example.com",)):
+async def _setup(redis_client, *, sender=None, recipients=("ok@example.com",)):
     """建 Agent + 機密 + （選填）寄件者 + RUNNING 的 Run。
 
     寄件者**直接寫 DB**：測試 stub 跑在 `127.0.0.1` 上，而公開端點的
     `validate_host()` 只收 DNS 名稱（那條規則本身由 `test_public_contract` 驗）。
     """
-    from apps.api.models import Agent, AgentEmailSender
     from apps.api.services import agent_secrets
 
-    agent = Agent(id=new_id(), name=f"zen019-mail-{os.urandom(5).hex()}")
-    session.add(agent)
-    await session.commit()
-    await agent_secrets.set_secret(session, agent.id, "SMTP_PASSWORD", "app-password")
+    agent = await insert_agent(name=f"zen019-mail-{os.urandom(5).hex()}")
+    from apps.api import db
+
+    async with db.transaction() as conn:
+        await agent_secrets.set_secret(conn, agent.id, "SMTP_PASSWORD", "app-password")
     if sender is not None:
-        now = datetime.now(UTC)
-        session.add(AgentEmailSender(
-            agent_id=agent.id, smtp_host=sender["host"], smtp_port=sender["port"],
-            username="me@example.com", from_address="me@example.com",
-            password_secret_name="SMTP_PASSWORD",
-            allowed_recipients=list(recipients), created_at=now, updated_at=now))
-        await session.commit()
-    version = await make_published_version(session, agent.id)
-    run = await make_run(session, agent.id, version.id)
+        await insert_email_sender(
+            agent.id, host=sender["host"], port=sender["port"],
+            recipients=list(recipients))
+    version = await make_published_version(agent.id)
+    run = await make_run(agent.id, version.id)
     token = await issue_run_token(redis_client, run.id)
     return agent, run, token
 
 
-async def audit(session, run_id):
-    from apps.api.models import EgressCall
-
-    return list((await session.execute(
-        select(EgressCall).where(EgressCall.run_id == run_id)
-        .order_by(EgressCall.created_at)
-    )).scalars().all())
+async def audit(run_id):
+    return await fetch_egress_calls(run_id)
 
 
 # ── M-3：沒設寄件者不是靜默不寄（Z19-41）─────────────────────────────
 
 async def test_missing_sender_is_blocked_loudly_and_audited(
-    app_client, session, redis_client,
+    app_client, redis_client,
 ):
-    agent, run, token = await _setup(session, redis_client, sender=None)
+    agent, run, token = await _setup(redis_client, sender=None)
     try:
         response = await app_client.post(
             "/internal/notify/email",
@@ -173,21 +163,21 @@ async def test_missing_sender_is_blocked_loudly_and_audited(
         assert error["details"]["reason"] == "SENDER_NOT_CONFIGURED"
         assert error["retryable"] is False
 
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert len(rows) == 1 and rows[0].kind == "EMAIL"
         assert rows[0].error == "EGRESS_BLOCKED: SENDER_NOT_CONFIGURED"
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 # ── M-1：全有全無（Z19-40）───────────────────────────────────────────
 
 async def test_one_bad_recipient_drops_the_whole_message(
-    app_client, session, redis_client, smtp_stub,
+    app_client, redis_client, smtp_stub,
 ):
     """**部分寄出會讓「到底寄了沒」說不清楚。** 所以 stub 連線數必須是 0。"""
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port},
         recipients=("ok@example.com",))
     try:
@@ -204,24 +194,24 @@ async def test_one_bad_recipient_drops_the_whole_message(
         assert smtp_stub.connections == 0
         assert smtp_stub.commands == []
 
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert len(rows) == 1
         assert rows[0].error == "EGRESS_BLOCKED: RECIPIENT_NOT_ALLOWED"
         assert rows[0].host == "127.0.0.1"
         assert rows[0].path == "ok@example.com, nope@example.com"
         assert rows[0].status_code is None and rows[0].method is None
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 # ── M-2：升不上 TLS 就不寄（Z19-43 的 TLS 部分）──────────────────────
 
 async def test_tls_required_sends_nothing(
-    app_client, session, redis_client, smtp_stub,
+    app_client, redis_client, smtp_stub,
 ):
     """平台一律要求 TLS。**升不上去就不寄** —— 不會退而用明文送密碼。"""
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port})
     try:
         response = await app_client.post(
@@ -239,18 +229,18 @@ async def test_tls_required_sends_nothing(
         assert not verbs & {"MAIL", "RCPT", "DATA", "AUTH"}
         assert not any("secret body" in command for command in smtp_stub.commands)
 
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert rows[0].error == "EGRESS_BLOCKED: TLS_REQUIRED"
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 async def test_unreachable_smtp_is_egress_failed_and_retryable(
-    app_client, session, redis_client,
+    app_client, redis_client,
 ):
     """政策放行了但連不上 → `502 EGRESS_FAILED`，可重試（M5 的另一半）。"""
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": 465})   # 沒有人在聽
     try:
         response = await app_client.post(
@@ -262,11 +252,11 @@ async def test_unreachable_smtp_is_egress_failed_and_retryable(
         assert error["code"] == "EGRESS_FAILED"
         assert error["retryable"] is True
 
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert rows[0].error.startswith("EGRESS_FAILED:")
         assert rows[0].latency_ms is not None
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 # ── 請求不能奪權（Z19-44 的 422 部分）────────────────────────────────
@@ -283,11 +273,11 @@ async def test_unreachable_smtp_is_egress_failed_and_retryable(
     {"to": ["ok@example.com"], "subject": "", "text": "t"},
 ])
 async def test_malformed_requests_are_422_and_still_audited(
-    app_client, session, redis_client, smtp_stub, body,
+    app_client, redis_client, smtp_stub, body,
 ):
     """U3：`422` 也要寫稽核列 —— 那條路徑上一列都沒有才是最糟的情況。"""
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port})
     try:
         response = await app_client.post("/internal/notify/email", json=body,
@@ -296,17 +286,17 @@ async def test_malformed_requests_are_422_and_still_audited(
         assert response.json()["error"]["code"] == "VALIDATION_ERROR"
         assert smtp_stub.connections == 0
 
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert len(rows) == 1
         assert rows[0].error.startswith("VALIDATION_ERROR:")
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 # ── M-4：上限計的是「嘗試」（Z19-42 / U5 / U6）───────────────────────
 
 async def test_per_run_and_per_hour_limits_count_attempts(
-    app_client, session, redis_client, smtp_stub, monkeypatch,
+    app_client, redis_client, smtp_stub, monkeypatch,
 ):
     """**上限算的是 `egress_calls` 的列數，被擋下的也算**（U5／U6）。
 
@@ -320,30 +310,27 @@ async def test_per_run_and_per_hour_limits_count_attempts(
     from datetime import timedelta
 
     from apps.api.config import get_settings
-    from apps.api.models import EgressCall
 
     settings = get_settings()
     monkeypatch.setattr(settings, "email_max_per_run", 2, raising=False)
     monkeypatch.setattr(settings, "email_max_per_hour", 3, raising=False)
 
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port})
     message = {"to": ["ok@example.com"], "subject": "s", "text": "t"}
     try:
-        def seed(run_id, *, minutes_ago=0, blocked=True):
-            session.add(EgressCall(
-                call_id=new_id(), run_id=run_id, agent_id=agent.id, kind="EMAIL",
-                host="127.0.0.1", path="ok@example.com",
-                request_bytes=1, response_bytes=0,
+        async def seed(run_id, *, minutes_ago=0, blocked=True):
+            await insert_egress_call(
+                agent.id, run_id, kind="EMAIL", host="127.0.0.1",
+                path="ok@example.com", request_bytes=1, response_bytes=0,
                 latency_ms=None if blocked else 500,
                 error="EGRESS_BLOCKED: SMTP_AUTH" if blocked else None,
-                created_at=datetime.now(UTC) - timedelta(minutes=minutes_ago)))
+                created_at=datetime.now(UTC) - timedelta(minutes=minutes_ago))
 
         # 這筆 Run 已經嘗試過兩次（含一次認證失敗 —— 那正是 Gmail 會鎖帳號的情況）
-        seed(run.id)
-        seed(run.id, blocked=False)
-        await session.commit()
+        await seed(run.id)
+        await seed(run.id, blocked=False)
 
         limited = await app_client.post("/internal/notify/email", json=message,
                                         headers=auth(token))
@@ -353,11 +340,7 @@ async def test_per_run_and_per_hour_limits_count_attempts(
 
         # 換一筆 Run：每 Run 的計數歸零，但**每小時是跨 Run 累計的**。
         # 上面那兩列 + 剛才被擋下的那一列 = 3，已達每小時上限。
-        version_id = (await session.execute(
-            select(__import__("apps.api.models", fromlist=["Run"]).Run.agent_version_id)
-            .where(__import__("apps.api.models", fromlist=["Run"]).Run.id == run.id)
-        )).scalar_one()
-        other = await make_run(session, agent.id, version_id)
+        other = await make_run(agent.id, run.agent_version_id)
         other_token = await issue_run_token(redis_client, other.id)
         hourly = await app_client.post("/internal/notify/email", json=message,
                                        headers=auth(other_token))
@@ -365,31 +348,29 @@ async def test_per_run_and_per_hour_limits_count_attempts(
         assert hourly.json()["error"]["details"]["reason"] == "HOURLY_EMAIL_LIMIT"
         assert smtp_stub.connections == 0
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 async def test_the_hourly_window_rolls_it_is_not_an_hour_bucket(
-    app_client, session, redis_client, smtp_stub, monkeypatch,
+    app_client, redis_client, smtp_stub, monkeypatch,
 ):
     """U6：**滾動 60 分鐘，不是整點桶。** 整點桶允許 `:59` 寄 60 封、
     `:01` 再寄 60 封 —— 兩分鐘 120 封，那正是這條上限存在的理由。"""
     from datetime import timedelta
 
     from apps.api.config import get_settings
-    from apps.api.models import EgressCall
 
     monkeypatch.setattr(get_settings(), "email_max_per_hour", 1, raising=False)
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port})
     try:
         # 61 分鐘前的那一封已經滑出窗口，不該計入
-        session.add(EgressCall(
-            call_id=new_id(), run_id=run.id, agent_id=agent.id, kind="EMAIL",
-            host="127.0.0.1", path="ok@example.com", request_bytes=1,
-            response_bytes=0, latency_ms=500,
-            created_at=datetime.now(UTC) - timedelta(minutes=61)))
-        await session.commit()
+        await insert_egress_call(
+            agent.id, run.id, kind="EMAIL", host="127.0.0.1",
+            path="ok@example.com", request_bytes=1, response_bytes=0,
+            latency_ms=500,
+            created_at=datetime.now(UTC) - timedelta(minutes=61))
 
         response = await app_client.post(
             "/internal/notify/email",
@@ -399,17 +380,17 @@ async def test_the_hourly_window_rolls_it_is_not_an_hour_bucket(
         assert response.json()["error"]["details"]["reason"] == "TLS_REQUIRED", \
             "61 分鐘前那一封不該還算在這一小時裡"
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 async def test_oversized_body_is_blocked(
-    app_client, session, redis_client, smtp_stub, monkeypatch,
+    app_client, redis_client, smtp_stub, monkeypatch,
 ):
     from apps.api.config import get_settings
 
     monkeypatch.setattr(get_settings(), "email_max_body_bytes", 1024, raising=False)
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port})
     try:
         response = await app_client.post(
@@ -419,19 +400,19 @@ async def test_oversized_body_is_blocked(
         assert response.status_code == 403
         assert response.json()["error"]["details"]["reason"] == "BODY_TOO_LARGE"
         assert smtp_stub.connections == 0
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert rows[0].request_bytes == 2048
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)
 
 
 # ── Z19-47：EMAIL 列的形狀 ───────────────────────────────────────────
 
 async def test_email_audit_rows_use_the_shared_columns(
-    app_client, session, redis_client, smtp_stub,
+    app_client, redis_client, smtp_stub,
 ):
     agent, run, token = await _setup(
-        session, redis_client,
+        redis_client,
         sender={"host": "127.0.0.1", "port": smtp_stub.port},
         recipients=("a@example.com", "b@example.com"))
     try:
@@ -440,7 +421,7 @@ async def test_email_audit_rows_use_the_shared_columns(
             json={"to": ["a@example.com", "b@example.com"], "subject": "s",
                   "text": "hello"},
             headers=auth(token))
-        rows = await audit(session, run.id)
+        rows = await audit( run.id)
         assert len(rows) == 1
         row = rows[0]
         assert row.kind == "EMAIL"
@@ -449,4 +430,4 @@ async def test_email_audit_rows_use_the_shared_columns(
         assert row.method is None and row.rule_id is None and row.status_code is None
         assert row.request_bytes > 0
     finally:
-        await purge_agent(session, agent.id)
+        await purge_agent( agent.id)

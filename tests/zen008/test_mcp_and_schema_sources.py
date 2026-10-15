@@ -12,35 +12,28 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-from apps.api.models import AgentVersion, Run
+from apps.api import rows
 from tests.zen008.conftest import (
-    db_url,
     mcp,
     mcp_payload,
     new_agent,
+    pg_connect,
     register_version,
     wait_run,
 )
 
 
-def _db():
-    return create_async_engine(db_url())
-
-
 async def _entrypoints_from_db(agent_id: str) -> list[dict]:
-    engine = _db()
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            row = (await session.execute(select(AgentVersion).where(
-                AgentVersion.agent_id == uuid.UUID(agent_id),
-                AgentVersion.status == "PUBLISHED"))).scalars().first()
-        assert row is not None, "沒有 PUBLISHED 版本可比對"
-        return row.entrypoints or []
+        rec = await conn.fetchrow(
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions "
+            "WHERE agent_id = $1 AND status = 'PUBLISHED'",
+            uuid.UUID(agent_id))
+        assert rec is not None, "沒有 PUBLISHED 版本可比對"
+        return rec["entrypoints"] or []
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 def _tools(api: httpx.Client, agent_id: str) -> dict[str, dict]:
@@ -139,18 +132,21 @@ async def test_mcp_tools_call_creates_a_run_with_mcp_trigger(
     assert payload["result"]["isError"] is False, payload
     assert payload["result"]["structuredContent"] == {"echo": marker, "mark": "v1"}
 
-    engine = _db()
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            rows = (await session.execute(select(Run).where(
-                Run.agent_id == uuid.UUID(agent_id)))).scalars().all()
-        matching = [row for row in rows if row.input.get("question") == marker]
+        found = [
+            rows.Run.from_row(rec)
+            for rec in await conn.fetch(
+                f"SELECT {rows.Run.returning()} FROM runs WHERE agent_id = $1",
+                uuid.UUID(agent_id))
+        ]
+        matching = [row for row in found if row.input.get("question") == marker]
         assert len(matching) == 1, f"同步 tools/call 建立了 {len(matching)} 筆 Run"
         assert matching[0].trigger == "MCP"
         assert matching[0].status == "SUCCEEDED"
         assert matching[0].output == {"echo": marker, "mark": "v1"}
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 def test_mcp_async_flag_returns_run_id_visible_on_public_api(
@@ -182,21 +178,19 @@ async def test_mcp_schema_errors_do_not_create_runs(
     api: httpx.Client, published_agent: dict, arguments: dict, tool: str
 ) -> None:
     agent_id = published_agent["agent_id"]
-    engine = _db()
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            before = len((await session.execute(select(Run.id).where(
-                Run.agent_id == uuid.UUID(agent_id)))).scalars().all())
+        before = await conn.fetchval(
+            "SELECT count(*) FROM runs WHERE agent_id = $1", uuid.UUID(agent_id))
         payload = mcp_payload(mcp(api, agent_id, "tools/call",
                                   {"name": tool, "arguments": arguments}))
         is_error = payload.get("error") is not None or payload["result"].get("isError") is True
         assert is_error, payload
-        async with async_sessionmaker(engine)() as session:
-            after = len((await session.execute(select(Run.id).where(
-                Run.agent_id == uuid.UUID(agent_id)))).scalars().all())
+        after = await conn.fetchval(
+            "SELECT count(*) FROM runs WHERE agent_id = $1", uuid.UUID(agent_id))
         assert after == before, "被拒絕的 tools/call 仍然建立了 Run"
     finally:
-        await engine.dispose()
+        await conn.close()
 
 
 def test_mcp_unknown_agent_uses_the_platform_error_envelope(api: httpx.Client) -> None:
@@ -245,13 +239,13 @@ async def test_rest_and_mcp_runs_share_version_and_differ_only_by_trigger(
     assert mcp_run["trigger"] == "MCP"
     assert rest_run["agent_version"] == mcp_run["agent_version"] == published_agent["semver"]
 
-    engine = _db()
+    conn = await pg_connect()
     try:
-        async with async_sessionmaker(engine)() as session:
-            rows = (await session.execute(select(Run).where(Run.id.in_([
-                uuid.UUID(rest_run["run_id"]), uuid.UUID(mcp_run["run_id"])])))).scalars().all()
-        assert len({row.agent_version_id for row in rows}) == 1, (
+        found = await conn.fetch(
+            f"SELECT {rows.Run.returning()} FROM runs WHERE id = ANY($1::uuid[])",
+            [uuid.UUID(rest_run["run_id"]), uuid.UUID(mcp_run["run_id"])])
+        assert len({rec["agent_version_id"] for rec in found}) == 1, (
             "兩個門面指到不同的 agent_version_id")
-        assert all(row.celery_task_id for row in rows), "有 Run 沒有經過 Celery 派工"
+        assert all(rec["celery_task_id"] for rec in found), "有 Run 沒有經過 Celery 派工"
     finally:
-        await engine.dispose()
+        await conn.close()

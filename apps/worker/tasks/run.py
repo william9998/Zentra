@@ -13,27 +13,24 @@ import time
 import uuid
 from datetime import UTC, datetime
 
+from dataclasses import replace
+
 import docker
 from redis import Redis
-from sqlalchemy import and_, or_, select, text, update
-from sqlalchemy.orm import Session
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import NoResultFound
-
 from apps.api.config import get_settings
 from apps.api.ids import uuid7
 from apps.api.enums import BUILTIN_AGENT_VERSION_ID, AgentVersionStatus, ErrorCode, RunStatus
-from apps.api.models import (
-    AgentContainer, AgentLlmCredential, AgentSecret, AgentSettings, AgentVersion, Run,
-)
+from apps.api.rows import AgentContainer, AgentVersion
+from apps.api.rows import Run as RunRow
 from apps.api.services import agent_credentials, runtoken, work
 from apps.api.services import events as async_events
 from apps.sandbox.drivers.base import SandboxHandle, SandboxPlatformError
 from apps.sandbox.drivers.docker_driver import DockerSandboxDriver
 from apps.sandbox.manager import QuotaExceeded, SandboxManager
 from apps.worker.celery_app import celery_app
-from apps.worker.db import SessionSync
-from apps.worker.events import add_status_event, lock_run, publish_pending
+from apps.worker import db as worker_db
+from apps.worker.events import RunNotFound, add_status_event, lock_run, publish_pending
+from psycopg.types.json import Jsonb
 
 log = logging.getLogger(__name__)
 settings = get_settings()
@@ -49,26 +46,48 @@ def _manager(redis: Redis) -> SandboxManager:
     )
 
 
-def _transition(
-    session: Session, redis: Redis, run_id: uuid.UUID, status: RunStatus,
-    *, terminal: bool = False, error: dict | None = None, **fields,
-) -> Run:
-    """狀態 + 它的 run.status 事件在同一個 transaction 裡 commit，之後才發 Redis。
+def _jsonb(value):
+    return None if value is None else Jsonb(value)
 
-    順序很重要：先落地再發布。反過來的話 Redis 發出去了但 commit 失敗，
-    消費端會看到一個資料庫裡不存在的事件。
+
+def _transition(
+    conn, run_id: uuid.UUID, status: RunStatus,
+    *, terminal: bool = False, error: dict | None = None, **fields,
+) -> RunRow:
+    """狀態 + 它的 run.status 事件在同一個 transaction 裡寫入。
+
+    呼叫端在交易結束後才 `publish_pending`。反過來的話 Redis 發出去了但
+    commit 失敗，消費端會看到一個資料庫裡不存在的事件。
     """
-    run = lock_run(session, run_id)
-    run.status = status
-    if error is not None:
-        run.error = error
-    if terminal:
-        run.finished_at = datetime.now(UTC)
-    for key, value in fields.items():
-        setattr(run, key, value)
-    add_status_event(session, run, terminal=terminal)
-    session.commit()
-    publish_pending(session, redis, run_id)
+    run = lock_run(conn, run_id)
+    finished_at = datetime.now(UTC) if terminal else run.finished_at
+    next_error = error if error is not None else run.error
+    sandbox_id = fields.get("sandbox_id", run.sandbox_id)
+    started_at = fields.get("started_at", run.started_at)
+    celery_task_id = fields.get("celery_task_id", run.celery_task_id)
+    container_id = fields.get("container_id", run.container_id)
+    rec = conn.execute(
+        f"""
+        UPDATE runs SET
+            status = %(status)s, error = %(error)s, finished_at = %(finished_at)s,
+            sandbox_id = %(sandbox_id)s, started_at = %(started_at)s,
+            celery_task_id = %(celery_task_id)s, container_id = %(container_id)s
+        WHERE id = %(id)s
+        RETURNING {RunRow.returning()}
+        """,
+        {
+            "id": run_id,
+            "status": str(status),
+            "error": _jsonb(next_error),
+            "finished_at": finished_at,
+            "sandbox_id": sandbox_id,
+            "started_at": started_at,
+            "celery_task_id": celery_task_id,
+            "container_id": container_id,
+        },
+    ).fetchone()
+    run = RunRow.from_row(rec)
+    add_status_event(conn, run, terminal=terminal)
     return run
 
 
@@ -77,38 +96,31 @@ def _error(code: ErrorCode, message: str, run_id: str, retryable: bool) -> dict:
 
 
 def _claim_run(
-    session: Session, redis: Redis, run_id: uuid.UUID, task_id: str | None,
-) -> tuple[Run | None, bool]:
+    conn, run_id: uuid.UUID, task_id: str | None,
+) -> tuple[RunRow | None, bool]:
     """Acquire the single execution right for a Run.
 
     The lock and status recheck must happen immediately before reserving a
     sandbox. A duplicate Celery delivery can otherwise observe the old
     ``QUEUED`` value and create a second container while the first delivery is
     already running.
+
+    Redis 發布由呼叫端在交易結束後做。
     """
     try:
-        run = lock_run(session, run_id)
-    except NoResultFound:
+        run = lock_run(conn, run_id)
+    except RunNotFound:
         return None, False
     if RunStatus(run.status).is_terminal:
-        # A previous delivery may have committed a terminal event but failed
-        # before publishing it. Redelivery is also the retry path for it.
-        publish_pending(session, redis, run_id)
         return run, False
     if RunStatus(run.status) is not RunStatus.QUEUED:
         return run, False
-
-    run.status = RunStatus.SCHEDULING
-    run.celery_task_id = task_id
-    add_status_event(session, run)
-    session.commit()
-    publish_pending(session, redis, run_id)
+    run = _transition(conn, run_id, RunStatus.SCHEDULING, celery_task_id=task_id)
     return run, True
 
 
 def _finish_sync(
-    session: Session,
-    redis: Redis,
+    conn,
     run_id: uuid.UUID,
     exit_code: int,
     logs: str | None,
@@ -120,10 +132,11 @@ def _finish_sync(
     ``/result`` only stores the result.  This function is the worker's single
     authority for deciding whether the exited sandbox succeeded, and it emits
     the terminal event in the same transaction as the status update.
+
+    Redis 發布由呼叫端在交易結束後做。
     """
-    run = lock_run(session, run_id)
+    run = lock_run(conn, run_id)
     if RunStatus(run.status).is_terminal:
-        publish_pending(session, redis, run_id)
         return {"run_id": str(run_id), "status": str(run.status), "idempotent_skip": True}
 
     if timed_out:
@@ -148,18 +161,11 @@ def _finish_sync(
         status = RunStatus.SUCCEEDED
         error = None
 
-    run.status = status
-    if error is not None:
-        run.error = error
-    run.finished_at = datetime.now(UTC)
-    add_status_event(session, run, terminal=True)
-    session.commit()
-    publish_pending(session, redis, run_id)
+    run = _transition(conn, run_id, status, terminal=True, error=error)
     return {"run_id": str(run_id), "status": str(run.status)}
 
 
 async def finish(
-    session: AsyncSession,
     run_id: uuid.UUID,
     exit_code: int,
     logs: str | None,
@@ -170,42 +176,51 @@ async def finish(
 
     Keeping this small adapter beside the sync Celery implementation lets the
     worker remain synchronous while preserving the exact terminal-state rules
-    for async verification code.
+    for async verification code. Frozen `rows.Run` cannot be mutated.
     """
-    run = await async_events.lock_run(session, run_id)
-    if RunStatus(run.status).is_terminal:
-        return {"run_id": str(run_id), "status": str(run.status), "idempotent_skip": True}
+    from apps.api import db
 
-    if timed_out:
-        status = RunStatus.FAILED
-        error = _error(ErrorCode.SANDBOX_TIMEOUT,
-                       f"sandbox exceeded {run.timeout_seconds}s", str(run_id), True)
-    elif run.error is not None:
-        status = RunStatus.FAILED
-        error = None
-    elif exit_code != 0:
-        status = RunStatus.FAILED
-        error = _error(ErrorCode.SANDBOX_ERROR,
-                       f"sandbox exited {exit_code}: {(logs or '')[-500:]}",
-                       str(run_id), True)
-    elif run.result_received_at is None:
-        status = RunStatus.FAILED
-        error = _error(ErrorCode.SANDBOX_ERROR,
-                       "sandbox exited without submitting a result", str(run_id), True)
-    else:
-        status = RunStatus.SUCCEEDED
-        error = None
+    async with db.transaction() as conn:
+        run = await async_events.lock_run(conn, run_id)
+        if RunStatus(run.status).is_terminal:
+            return {"run_id": str(run_id), "status": str(run.status), "idempotent_skip": True}
 
-    run.status = status
-    if error is not None:
-        run.error = error
-    run.finished_at = datetime.now(UTC)
-    async_events.status_event(session, run, terminal=True)
-    await session.commit()
-    return {"run_id": str(run_id), "status": str(run.status)}
+        if timed_out:
+            status = RunStatus.FAILED
+            error = _error(ErrorCode.SANDBOX_TIMEOUT,
+                           f"sandbox exceeded {run.timeout_seconds}s", str(run_id), True)
+        elif run.error is not None:
+            status = RunStatus.FAILED
+            error = None
+        elif exit_code != 0:
+            status = RunStatus.FAILED
+            error = _error(ErrorCode.SANDBOX_ERROR,
+                           f"sandbox exited {exit_code}: {(logs or '')[-500:]}",
+                           str(run_id), True)
+        elif run.result_received_at is None:
+            status = RunStatus.FAILED
+            error = _error(ErrorCode.SANDBOX_ERROR,
+                           "sandbox exited without submitting a result", str(run_id), True)
+        else:
+            status = RunStatus.SUCCEEDED
+            error = None
+
+        finished_at = datetime.now(UTC)
+        next_error = error if error is not None else run.error
+        await conn.execute(
+            """
+            UPDATE runs
+               SET status = $2, error = $3, finished_at = $4
+             WHERE id = $1
+            """,
+            run_id, str(status), next_error, finished_at,
+        )
+        run = replace(run, status=str(status), error=next_error, finished_at=finished_at)
+        await async_events.status_event(conn, run, terminal=True)
+        return {"run_id": str(run_id), "status": str(run.status)}
 
 
-def _sweep_timeouts(session: Session, redis: Redis) -> int:
+def _sweep_timeouts(redis: Redis) -> int:
     """把逾時的常駐 Run 收成 FAILED（ZEN-015 / spec §5.3）。
 
     一次性沙盒的逾時是 `driver.wait(timeout=…)` 抓的 —— 容器被殺、任務收尾。
@@ -226,42 +241,49 @@ def _sweep_timeouts(session: Session, redis: Redis) -> int:
     #   container_id 有值 → 某個容器取走了但沒回報（卡住或崩潰）
     #   兩個 id 都沒有   → 排進佇列後沒有任何容器取走（全滿且一直沒空出來）
     # 一次性沙盒不會落入第二種：它一定有 sandbox_id，而且逾時由 driver.wait 抓。
-    stale = session.execute(
-        select(Run).where(
-            Run.status == RunStatus.RUNNING,
-            Run.started_at.isnot(None),
-            or_(
-                Run.container_id.isnot(None),
-                and_(Run.container_id.is_(None), Run.sandbox_id.is_(None)),
-            ),
-        ).limit(50)
-    ).scalars().all()
+    with worker_db.connection() as conn:
+        stale = conn.execute(
+            f"""
+            SELECT {RunRow.returning()} FROM runs
+            WHERE status = %(status)s
+              AND started_at IS NOT NULL
+              AND (container_id IS NOT NULL
+                   OR (container_id IS NULL AND sandbox_id IS NULL))
+            LIMIT 50
+            """,
+            {"status": str(RunStatus.RUNNING)},
+        ).fetchall()
 
     swept = 0
-    for run in stale:
+    for rec in stale:
+        run = RunRow.from_row(rec)
         deadline = run.started_at + timedelta(seconds=run.timeout_seconds)
         if now < deadline:
             continue
-        _transition(
-            session, redis, run.id, RunStatus.FAILED, terminal=True,
-            error=_error(
-                ErrorCode.SANDBOX_TIMEOUT,
-                f"the run exceeded its {run.timeout_seconds}s limit inside a resident "
-                "container and never reported a result",
-                str(run.id), True,
-            ),
-        )
+        with worker_db.transaction() as conn:
+            _transition(
+                conn, run.id, RunStatus.FAILED, terminal=True,
+                error=_error(
+                    ErrorCode.SANDBOX_TIMEOUT,
+                    f"the run exceeded its {run.timeout_seconds}s limit inside a resident "
+                    "container and never reported a result",
+                    str(run.id), True,
+                ),
+            )
+        publish_pending(redis, run.id)
         runtoken.revoke_run_sync(redis, str(run.id))
         if run.container_id:
-            session.execute(
-                update(AgentContainer)
-                .where(AgentContainer.id == run.container_id,
-                       AgentContainer.inflight_runs > 0)
-                .values(inflight_runs=AgentContainer.inflight_runs - 1)
-            )
+            with worker_db.transaction() as conn:
+                conn.execute(
+                    """
+                    UPDATE agent_containers
+                       SET inflight_runs = inflight_runs - 1
+                     WHERE id = %(id)s AND inflight_runs > 0
+                    """,
+                    {"id": run.container_id},
+                )
         swept += 1
     if swept:
-        session.commit()
         log.warning("swept %d timed-out resident runs", swept)
     return swept
 
@@ -277,35 +299,45 @@ def finalize_run(self, run_id: str) -> dict:
     Gateway 收到結果就自己轉狀態的話，沙盒等於能宣告自己成功了。
     """
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    with SessionSync() as session:
-        rid = uuid.UUID(run_id)
-        run = session.get(Run, rid)
-        if run is None or RunStatus(run.status).is_terminal:
-            return {"run_id": run_id, "status": run.status if run else "NOT_FOUND"}
+    rid = uuid.UUID(run_id)
+    with worker_db.connection() as conn:
+        rec = conn.execute(
+            f"SELECT {RunRow.returning()} FROM runs WHERE id = %(id)s",
+            {"id": rid},
+        ).fetchone()
+    if rec is None:
+        return {"run_id": run_id, "status": "NOT_FOUND"}
+    run = RunRow.from_row(rec)
+    if RunStatus(run.status).is_terminal:
+        return {"run_id": run_id, "status": run.status}
 
-        # 容器把結果寫進來了，所以 exit code 用 0 或 1 表示「它說成功／失敗」。
-        # 判斷仍然看 run.error 有沒有東西 —— 那是沙盒回報的內容，不是它的主張。
-        exit_code = 1 if run.error else 0
-        result = _finish_sync(session, redis, rid, exit_code, None)
+    # 容器把結果寫進來了，所以 exit code 用 0 或 1 表示「它說成功／失敗」。
+    # 判斷仍然看 run.error 有沒有東西 —— 那是沙盒回報的內容，不是它的主張。
+    exit_code = 1 if run.error else 0
+    with worker_db.transaction() as conn:
+        result = _finish_sync(conn, rid, exit_code, None)
+    publish_pending(redis, rid)
 
-        # 常駐路徑的 token 是在這裡撤銷的 —— execute_run 那邊不能撤，
-        # 因為它返回時容器才正要用（P4：跑完立即撤銷，只是「跑完」的時機不同）。
-        runtoken.revoke_run_sync(redis, run_id)
+    # 常駐路徑的 token 是在這裡撤銷的 —— execute_run 那邊不能撤，
+    # 因為它返回時容器才正要用（P4：跑完立即撤銷，只是「跑完」的時機不同）。
+    runtoken.revoke_run_sync(redis, run_id)
 
-        # 讓出容器的名額。**一定要做** —— 不減的話 inflight_runs 只增不減，
-        # 容器很快就會被當成滿載而所有 Run 都退回一次性沙盒。
-        if run.container_id:
-            session.execute(
-                update(AgentContainer)
-                .where(AgentContainer.id == run.container_id,
-                       AgentContainer.inflight_runs > 0)
-                .values(inflight_runs=AgentContainer.inflight_runs - 1)
+    # 讓出容器的名額。**一定要做** —— 不減的話 inflight_runs 只增不減，
+    # 容器很快就會被當成滿載而所有 Run 都退回一次性沙盒。
+    if run.container_id:
+        with worker_db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE agent_containers
+                   SET inflight_runs = inflight_runs - 1
+                 WHERE id = %(id)s AND inflight_runs > 0
+                """,
+                {"id": run.container_id},
             )
-            session.commit()
-        return result
+    return result
 
 
-def _default_model(session: Session, agent_id) -> str:
+def _default_model(agent_id) -> str:
     """這個 Agent 的預設 model，送進常駐容器的工作項（ZEN-015 / ZEN-012）。
 
     **每個工作項都重算一次，不在容器啟動時決定。** 憑證可以中途被改
@@ -314,14 +346,15 @@ def _default_model(session: Session, agent_id) -> str:
 
     只查 model 名稱，不碰密文。
     """
-    row = session.execute(
-        select(AgentLlmCredential.default_model)
-        .where(AgentLlmCredential.agent_id == agent_id)
-    ).scalar_one_or_none()
-    return agent_credentials.pick_default_model(row)
+    with worker_db.connection() as conn:
+        row = conn.execute(
+            "SELECT default_model FROM agent_llm_credentials WHERE agent_id = %(id)s",
+            {"id": agent_id},
+        ).fetchone()
+    return agent_credentials.pick_default_model(row["default_model"] if row else None)
 
 
-def _agent_config(session: Session, agent_id) -> dict:
+def _agent_config(agent_id) -> dict:
     """這個 Agent 的可變設定，送進常駐容器的工作項（ZEN-019 / 契約 §4.1）。
 
     **每個工作項都重算一次**，跟 `_default_model` 同一條規則：設定可以中途被改
@@ -332,26 +365,29 @@ def _agent_config(session: Session, agent_id) -> dict:
     的話畫面上看起來跟「設定沒存進去」一模一樣。ZEN-012 的 `default_model` 與
     ZEN-017 的 `ctx.llm()` 都踩過同一個坑。
     """
-    row = session.execute(
-        select(AgentSettings.config).where(AgentSettings.agent_id == agent_id)
-    ).scalar_one_or_none()
-    return dict(row or {})
+    with worker_db.connection() as conn:
+        row = conn.execute(
+            "SELECT config FROM agent_settings WHERE agent_id = %(id)s",
+            {"id": agent_id},
+        ).fetchone()
+    return dict((row["config"] if row else None) or {})
 
 
-def _secret_names(session: Session, agent_id) -> list[str]:
+def _secret_names(agent_id) -> list[str]:
     """機密的**名字**，排序過。沒有值、沒有長度、沒有尾四碼（契約 §4.1 第 5 點）。
 
     給名字是為了讓 agent 能 fail fast 說出「缺 SMTP_PASSWORD」，
     而不是跑完整段分析才在最後一步失敗。
     """
-    rows = session.execute(
-        select(AgentSecret.name).where(AgentSecret.agent_id == agent_id)
-        .order_by(AgentSecret.name)
-    ).scalars().all()
-    return list(rows)
+    with worker_db.connection() as conn:
+        rows = conn.execute(
+            "SELECT name FROM agent_secrets WHERE agent_id = %(id)s ORDER BY name",
+            {"id": agent_id},
+        ).fetchall()
+    return [row["name"] for row in rows]
 
 
-def _ready_container(session: Session, agent_id, version_id) -> AgentContainer | None:
+def _ready_container(conn, agent_id, version_id) -> AgentContainer | None:
     """這個 Agent 有沒有還有空位的 READY 容器（ZEN-015）。
 
     **必須同時比對版本** —— 容器綁定單一 `agent_version_id`（P5）。
@@ -360,23 +396,28 @@ def _ready_container(session: Session, agent_id, version_id) -> AgentContainer |
     滿載（`inflight_runs >= N`）的容器不算。回 `None` 不代表沒有容器 ——
     可能是全都滿了，那是 `_live_containers` 要回答的問題（溢出，見 `_overflow`）。
     """
-    limit = settings.sandbox_runs_per_container
-    row = session.execute(
-        select(AgentContainer)
-        .where(
-            AgentContainer.agent_id == agent_id,
-            AgentContainer.agent_version_id == version_id,
-            AgentContainer.status == "READY",
-            AgentContainer.inflight_runs < limit,
-        )
-        .order_by(AgentContainer.inflight_runs.asc())
-        .with_for_update()
-        .limit(1)
-    ).scalar_one_or_none()
-    return row
+    worker_db.require_transaction(conn)
+    rec = conn.execute(
+        f"""
+        SELECT {AgentContainer.returning()} FROM agent_containers
+        WHERE agent_id = %(agent_id)s
+          AND agent_version_id = %(version_id)s
+          AND status = 'READY'
+          AND inflight_runs < %(limit)s
+        ORDER BY inflight_runs ASC
+        LIMIT 1
+        FOR UPDATE
+        """,
+        {
+            "agent_id": agent_id,
+            "version_id": version_id,
+            "limit": settings.sandbox_runs_per_container,
+        },
+    ).fetchone()
+    return AgentContainer.from_row(rec) if rec is not None else None
 
 
-def _claim_container_slot(session: Session, agent_id, version) -> tuple[AgentContainer | None, bool]:
+def _claim_container_slot(agent_id, version_id) -> tuple[AgentContainer | None, bool]:
     """在同一個交易裡決定「誰去啟動容器」。回傳 `(容器列, 是不是我要去啟動)`。
 
     ## 為什麼要鎖
@@ -390,53 +431,57 @@ def _claim_container_slot(session: Session, agent_id, version) -> tuple[AgentCon
     鎖的 key 用 `agent_version_id`：容器綁定單一版本（P5），所以「該不該再開一個」
     本來就是 per-version 的問題。
     """
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-        {"k": str(version.id)},
-    )
+    with worker_db.transaction() as conn:
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%(k)s, 0))",
+            {"k": str(version_id)},
+        )
+        # 拿到鎖之後**要重查一次** —— 等鎖的期間別人可能已經啟動好了。
+        ready = _ready_container(conn, agent_id, version_id)
+        if ready is not None:
+            return ready, False
+        starting = conn.execute(
+            f"""
+            SELECT {AgentContainer.returning()} FROM agent_containers
+            WHERE agent_id = %(agent_id)s
+              AND agent_version_id = %(version_id)s
+              AND status = 'STARTING'
+            LIMIT 1
+            """,
+            {"agent_id": agent_id, "version_id": version_id},
+        ).fetchone()
+        if starting is not None:
+            return AgentContainer.from_row(starting), False
+        rec = conn.execute(
+            f"""
+            INSERT INTO agent_containers (id, agent_id, agent_version_id, status)
+            VALUES (%(id)s, %(agent_id)s, %(version_id)s, 'STARTING')
+            RETURNING {AgentContainer.returning()}
+            """,
+            {"id": uuid7(), "agent_id": agent_id, "version_id": version_id},
+        ).fetchone()
+        return AgentContainer.from_row(rec), True
 
-    # 拿到鎖之後**要重查一次** —— 等鎖的期間別人可能已經啟動好了。
-    ready = _ready_container(session, agent_id, version.id)
-    if ready is not None:
-        session.commit()
-        return ready, False
 
-    starting = session.execute(
-        select(AgentContainer).where(
-            AgentContainer.agent_id == agent_id,
-            AgentContainer.agent_version_id == version.id,
-            AgentContainer.status == "STARTING",
-        ).limit(1)
-    ).scalar_one_or_none()
-    if starting is not None:
-        # 別人正在啟動。我只要等它好。
-        session.commit()
-        return starting, False
-
-    row = AgentContainer(
-        id=uuid7(), agent_id=agent_id, agent_version_id=version.id, status="STARTING",
-    )
-    session.add(row)
-    session.commit()
-    return row, True
-
-
-def _live_containers(session: Session, agent_id, version_id) -> list[AgentContainer]:
+def _live_containers(conn, agent_id, version_id) -> list[AgentContainer]:
     """這個版本目前**在服務**的容器，不管滿不滿。
 
     跟 `_ready_container` 的差別就是容量條件 —— 有它才分得出
     「一個容器都沒有」（要冷啟動，得等）與「都滿了」（排隊就好，不用等）。
     """
-    return list(session.execute(
-        select(AgentContainer).where(
-            AgentContainer.agent_id == agent_id,
-            AgentContainer.agent_version_id == version_id,
-            AgentContainer.status.in_(("READY", "STARTING")),
-        )
-    ).scalars())
+    rows = conn.execute(
+        f"""
+        SELECT {AgentContainer.returning()} FROM agent_containers
+        WHERE agent_id = %(agent_id)s
+          AND agent_version_id = %(version_id)s
+          AND status IN ('READY', 'STARTING')
+        """,
+        {"agent_id": agent_id, "version_id": version_id},
+    ).fetchall()
+    return [AgentContainer.from_row(row) for row in rows]
 
 
-def _overflow(session: Session, agent_id, version) -> None:
+def _overflow(agent_id, version_id) -> None:
     """全滿了就在**背景**再開一個容器（ADR-0012 選項 C 的後半）。
 
     ## 為什麼不等它
@@ -456,14 +501,15 @@ def _overflow(session: Session, agent_id, version) -> None:
     from apps.api.tasks import dispatch_container_start
 
     cap = settings.sandbox_max_containers_per_agent
-    live = _live_containers(session, agent_id, version.id)
+    with worker_db.connection() as conn:
+        live = _live_containers(conn, agent_id, version_id)
     if len(live) >= cap:
         log.info("agent %s is at its container cap (%d); queueing instead", agent_id, cap)
         return
     if any(row.status == "STARTING" for row in live):
         return          # 已經有一個在路上了，不要一筆工作開一個容器
 
-    container, mine = _claim_container_slot(session, agent_id, version)
+    container, mine = _claim_container_slot(agent_id, version_id)
     if container is None or not mine:
         return
     log.info("agent %s containers are full; starting #%d in the background",
@@ -471,26 +517,27 @@ def _overflow(session: Session, agent_id, version) -> None:
     dispatch_container_start(str(container.id))
 
 
-def _wait_ready(session: Session, container_uuid, deadline: float) -> AgentContainer | None:
+def _wait_ready(container_uuid, deadline: float) -> AgentContainer | None:
     """等某個容器變成 READY。逾時或 FAILED 回 `None`。
 
     輪詢 DB 而不是等 Celery 的結果：啟動可能是**別的 worker** 發動的，
     那個 AsyncResult 我拿不到。DB 那一列才是所有人都看得到的真相。
     """
     while time.monotonic() < deadline:
-        session.expire_all()
-        row = session.get(AgentContainer, container_uuid)
-        if row is None or row.status == "FAILED":
+        with worker_db.connection() as conn:
+            rec = conn.execute(
+                f"SELECT {AgentContainer.returning()} FROM agent_containers WHERE id = %(id)s",
+                {"id": container_uuid},
+            ).fetchone()
+        if rec is None or rec["status"] == "FAILED":
             return None
-        if row.status == "READY":
-            return row
+        if rec["status"] == "READY":
+            return AgentContainer.from_row(rec)
         time.sleep(0.5)
     return None
 
 
-def _ensure_container(
-    session: Session, redis: Redis, agent_id, version,
-) -> AgentContainer | None:
+def _ensure_container(redis: Redis, agent_id, version_id) -> AgentContainer | None:
     """沒有可用的常駐容器就開一個，並**等它起來**（ZEN-015）。
 
     第一筆 Run 會付出啟動成本（含 image pull），之後的 Run 直接進熱容器。
@@ -501,7 +548,7 @@ def _ensure_container(
     """
     from apps.worker.tasks.container import start_container
 
-    container, mine = _claim_container_slot(session, agent_id, version)
+    container, mine = _claim_container_slot(agent_id, version_id)
     if container is None:
         return None
     if container.status == "READY":
@@ -513,22 +560,25 @@ def _ensure_container(
         log.info("no resident container for agent %s; starting one inline", agent_id)
         manager = _manager(redis)
         try:
-            status = start_container(session, redis, manager, container)
+            status = start_container(redis, manager, container.id)
         except Exception:                          # noqa: BLE001
             log.exception("inline container start failed for agent %s", agent_id)
-            session.rollback()
             return None
         if status != "READY":
             return None
-        return container
-    return _wait_ready(session, container.id, deadline)
+        with worker_db.connection() as conn:
+            rec = conn.execute(
+                f"SELECT {AgentContainer.returning()} FROM agent_containers WHERE id = %(id)s",
+                {"id": container.id},
+            ).fetchone()
+        return AgentContainer.from_row(rec) if rec is not None else None
+    return _wait_ready(container.id, deadline)
 
 
 @celery_app.task(name="zentra.run.execute", bind=True, acks_late=True)
 def execute_run(self, run_id: str) -> dict:
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     manager = _manager(redis)
-    session: Session = SessionSync()
 
     handle: SandboxHandle | None = None
     token: str | None = None
@@ -541,7 +591,10 @@ def execute_run(self, run_id: str) -> dict:
 
     try:
         rid = uuid.UUID(run_id)
-        run, claimed = _claim_run(session, redis, rid, self.request.id)
+        with worker_db.transaction() as conn:
+            run, claimed = _claim_run(conn, rid, self.request.id)
+        if run is not None:
+            publish_pending(redis, rid)
         if run is None:
             log.warning("run %s not found, dropping task", run_id)
             return {"run_id": run_id, "status": "NOT_FOUND"}
@@ -556,8 +609,10 @@ def execute_run(self, run_id: str) -> dict:
             manager.reserve(run_id)
             reserved = True
         except QuotaExceeded as exc:
-            _transition(session, redis, rid, RunStatus.FAILED, terminal=True,
-                        error=_error(ErrorCode.QUOTA_EXCEEDED, str(exc), run_id, True))
+            with worker_db.transaction() as conn:
+                _transition(conn, rid, RunStatus.FAILED, terminal=True,
+                            error=_error(ErrorCode.QUOTA_EXCEEDED, str(exc), run_id, True))
+            publish_pending(redis, rid)
             return {"run_id": run_id, "status": str(RunStatus.FAILED)}
 
         # P4：這是沙盒唯一拿得到的憑證
@@ -565,14 +620,21 @@ def execute_run(self, run_id: str) -> dict:
             redis, run_id, run.timeout_seconds,
         )
 
-        version = session.get(AgentVersion, run.agent_version_id)
+        with worker_db.connection() as conn:
+            rec = conn.execute(
+                f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE id = %(id)s",
+                {"id": run.agent_version_id},
+            ).fetchone()
+        version = AgentVersion.from_row(rec) if rec is not None else None
         if version is None or version.status != AgentVersionStatus.PUBLISHED:
-            _transition(
-                session, redis, rid, RunStatus.FAILED, terminal=True,
-                error=_error(
-                    ErrorCode.SANDBOX_ERROR, "published image metadata is unavailable", run_id, True
-                ),
-            )
+            with worker_db.transaction() as conn:
+                _transition(
+                    conn, rid, RunStatus.FAILED, terminal=True,
+                    error=_error(
+                        ErrorCode.SANDBOX_ERROR, "published image metadata is unavailable", run_id, True
+                    ),
+                )
+            publish_pending(redis, rid)
             return {"run_id": run_id, "status": str(RunStatus.FAILED)}
 
         # ── ZEN-015：有常駐容器就派進去，沒有才開一次性沙盒 ──────────
@@ -582,13 +644,27 @@ def execute_run(self, run_id: str) -> dict:
         # 順手掃逾時的常駐 Run。放在這裡是為了不用多養一個 celery beat ——
         # 代價是沒有流量時不會掃（見 _sweep_timeouts 的說明）。
         try:
-            _sweep_timeouts(session, redis)
+            _sweep_timeouts(redis)
         except Exception:                          # noqa: BLE001
             # 掃描失敗不該影響這次派工。
             log.exception("sweeping timed-out runs failed")
-            session.rollback()
 
-        container = _ready_container(session, run.agent_id, version.id)
+        live: list[AgentContainer] = []
+        with worker_db.transaction() as conn:
+            container = _ready_container(conn, run.agent_id, version.id)
+            if container is not None:
+                # 有空位才預留。`_ready_container` 只挑 inflight < N 的，
+                # 所以加一之後仍然不會超過 N。與 FOR UPDATE 同一交易。
+                conn.execute(
+                    """
+                    UPDATE agent_containers
+                       SET inflight_runs = inflight_runs + 1
+                     WHERE id = %(id)s
+                    """,
+                    {"id": container.id},
+                )
+            else:
+                live = _live_containers(conn, run.agent_id, version.id)
         #: True = 全部容器都滿了，這筆只是排進佇列，還沒有歸屬到任何容器。
         queued_only = False
         if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
@@ -597,12 +673,9 @@ def execute_run(self, run_id: str) -> dict:
             # 「沒有可用容器」有兩種，處理方式相反：
             #   全滿      → 工作排進佇列就好，先空出來的容器會拿走；背景加開下一個
             #   一個都沒有 → 沒人能接，只能等一個起來（冷啟動）
-            serving = [
-                row for row in _live_containers(session, run.agent_id, version.id)
-                if row.status == "READY"
-            ]
+            serving = [row for row in live if row.status == "READY"]
             if serving:
-                _overflow(session, run.agent_id, version)
+                _overflow(run.agent_id, version.id)
                 # **不預留給任何容器。** 全都滿了，硬記在誰頭上都會讓
                 # `inflight_runs` 超過 N，畫面上變成「2 / 1」那種看起來像超收的數字。
                 # 這筆工作就是在排隊 —— 等某個容器空出來取走它，
@@ -610,7 +683,7 @@ def execute_run(self, run_id: str) -> dict:
                 queued_only = True
                 container = serving[0]
             else:
-                container = _ensure_container(session, redis, run.agent_id, version)
+                container = _ensure_container(redis, run.agent_id, version.id)
         if container is not None:
             item = {
                 "run_id": run_id,
@@ -618,24 +691,20 @@ def execute_run(self, run_id: str) -> dict:
                 "entrypoint": run.entrypoint,
                 "input": run.input,
                 "manifest": version.manifest or {},
-                "default_model": _default_model(session, run.agent_id),
+                "default_model": _default_model(run.agent_id),
                 # ZEN-019：**頂層欄位，不得塞進 manifest**（契約 §4.1 第 1 點）。
                 # manifest 是版本的不可變內容；把可變設定攪進去，P5 在 runtime
                 # 這一側就沒有實體了。
-                "config": _agent_config(session, run.agent_id),
-                "secret_names": _secret_names(session, run.agent_id),
+                "config": _agent_config(run.agent_id),
+                "secret_names": _secret_names(run.agent_id),
             }
-            if not queued_only:
-                # 有空位才預留。`_ready_container` 只挑 inflight < N 的，
-                # 所以加一之後仍然不會超過 N。
-                container.inflight_runs += 1
-            _transition(session, redis, rid, RunStatus.RUNNING,
-                        started_at=datetime.now(UTC))
-            if not queued_only:
-                session.execute(
-                    update(Run).where(Run.id == rid).values(container_id=container.id)
+            with worker_db.transaction() as conn:
+                _transition(
+                    conn, rid, RunStatus.RUNNING,
+                    started_at=datetime.now(UTC),
+                    container_id=None if queued_only else container.id,
                 )
-            session.commit()
+            publish_pending(redis, rid)
 
             # **推工作一定要在 commit 之後。** 反過來的話，容器可能在 DB 寫完之前
             # 就取走這筆工作並做歸屬校正 —— 那時它看到的 `run.container_id` 還是空的，
@@ -659,40 +728,47 @@ def execute_run(self, run_id: str) -> dict:
             handle = manager.create(run_id, token)
         else:
             handle = manager.create_run(run_id, token, version.image_ref)
-        run = _transition(session, redis, rid, RunStatus.RUNNING,
-                          sandbox_id=handle.id, started_at=datetime.now(UTC))
+        with worker_db.transaction() as conn:
+            run = _transition(
+                conn, rid, RunStatus.RUNNING,
+                sandbox_id=handle.id, started_at=datetime.now(UTC),
+            )
+        publish_pending(redis, rid)
 
         timeout = run.timeout_seconds
         result = manager.driver.wait(handle, timeout=timeout)
 
-        # 沙盒已經透過 Internal Gateway 回寫了 output / error，重讀一次拿最新值
-        session.expire_all()
-        run = session.get(Run, rid)
-
-        return _finish_sync(session, redis, rid, result.exit_code, result.logs,
-                            timed_out=result.timed_out)
+        with worker_db.transaction() as conn:
+            finished = _finish_sync(
+                conn, rid, result.exit_code, result.logs, timed_out=result.timed_out)
+        publish_pending(redis, rid)
+        return finished
 
     except SandboxPlatformError as exc:
         log.exception("run %s sandbox platform failure", run_id)
-        session.rollback()
         try:
-            current = session.get(Run, uuid.UUID(run_id))
-            if current and not RunStatus(current.status).is_terminal:
-                _transition(session, redis, current.id, RunStatus.FAILED, terminal=True,
-                            error=_error(ErrorCode.SANDBOX_ERROR, str(exc), run_id, True))
-        except Exception:
+            with worker_db.transaction() as conn:
+                current = lock_run(conn, uuid.UUID(run_id))
+                if not RunStatus(current.status).is_terminal:
+                    _transition(
+                        conn, current.id, RunStatus.FAILED, terminal=True,
+                        error=_error(ErrorCode.SANDBOX_ERROR, str(exc), run_id, True))
+            publish_pending(redis, uuid.UUID(run_id))
+        except (RunNotFound, Exception):
             log.exception("failed to mark run %s SANDBOX_ERROR", run_id)
         return {"run_id": run_id, "status": str(RunStatus.FAILED)}
 
     except Exception as exc:                      # noqa: BLE001 — 最後一道網，不能讓 Run 卡在 RUNNING
         log.exception("run %s crashed in worker", run_id)
         try:
-            session.rollback()
-            current = session.get(Run, uuid.UUID(run_id))
-            if current and not RunStatus(current.status).is_terminal:
-                _transition(session, redis, current.id, RunStatus.FAILED, terminal=True,
-                            error=_error(ErrorCode.INTERNAL_ERROR, str(exc), run_id, True))
-        except Exception:
+            with worker_db.transaction() as conn:
+                current = lock_run(conn, uuid.UUID(run_id))
+                if not RunStatus(current.status).is_terminal:
+                    _transition(
+                        conn, current.id, RunStatus.FAILED, terminal=True,
+                        error=_error(ErrorCode.INTERNAL_ERROR, str(exc), run_id, True))
+            publish_pending(redis, uuid.UUID(run_id))
+        except (RunNotFound, Exception):
             log.exception("failed to mark run %s as FAILED", run_id)
         raise
 
@@ -709,5 +785,4 @@ def execute_run(self, run_id: str) -> dict:
                 log.exception("failed to destroy sandbox for run %s", run_id)
         if reserved:
             manager.release(run_id)
-        session.close()
         redis.close()

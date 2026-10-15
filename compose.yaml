@@ -84,7 +84,7 @@ services:
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
@@ -134,7 +134,7 @@ services:
     command: ["celery", "-A", "apps.worker.celery_app", "worker", "-Q", "q.run,q.build", "-l", "info", "--concurrency", "10", "-B", "--schedule", "/tmp/celerybeat-schedule"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}

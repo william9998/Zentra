@@ -112,7 +112,7 @@ make help        # every target
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
-docker compose exec app alembic upgrade head
+make migrate
 ```
 
 Two things compose does **not** do for you:
@@ -120,7 +120,9 @@ Two things compose does **not** do for you:
 - **The base image.** `zentra/agent-base:1.0` is what your own agent images build `FROM`. It belongs to
   no compose service — nothing runs it — so compose has no place to build it from. Rebuild it after a
   change under `packages/sdk/`; images already published are unaffected, since their contents are frozen.
-- **Migrations.** Nothing runs Alembic at startup.
+- **Migrations.** Nothing migrates at startup. Existing databases: first
+  `bash scripts/adopt-legacy-schema.sh --dry-run`, confirm, run it again without
+  `--dry-run`, then `make migrate`.
 
 A **Run uses the agent's own image**, pulled by the digest registered for that version. There is no
 shared runtime container in that path. The one exception is the built-in `builtin-echo` fixture left over
@@ -368,7 +370,7 @@ uv sync --extra dev && uv run pytest tests/zen006a -q
 docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
   -e PYTHONPATH=/srv \
   -e ZENTRA_TEST_BASE_URL=http://app:8000 \
-  -e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
+  -e ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@postgres:5432/zentra \
   zentra-app:latest \
   sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
 ```
@@ -474,7 +476,7 @@ make help        # 看所有指令
 ```bash
 docker compose up -d --build                     # postgres · redis · registry · api · worker
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
-docker compose exec app alembic upgrade head
+make migrate
 
 curl -s localhost:8000/healthz                   # {"status":"ok"}
 open http://localhost:8000/console/agents        # Console
@@ -485,7 +487,9 @@ compose **不會**幫你做兩件事：
 - **Base image。** `zentra/agent-base:1.0` 是你自己的 agent image 的 `FROM`。
   它不屬於任何 compose 服務（沒有東西會「跑」它），所以 compose 沒有地方可以 build 它。
   改過 `packages/sdk/` 就重 build 一次；已經發布的 image 不受影響，它們的內容早就凍住了。
-- **migration。** 啟動時不會自動跑。
+- **migration。** 啟動時不會自動跑。既有資料庫：先
+  `bash scripts/adopt-legacy-schema.sh --dry-run`，確認後再跑一次不帶 `--dry-run`，
+  然後 `make migrate`。
 
 **每個 Run 用的是 agent 自己的 image**，依該版本註冊的 digest 拉下來，這條路徑上沒有共用的 runtime 容器。
 唯一的例外是 ZEN-000 留下的內建 fixture `builtin-echo`，它仍然跑 `zentra/agent-runtime:dev`
@@ -710,7 +714,7 @@ uv sync --extra dev && uv run pytest tests/zen006a -q
 docker run --rm --network zentra-net -v "$PWD:/srv" -w /srv \
   -e PYTHONPATH=/srv \
   -e ZENTRA_TEST_BASE_URL=http://app:8000 \
-  -e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
+  -e ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@postgres:5432/zentra \
   zentra-app:latest \
   sh -c "pip install -q pytest pytest-asyncio anyio && pytest tests/zen006a -q"
 ```

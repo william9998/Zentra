@@ -132,7 +132,7 @@ docker compose up -d      # Console 在 http://localhost:8000/console/agents
 docker build -t zentra/agent-runtime:1.0 -f docker/agent-runtime.Dockerfile .
 
 # 3. 資料表
-uv run alembic upgrade head
+make migrate      # = docker compose exec -T app python -m apps.api.migrations（ADR-0015）
 
 # 4. 驗一條主線
 uv run zentra deploy ./examples/echo-agent

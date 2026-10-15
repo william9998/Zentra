@@ -56,8 +56,8 @@ runtime:  ## build agent-runtime:dev（只有冒煙測試的內建 fixture 需�
 
 # ── 資料庫 ────────────────────────────────────────────────────────────
 
-migrate:  ## 把資料庫結構升到最新
-	docker compose exec -T app alembic upgrade head
+migrate:  ## 升 schema。既有庫先：bash scripts/adopt-legacy-schema.sh --dry-run
+	docker compose exec -T app python -m apps.api.migrations
 
 # ── 驗證 ──────────────────────────────────────────────────────────────
 
@@ -81,7 +81,7 @@ test:  ## 跑指定 suite，例：make test SUITE=tests/zen008（不含瀏覽器
 		docker run --rm --network zentra-net -v "$$PWD:/srv" -w /srv \
 			-e PYTHONPATH=/srv \
 			-e ZENTRA_TEST_BASE_URL=http://app:8000 \
-			-e ZENTRA_TEST_DB_URL=postgresql+asyncpg://zentra:zentra@postgres:5432/zentra \
+			-e ZENTRA_TEST_DB_URL=postgresql://zentra:zentra@postgres:5432/zentra \
 			zentra-app:latest \
 			sh -c "pip install -q pytest pytest-asyncio anyio 2>/dev/null; pytest $(SUITE) $(IGNORE) -q"; \
 	fi
