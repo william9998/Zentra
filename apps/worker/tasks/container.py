@@ -394,3 +394,94 @@ def purge_agent(payload: dict) -> dict:
 
     log.info("purged agent %s: %s", payload.get("agent_id"), "; ".join(notes))
     return {"agent_id": payload.get("agent_id"), "notes": notes}
+
+
+#: 舊版本被取代後，等綁著它的 Run 跑完的輪詢間隔與上限。
+#: Run 的 wall-clock 上限是 15 分鐘，等一小時還沒跑完就是卡住了 —— 那時寧可留著 image，
+#: 也不要刪掉一個還有人在用的東西。
+_RETIRE_RETRY_SECONDS = 30
+_RETIRE_MAX_RETRIES = 120
+
+
+@celery_app.task(name="zentra.version.retire", bind=True,
+                 max_retries=_RETIRE_MAX_RETRIES, default_retry_delay=_RETIRE_RETRY_SECONDS)
+def retire_version(self, agent_version_id: str) -> dict:
+    """同版號被取代後，收掉舊的那一版（ADR-0016）。
+
+    停舊容器、刪主機上的 image、刪 registry 的 manifest —— 跟刪 Agent 同一套（ADR-0013）。
+
+    ## 兩個不能刪的情況
+
+    - **還有未終結的 Run 綁著它。** Run 在建立時就綁定了版本，排隊中的那些要跑的就是舊 image。
+      等它們跑完再收；收的是容器與 image，那一列紀錄永遠留著。
+    - **還有別的版本（任何 Agent）用同一個 digest。** 同一個 image 可以被不同 Agent、
+      不同版號註冊，刪掉 manifest 會讓那些還在服務的版本拉不回 image。
+    """
+    vid = uuid.UUID(agent_version_id)
+    with db.connection() as conn:
+        rec = conn.execute(
+            f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE id = %(id)s",
+            {"id": vid},
+        ).fetchone()
+        version = AgentVersion.from_row(rec) if rec is not None else None
+        if version is None or version.status != "SUPERSEDED":
+            return {"agent_version_id": agent_version_id, "status": "SKIPPED"}
+        busy = conn.execute(
+            "SELECT count(*) AS n FROM runs WHERE agent_version_id = %(id)s "
+            "AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')",
+            {"id": vid},
+        ).fetchone()["n"]
+    if busy:
+        try:
+            raise self.retry()
+        except self.MaxRetriesExceededError:
+            log.warning("version %s still has %d unfinished runs; leaving its image in place",
+                        agent_version_id, busy)
+            return {"agent_version_id": agent_version_id, "status": "GAVE_UP", "busy_runs": busy}
+
+    with db.connection() as conn:
+        containers = [
+            AgentContainer.from_row(r) for r in conn.execute(
+                f"SELECT {AgentContainer.returning()} FROM agent_containers "
+                "WHERE agent_version_id = %(id)s AND status IN ('STARTING', 'READY', 'UNHEALTHY')",
+                {"id": vid},
+            ).fetchall()
+        ]
+        shared = conn.execute(
+            "SELECT count(*) AS n FROM agent_versions "
+            "WHERE image_digest = %(digest)s AND status <> 'SUPERSEDED'",
+            {"digest": version.image_digest},
+        ).fetchone()["n"]
+
+    redis = Redis.from_url(settings.redis_url)
+    manager = _manager(redis)
+    notes = []
+    try:
+        for row in containers:
+            try:
+                containertoken.revoke_container_sync(redis, row.id)
+                _destroy(manager, row.id, row.container_id)
+                with db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE agent_containers SET container_id = NULL, status = 'STOPPED', "
+                        "inflight_runs = 0 WHERE id = %(id)s",
+                        {"id": row.id},
+                    )
+                notes.append(f"容器 {row.id} 已移除")
+            except Exception as exc:              # noqa: BLE001
+                notes.append(f"容器 {row.id} 移除失敗：{type(exc).__name__}")
+
+        if shared:
+            notes.append(f"{version.image_ref}: 還有 {shared} 個版本用同一個 digest，不刪")
+        else:
+            notes.append(_delete_from_registry(version.image_ref))
+            try:
+                manager.driver.remove_image(version.image_ref)
+                notes.append(f"{version.image_ref}: 主機上的 image 已移除")
+            except Exception as exc:              # noqa: BLE001
+                notes.append(f"{version.image_ref}: 主機上的 image 沒移除（{type(exc).__name__}）")
+    finally:
+        redis.close()
+
+    log.info("retired version %s: %s", agent_version_id, "; ".join(notes))
+    return {"agent_version_id": agent_version_id, "status": "RETIRED", "notes": notes}

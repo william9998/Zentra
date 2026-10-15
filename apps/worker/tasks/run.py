@@ -626,7 +626,11 @@ def execute_run(self, run_id: str) -> dict:
                 {"id": run.agent_version_id},
             ).fetchone()
         version = AgentVersion.from_row(rec) if rec is not None else None
-        if version is None or version.status != AgentVersionStatus.PUBLISHED:
+        # SUPERSEDED 也照跑（ADR-0016）：Run 建立時綁的就是這一筆，取代發生在它排隊期間
+        # 不代表它該改跑新 image。舊 image 會等這些 Run 都結束才被收掉。
+        if version is None or version.status not in (
+            AgentVersionStatus.PUBLISHED, AgentVersionStatus.SUPERSEDED,
+        ):
             with worker_db.transaction() as conn:
                 _transition(
                     conn, rid, RunStatus.FAILED, terminal=True,

@@ -11,7 +11,7 @@ const FRAME = `
       <label for="version-semver">Semver</label>
       <input type="text" id="version-semver" required autocomplete="off"
              placeholder="1.2.0" aria-describedby="semver-hint semver-error">
-      <p class="field-hint" id="semver-hint">同一 Agent 內不可重用；驗證失敗也不能覆寫。</p>
+      <p class="field-hint" id="semver-hint">用已存在的版號會取代它：新 image 驗證通過才換，失敗的話舊的照常服務。</p>
       <p class="field-error" id="semver-error" data-semver-error hidden></p>
     </div>
     <div class="field">
@@ -31,8 +31,8 @@ const FRAME = `
   <section class="registration-status" data-status hidden></section>
   <dialog aria-labelledby="registration-confirm-title" data-confirm-dialog>
     <div class="dialog-form">
-      <h2 class="dialog-title" id="registration-confirm-title">確認不可變版本</h2>
-      <p class="field-hint">送出後 semver 與 image digest 不可覆寫。</p>
+      <h2 class="dialog-title" id="registration-confirm-title">確認註冊版本</h2>
+      <p class="field-hint">如果這個版號已經存在，驗證通過後會取代現有的 image，舊 image 會被刪除。</p>
       <div class="meta-grid" data-confirm-values></div>
       <div class="dialog-actions">
         <button type="button" class="btn-ghost" data-confirm-cancel>返回修改</button>
@@ -113,7 +113,7 @@ export function mount(root, props) {
     if (stage === 'PULL') return '平台無法按此 digest 拉取 image。請確認 Registry 可達與 VM credential。';
     if (stage === 'INSPECT') return 'image platform、label 或 runtime executable 不符合契約。請檢查 image metadata。';
     if (stage === 'VALIDATE') return 'image 無法在 non-root、唯讀環境通過 runtime 驗證。請查看完整錯誤。';
-    return '請查看完整錯誤，修正 image 後使用新的 semver 註冊。';
+    return '請查看完整錯誤，修正 image 後可以用同一個版號重新註冊。';
   };
 
   const renderStatus = () => {
@@ -193,7 +193,7 @@ export function mount(root, props) {
     const actions = el('div', 'form-actions');
     const back = el('a', 'btn-ghost', '返回 Agent 詳情');
     back.href = '/console/agents/' + encodeURIComponent(props.agentId);
-    const retry = el('a', 'btn-secondary', '改用新版本號重新註冊');
+    const retry = el('a', 'btn-secondary', '修正後重新註冊');
     retry.href = '/console/agents/' + encodeURIComponent(props.agentId) + '/versions/new';
     actions.appendChild(back);
     actions.appendChild(retry);
@@ -276,7 +276,7 @@ export function mount(root, props) {
       confirmDialog.close();
       if (!(error instanceof ApiError)) throw error;
       const hint = error.code === ERROR_CODE.VERSION_CONFLICT
-        ? '此版本號已存在且不可覆寫。請查看既有版本或改用新的 semver。'
+        ? '這個版號正在驗證中，請等它完成後再送。'
         : '請修正欄位後再試一次。';
       submitError.replaceChildren(createErrorBox(error, { hint }));
       submitError.hidden = false;

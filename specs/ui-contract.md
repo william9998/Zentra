@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.11.0` |
+| 契約版本 | `v0.12.0` |
 | 擁有者 | `@architect` |
-| 對齊 Spec | `specs/SPEC.md v0.5.0` |
+| 對齊 Spec | `specs/SPEC.md v0.7.0` |
 | 設計來源 | Stock-Insight-Chat 既有設計語言 + ChatGPT 極簡風 |
 
 > **`@frontend-dev` 只能引用這份文件的 token，不得寫死色碼、間距、字級。**
@@ -460,15 +460,15 @@ export function mount(el, props) {
   **沒有新元件狀態、沒有檔案輸入、沒有拖放區、沒有進度條、沒有 `XMLHttpRequest`** ——
   這是靜態文字，不影響上面的五態。指令用 `<pre>`，內容一律 `textContent`。
 - 點「註冊並驗證」先開原生 `<dialog>`，逐行顯示 Agent 名稱、`semver`、完整 `image_ref`，並說明
-  「此版本號與 digest 註冊後不可覆寫」。只有 dialog 的確認按鈕送出 JSON `POST /v1/agents/{id}/versions`。
+  「如果這個版號已經存在，驗證通過後會取代現有的 image，舊 image 會被刪除」（ADR-0016）。只有 dialog 的確認按鈕送出 JSON `POST /v1/agents/{id}/versions`。
 - 收到 `202` 後鎖定欄位，每 2 秒輪詢版本詳情。`destroy()` 必須 `clearInterval`；終態也要立即停止輪詢。
 - `BUILDING` 顯示聚合進度、已耗時與三個固定步驟說明「拉取 exact digest → inspect runtime → 隔離驗證」，
   但不可把其中任何一步標成目前 stage，因 API 未提供即時 stage。
 - `PUBLISHED` 顯示完整 `artifact.digest`、`platform`、格式化後 size、`runtime_contract` 與 entrypoint 數量；
   primary CTA「前往 Agent 詳情」。Copy 一律複製完整值，不能複製短碼。
 - `FAILED` 顯示 `BUILD_FAILED`、`error.message` 全文、`details.stage`、`agent_version_id` 與完整 image ref，
-  並提供 Copy。`BUILD_FAILED` 不可重試原請求；CTA 是「返回 Agent 詳情」與「改用新版本號重新註冊」。
-- `409 VERSION_CONFLICT` 明示該 semver 已存在且不可覆寫；`422 VALIDATION_ERROR` 將
+  並提供 Copy。`BUILD_FAILED` 不可重試原請求；CTA 是「返回 Agent 詳情」與「修正後重新註冊」（同版號可以再送）。
+- `409 VERSION_CONFLICT` 明示這個版號正在驗證中、等它完成再送；`422 VALIDATION_ERROR` 將
   `details` 對應到欄位。不得自創其他錯誤碼。
 
 五態：
@@ -972,6 +972,7 @@ MVP 不做認證（與 ZEN-000 一致）。之後補的時候走**同源 session
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.12.0 | 2026-10-15 | §5 註冊新版本：文案改為「同版號會取代」（ADR-0016）；`409` 的意思改為「這個版號正在驗證中」；`FAILED` 的 CTA 改「修正後重新註冊」 | 使用者裁示 |
 | v0.11.0 | 2026-10-08 | **§5.7 Agent 總覽由清單改為卡片格子**（直接取代，不做切換）：卡片 = 名稱首字方塊（灰階）+ name + 兩行描述 + 最新版本 + 更新時間；整張卡以名稱 `<a>` 加 `::after` 擴大點擊範圍，不把卡片包進 `<a>`。**Agent ID 從總覽拿掉**，只留在詳情頁 metadata（§5.12 第 4 點明文要求附 Copy）。批次刪除改成「選取模式」：勾選框平常隱藏，按「選取」才出現，選取模式下點卡片 = 切換勾選；ADR-0013 四條規則不變。五態改寫成卡片版（骨架卡、Partial 追加一排骨架卡）。**新增 token**（§1.3）：`--card-min-width: 280px`、`--monogram-size: 40px`。檔頭畫面表與 §5.6 / §5.12 的「列表」用語改為「總覽」。api-contract 不動 | @architect |
 | v0.10.0 | 2026-09-30 | **新增 §5.16–§5.19**（[ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) / ZEN-019）：`agent-config-card.js`（可變設定，整份取代）、`agent-secrets-card.js`（機密，只看得到尾四碼）、`egress-card.js`（主機白名單 + 寄件者）、`egress-calls-panel.js`（出口稽核）。§6.1 檔案清單同步。**沒有新 token**。最重要的兩條文案要求：設定卡要明說「這裡不是放密碼的地方」，白名單空狀態要說「連不到任何外部網站」而不是「沒有資料」 | @architect |
 | v0.9.0 | 2026-09-30 | §5.1 色彩模式切換鈕改為純圖示（`i-sun` / `i-moon`），§3 sprite 增加這兩個圖示 | @builder |

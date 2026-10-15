@@ -192,14 +192,15 @@ erDiagram
 
 ### 2.2 `agent_versions`
 
-Agent 的一個版本，**等於一個 OCI image 的 manifest digest**。發布後不可變（P5）。
+Agent 的一個版本，**等於一個 OCI image 的 manifest digest**。一筆紀錄的 digest 永不改寫（P5）；
+同版號重新註冊是新增一筆、驗證通過後把舊的改成 `SUPERSEDED`（ADR-0016）。
 image 本體不在這裡 —— 它在 registry，這裡只存指向它的 digest 與驗證時抽出的 metadata。
 
 | 欄位 | 型別 | 必填 | 預設 | 寫入者 | 說明 |
 |---|---|---|---|---|---|
 | `id` | `uuid` | ✅ | — | app | PK |
 | `agent_id` | `uuid` | ✅ | — | app | FK → `agents.id`，**ON DELETE CASCADE** |
-| `semver` | `varchar(64)` | ✅ | — | app | 使用者填的版號。與 `agent_id` 組合唯一；重用回 `409 VERSION_CONFLICT` |
+| `semver` | `varchar(64)` | ✅ | — | app | 使用者填的版號。同一個 `(agent_id, semver)` 可以有多列，但至多一筆 `PUBLISHED`、至多一筆 `BUILDING` |
 | `source_type` | `varchar(16)` | ✅ | — | app | 目前只能是 `OCI_IMAGE`（CHECK 鎖死） |
 | `image_ref` | `text` | ✅ | — | app | 完整參照 `<repository>@sha256:<64hex>`，例：`localhost:6000/stock-agent@sha256:ef29…`。**永遠是 digest 形式，不存 tag**。pull 與執行都用它 |
 | `image_digest` | `varchar(71)` | ✅ | — | app | 只有 digest 部分 `sha256:<64hex>`（7 + 64 = 71 字元）。這是 registry 上 manifest 的 SHA-256 |
@@ -209,20 +210,22 @@ image 本體不在這裡 —— 它在 registry，這裡只存指向它的 diges
 | `runtime_contract` | `varchar(64)` | | — | worker | image 的 `io.zentra.image-contract` label，例 `zentra.image/v1` |
 | `manifest` | `jsonb` | | — | worker | 驗證沙盒回報的 agent manifest（`@agent(...)` 宣告的內容） |
 | `entrypoints` | `jsonb` | | — | worker | **REST 驗證、MCP `tools/list`、per-agent OpenAPI 的唯一 schema 來源**（P3）。陣列，每項含 `name` / `description` / `input_schema` / `output_schema` |
-| `status` | `varchar(16)` | ✅ | — | app → worker | `BUILDING` → `PUBLISHED` 或 `FAILED`。終態不再變 |
+| `status` | `varchar(16)` | ✅ | — | app → worker | `BUILDING` → `PUBLISHED` 或 `FAILED`；`PUBLISHED` 被同版號取代時 → `SUPERSEDED`。其餘終態不再變 |
 | `error` | `jsonb` | | — | worker | `FAILED` 時的錯誤物件，含 `code`（`BUILD_FAILED`）、`message`（含驗證容器的 traceback）、`details.stage`（`PULL` / `INSPECT` / `VALIDATE`） |
 | `validation_payload` | `jsonb` | | — | app | 驗證沙盒經 Gateway 回寫的原始結果。用於冪等：同一份可重送，不同內容回 422 |
 | `build_claimed_at` | `timestamptz` | | — | worker | 發布任務的租約時間。另一個 worker 在租約期內不會重複發布同一版 |
 | `builder_task_id` | `varchar(64)` | | — | worker | 持有租約的 Celery task id，除錯用 |
 | `created_at` | `timestamptz` | ✅ | `now()` | app | |
 | `published_at` | `timestamptz` | | — | worker | 轉 `PUBLISHED` 的時間。「最新已發布版本」依此排序 |
+| `superseded_at` | `timestamptz` | | — | worker | 被同版號取代的時間（0009，ADR-0016） |
 
 | 約束 / 索引 | 定義 | 用途 |
 |---|---|---|
 | `agent_versions_pkey` | PK `(id)` | |
-| `uq_agent_versions_agent_semver` | UNIQUE `(agent_id, semver)` | 同一 Agent 的 semver 不可重用（P5） |
+| `uq_agent_versions_published_semver` | UNIQUE `(agent_id, semver) WHERE status = 'PUBLISHED'` | 一個版號同時只有一筆現役（0009） |
+| `uq_agent_versions_building_semver` | UNIQUE `(agent_id, semver) WHERE status = 'BUILDING'` | 同版號同時只能有一個在驗證，第二個回 `409`（0009） |
 | `ck_agent_versions_source_type` | `source_type = 'OCI_IMAGE'` | |
-| `ck_agent_versions_status` | `status IN ('BUILDING','PUBLISHED','FAILED')` | |
+| `ck_agent_versions_status` | `status IN ('BUILDING','PUBLISHED','FAILED','SUPERSEDED')` | |
 | `ck_agent_versions_digest` | `image_digest ~ '^sha256:[0-9a-f]{64}$'` | 擋住 tag 或格式錯誤的 digest 進資料庫 |
 | `ck_agent_versions_version_id` | `version_id ~ '^[0-9a-f]{12}$'` | |
 | `ix_agent_versions_agent_status_created` | `(agent_id, status, created_at DESC)` | 「這個 Agent 的已發布版本」與版本列表 |

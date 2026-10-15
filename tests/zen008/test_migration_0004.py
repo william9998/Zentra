@@ -118,7 +118,9 @@ async def test_migrations_apply_to_an_empty_database(fresh_database: str) -> Non
     try:
         versions = {row["version"] for row in await connection.fetch(
             "SELECT version FROM schema_migrations")}
-        assert versions == {f"{n:04d}" for n in range(1, 9)}, versions
+        from apps.api.migrations.__main__ import migration_files
+
+        assert versions == {v for v, _name, _path in migration_files()}, versions
     finally:
         await connection.close()
 
@@ -147,8 +149,13 @@ async def test_head_schema_matches_the_zen008_contract(fresh_database: str) -> N
             "SELECT c.conname, pg_get_constraintdef(c.oid) AS definition "
             "FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid "
             "WHERE t.relname IN ('agent_versions','runs')")}
-        assert "uq_agent_versions_agent_semver" in constraints, sorted(constraints)
-        assert "UNIQUE (agent_id, semver)" in constraints["uq_agent_versions_agent_semver"]
+        # 0009（ADR-0016）把全域 UNIQUE 換成「一個版號至多一筆 PUBLISHED / BUILDING」的 partial index
+        assert "uq_agent_versions_agent_semver" not in constraints, sorted(constraints)
+        indexes = {row["indexname"]: row["indexdef"] for row in await connection.fetch(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'agent_versions'")}
+        assert "WHERE" in indexes["uq_agent_versions_published_semver"]
+        assert "PUBLISHED" in indexes["uq_agent_versions_published_semver"]
+        assert "BUILDING" in indexes["uq_agent_versions_building_semver"]
         assert "sha256:[0-9a-f]{64}" in constraints["ck_agent_versions_digest"]
         assert "'OCI_IMAGE'" in constraints["ck_agent_versions_source_type"]
         assert "fk_runs_agent" in constraints

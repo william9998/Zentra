@@ -20,6 +20,8 @@ from tests.zen020.conftest import (
 )
 
 MIGRATIONS = ROOT / "apps" / "api" / "migrations"
+#: repo 裡所有的 migration 版本。0008 之後還會一直加，不要寫死。
+ALL_VERSIONS = [version for version, _name, _path in migration_files()]
 
 
 def _fingerprint_sql() -> str:
@@ -96,10 +98,10 @@ async def test_z20_01_runner_schema_matches_alembic() -> None:
 
 
 @pytest.mark.asyncio
-async def test_z20_02_empty_database_gets_fixture_and_eight_versions(fresh_database: str) -> None:
+async def test_z20_02_empty_database_gets_fixture_and_every_version(fresh_database: str) -> None:
     result = run_runner(fresh_database)
     assert result.returncode == 0, result.stdout + result.stderr
-    for version in ("0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"):
+    for version in ALL_VERSIONS:
         assert f"套用 {version}" in result.stdout
 
     conn = await asyncpg.connect(psycopg_dsn(fresh_database))
@@ -111,9 +113,7 @@ async def test_z20_02_empty_database_gets_fixture_and_eight_versions(fresh_datab
         rows = await conn.fetch(
             "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
         )
-        assert [r["version"] for r in rows] == [
-            "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008",
-        ]
+        assert [r["version"] for r in rows] == ALL_VERSIONS
         files = {version: path for version, _name, path in migration_files()}
         for row in rows:
             assert row["checksum"] == checksum(files[row["version"]])
@@ -131,7 +131,7 @@ async def test_z20_04_runner_is_idempotent(fresh_database: str) -> None:
     second = run_runner(fresh_database)
     assert second.returncode == 0, second.stdout + second.stderr
     assert "套用 " not in second.stdout
-    for version in ("0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"):
+    for version in ALL_VERSIONS:
         assert f"已存在 {version}" in second.stdout
 
 
@@ -163,7 +163,7 @@ async def test_z20_07_two_runners_apply_each_file_once(fresh_database: str) -> N
     conn = await asyncpg.connect(psycopg_dsn(fresh_database))
     try:
         n = await conn.fetchval("SELECT count(*) FROM schema_migrations")
-        assert n == 8
+        assert n == len(ALL_VERSIONS)
     finally:
         await conn.close()
 

@@ -206,25 +206,7 @@ def test_unresolvable_digest_fails_with_pull_stage(api: httpx.Client) -> None:
 
 
 # ------------------------------------------------------------- Z8-05 P5 不可變
-
-
-async def test_duplicate_semver_conflicts_and_keeps_one_row(api: httpx.Client) -> None:
-    agent_id = new_agent(api, "zen008-dup")
-    assert register_version(api, agent_id, "1.0.0", CANONICAL).status_code == 202
-    other_digest = "sha256:" + "cd" * 32
-    duplicate = register_version(api, agent_id, "1.0.0", f"{REPO}@{other_digest}")
-    assert duplicate.status_code == 409, duplicate.text
-    assert duplicate.json()["error"]["code"] == "VERSION_CONFLICT"
-
-    conn = await pg_connect()
-    try:
-        found = await conn.fetch(
-            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions WHERE agent_id = $1",
-            uuid.UUID(agent_id))
-        assert len(found) == 1
-        assert found[0]["image_digest"] == DIGEST, "重送覆寫了既有版本的 digest（違反 P5）"
-    finally:
-        await conn.close()
+# 同版號取代（ADR-0016）的確定性測試在 tests/zen021；這裡只留需要真 registry 的那條。
 
 
 def test_same_digest_can_be_registered_by_another_agent(api: httpx.Client) -> None:
@@ -244,7 +226,8 @@ def test_no_write_endpoint_exists_for_a_published_version(api: httpx.Client) -> 
 async def test_published_version_columns_are_stable_after_republish_attempt(
     api: httpx.Client, published_agent: dict
 ) -> None:
-    """成功發布後再打一次同 semver：409，而且 DB 的不可變欄位一個字都不能變。"""
+    """成功發布後用別的 digest 再註冊同 semver：建新的一筆（ADR-0016），
+    但已發布那一筆的欄位一個字都不能變 —— 取代是新增一筆，不是改寫。"""
     agent_id = published_agent["agent_id"]
     conn = await pg_connect()
     fields = ("semver", "image_ref", "image_digest", "runtime_contract",
@@ -252,19 +235,19 @@ async def test_published_version_columns_are_stable_after_republish_attempt(
     try:
         rec = await conn.fetchrow(
             f"SELECT {rows.AgentVersion.returning()} FROM agent_versions "
-            "WHERE agent_id = $1 AND semver = $2",
+            "WHERE agent_id = $1 AND semver = $2 AND status = 'PUBLISHED'",
             uuid.UUID(agent_id), published_agent["semver"])
+        published_id = rec["id"]
         before = {name: rec[name] for name in fields}
 
-        conflict = register_version(api, agent_id, published_agent["semver"],
-                                    f"{REPO}@{'sha256:' + 'ef' * 32}")
-        assert conflict.status_code == 409
-        assert conflict.json()["error"]["code"] == "VERSION_CONFLICT"
+        replacement = register_version(api, agent_id, published_agent["semver"],
+                                       f"{REPO}@{'sha256:' + 'ef' * 32}")
+        assert replacement.status_code == 202, replacement.text
+        assert replacement.json()["agent_version_id"] != str(published_id)
 
         rec = await conn.fetchrow(
-            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions "
-            "WHERE agent_id = $1 AND semver = $2",
-            uuid.UUID(agent_id), published_agent["semver"])
+            f"SELECT {rows.AgentVersion.returning()} FROM agent_versions WHERE id = $1",
+            published_id)
         after = {name: rec[name] for name in fields}
         assert before == after
     finally:

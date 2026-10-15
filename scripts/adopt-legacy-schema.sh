@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 過渡工具：把既有資料庫（版本表停在 0008）接到 schema_migrations。
 #
-# 在刪除舊版本表的 0009 合併時，同一個 PR 刪掉這支腳本。
+# 之後刪除舊版本表（alembic_version）的 migration 合併時，同一個 PR 刪掉這支腳本。
 # 之後的新環境都是空庫起步，舊庫則已全部接過。
 #
 #   bash scripts/adopt-legacy-schema.sh --dry-run   # 只檢查、印出將寫入的八列，最後 ROLLBACK
@@ -49,7 +49,8 @@ schema_migrations_exists() {
 if [[ "$(schema_migrations_exists)" == "t" ]]; then
   VERSIONS=$(psql -t -A -c "SELECT version FROM schema_migrations ORDER BY version;")
   EXPECTED=$'0001\n0002\n0003\n0004\n0005\n0006\n0007\n0008'
-  if [[ "$(printf '%s\n' "$VERSIONS" | sed '/^$/d')" == "$EXPECTED" ]]; then
+  # 0008 之後的 migration（0009…）是 runner 接手後才套的，只看前八列。
+  if [[ "$(printf '%s\n' "$VERSIONS" | sed '/^$/d' | head -8)" == "$EXPECTED" ]]; then
     echo "已接過。schema_migrations 現有內容："
     psql -c "SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version;"
     exit 0

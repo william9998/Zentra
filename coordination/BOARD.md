@@ -20,6 +20,7 @@
 | ZEN-016 | `response_model_exclude_none` 吃掉契約規定的 `null` 欄位（`next_cursor`、`description`、`latest_published_version`） | `tests/zen008/test_contract_registry.py` 兩條紅著；先確認 Console 有沒有依賴現行行為 |
 | ZEN-017 | serve 模式的驗收補一個會打 `ctx.llm()` 的 agent | bug 已修，缺測試 |
 | ZEN-010 | 退休 `builtin-echo` 與 `agent-runtime` 特例路徑 | 退休後 `make smoke` 要改寫 |
+| — | 刪除單一版本（`DELETE /v1/agents/{id}/versions/{semver}`，連 image 一起清） | ADR-0016 時使用者決定先不做；同版號取代已解決大部分 image 堆積 |
 | ZEN-003 / 004 / 005 / 006 / 007 | 隔離硬化 · Run API 完整版 · Interface Generator · Console 五畫面 · 收尾 demo | 原八週路線圖剩下的；部分已被後續任務做掉，動工前先對 SPEC 確認 |
 
 ## 已知缺陷（未確認是否已修）

@@ -649,8 +649,9 @@ async def create_version(
 ) -> AgentVersionResponse:
     async with db.transaction() as conn:
         agent = await service.load_agent(conn, agent_id)
-        row = await service.create_version(conn, agent, body)
-    await asyncio.to_thread(dispatch_build, str(row.id))
+        row, needs_build = await service.create_version(conn, agent, body)
+    if needs_build:
+        await asyncio.to_thread(dispatch_build, str(row.id))
     response.headers["Location"] = f"/v1/agents/{agent_id}/versions/{row.semver}"
     return service.version_response(row)
 

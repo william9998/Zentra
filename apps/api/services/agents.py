@@ -244,8 +244,24 @@ def version_response(row: AgentVersion, *, detail: bool = False) -> AgentVersion
 
 async def create_version(
     conn: asyncpg.Connection, agent: Agent, body: CreateAgentVersionRequest,
-) -> AgentVersion:
+) -> tuple[AgentVersion, bool]:
+    """登記一個版本，回傳 `(那一列, 要不要派 build)`。
+
+    同一個版號再送一次 = **取代**（ADR-0016）。這裡只建新的 `BUILDING`；
+    舊的 `PUBLISHED` 要等新的驗證通過，才在 worker 那側同一個交易裡改成 `SUPERSEDED`。
+    驗證失敗的話舊的照常服務。
+
+    - 已經有一筆同版號在 build → `409`：兩個取代者同時驗證，誰贏都說不清楚。
+    - 送來的 digest 跟現役那筆一樣 → 什麼都不做，回現役那筆。
+    """
     _, digest = parse_image_ref(body.image_ref)
+    current = await conn.fetchrow(
+        f"SELECT {AgentVersion.returning()} FROM agent_versions "
+        "WHERE agent_id = $1 AND semver = $2 AND status = $3",
+        agent.id, body.semver, str(AgentVersionStatus.PUBLISHED),
+    )
+    if current is not None and current["image_ref"] == body.image_ref:
+        return AgentVersion.from_row(current), False
     try:
         rec = await conn.fetchrow(
             f"""
@@ -261,19 +277,26 @@ async def create_version(
         )
     except UniqueViolationError as exc:
         raise ZentraError(
-            ErrorCode.VERSION_CONFLICT, "agent version already exists", 409,
+            ErrorCode.VERSION_CONFLICT,
+            "this version is already being built; wait for it to finish", 409,
             details={"field": "semver"},
         ) from exc
-    return AgentVersion.from_row(rec)
+    return AgentVersion.from_row(rec), True
 
 
 async def load_version_by_semver(
     conn: asyncpg.Connection, agent_id: uuid.UUID, semver: str,
 ) -> AgentVersion:
+    """這個版號**最近一次註冊**的那一列（被取代的不算）。
+
+    註冊後輪詢狀態靠的就是它，所以取代進行中回的是 `BUILDING` 那筆、
+    驗證失敗回 `FAILED` 那筆 —— 即使舊的 `PUBLISHED` 還在服務。
+    """
     rec = await conn.fetchrow(
         f"SELECT {AgentVersion.returning()} FROM agent_versions "
-        "WHERE agent_id = $1 AND semver = $2",
-        agent_id, semver,
+        "WHERE agent_id = $1 AND semver = $2 AND status <> $3 "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        agent_id, semver, str(AgentVersionStatus.SUPERSEDED),
     )
     if rec is None:
         raise not_found("agent version")
@@ -283,11 +306,11 @@ async def load_version_by_semver(
 async def list_versions(
     conn: asyncpg.Connection, agent_id: uuid.UUID, *, limit: int, cursor: str | None,
 ) -> tuple[list[AgentVersion], str | None]:
-    where = "agent_id = $1"
-    args: list[Any] = [agent_id]
+    where = "agent_id = $1 AND status <> $2"
+    args: list[Any] = [agent_id, str(AgentVersionStatus.SUPERSEDED)]
     if cursor:
         created_at, row_id = _cursor_decode(cursor)
-        where += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
+        where += " AND (created_at < $3 OR (created_at = $3 AND id < $4))"
         args.extend([created_at, row_id])
     rows = await conn.fetch(
         f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE {where} "
@@ -308,10 +331,11 @@ async def resolve_published_version(
     if requested is None:
         row = await latest_published(conn, agent_id)
     else:
+        # 同版號可能同時有現役、取代中、失敗的紀錄，Run 只能用現役那筆。
         rec = await conn.fetchrow(
             f"SELECT {AgentVersion.returning()} FROM agent_versions "
-            "WHERE agent_id = $1 AND semver = $2",
-            agent_id, requested,
+            "WHERE agent_id = $1 AND semver = $2 AND status = $3",
+            agent_id, requested, str(AgentVersionStatus.PUBLISHED),
         )
         row = AgentVersion.from_row(rec) if rec is not None else None
     if row is None or row.status != str(AgentVersionStatus.PUBLISHED):

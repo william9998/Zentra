@@ -24,6 +24,7 @@ celery_app.conf.update(
         # 容器生命週期走 q.build：它跟發布一樣會拉 image、會慢，
         # 塞進 q.run 會卡住真正的 Run 派工。
         "zentra.container.apply": {"queue": "q.build"},
+        "zentra.version.retire": {"queue": "q.build"},
     },
     timezone="UTC",
     enable_utc=True,

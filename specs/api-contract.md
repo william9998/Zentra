@@ -2,9 +2,9 @@
 
 | 欄位 | 值 |
 |---|---|
-| 契約版本 | `v0.12.1` |
+| 契約版本 | `v0.13.0` |
 | 擁有者 | `@architect` |
-| 對齊 Spec | `specs/SPEC.md v0.5.0` |
+| 對齊 Spec | `specs/SPEC.md v0.7.0` |
 
 > **這是前端與後端的唯一交會點。**
 > 後端照此實作，前端照此 mock，QA 照此寫契約測試。
@@ -89,7 +89,7 @@
 | `VALIDATION_ERROR` | 422 | false | 請求格式錯誤，`details` 含欄位層級訊息 |
 | `QUOTA_EXCEEDED` | 429 | true | 超過**併發 Run 上限**（預設 10）。含 `Retry-After`。v0.4.0 曾放寬到含磁碟餘裕，v0.4.1 撤回 |
 | `AGENT_NOT_PUBLISHED` | 409 | false | Agent 版本未發布 |
-| `VERSION_CONFLICT` | 409 | false | 同一 Agent 的 semver 已存在，P5 禁止覆寫 |
+| `VERSION_CONFLICT` | 409 | false | 同一 Agent 的這個 semver 正在驗證中（`BUILDING`），等它結束再送；另見 §2.7、§2.9 的用法 |
 | `BUILD_FAILED` | — | false | 版本發布失敗（寫在 `agent_versions.error`） |
 | `SANDBOX_TIMEOUT` | — | true | 沙盒執行逾時（寫在 Run 的 error，非 HTTP） |
 | `SANDBOX_ERROR` | — | true | 沙盒啟動或崩潰 |
@@ -240,8 +240,8 @@ Query：`agent_id`、`api_key_id`、`status`、`trigger`、`created_after`、`cr
 | `PATCH` | `/v1/agents/{id}` | 改 metadata（**不可改已發布版本**，P5） |
 | `DELETE` | `/v1/agents/{id}` | **硬刪除**，連容器與 image 一起（見 §2.5） |
 | `GET` | `/v1/agents/{id}/versions` | 版本列表 |
-| `POST` | `/v1/agents/{id}/versions` | **註冊 OCI image digest 並發布**（見下） |
-| `GET` | `/v1/agents/{id}/versions/{semver}` | 版本詳情，含 `entrypoints` 與 build 錯誤 |
+| `POST` | `/v1/agents/{id}/versions` | **註冊 OCI image digest 並發布**；同版號 = 取代（見下） |
+| `GET` | `/v1/agents/{id}/versions/{semver}` | 這個版號**最近一次註冊**的詳情，含 `entrypoints` 與 build 錯誤 |
 | `GET` | `/v1/agents/{id}/openapi.json` | 該 Agent 的 OpenAPI 3.1 schema（P3） |
 | `PUT` | `/v1/agents/{id}/llm-credential` | 註冊／覆寫這個 Agent 的 LLM 憑證（見 §2.1） |
 | `GET` | `/v1/agents/{id}/llm-credential` | 憑證的 metadata。**永遠不含金鑰** |
@@ -839,9 +839,20 @@ Response `202`：
 `PUBLISHED` 時必須有值。`FAILED` 時 `error.code=BUILD_FAILED`，
 `error.details.stage` 必須是 **`PULL`、`INSPECT`、`VALIDATE`** 之一。
 （v0.4.0 曾加入 `LOAD` / `PUSH`，v0.4.1 撤回；**不得產生也不得斷言這兩個值**。）
-`BUILD_FAILED` 一律 `retryable:false`：重試必須以**新的 `semver`** 重新送出。
+`BUILD_FAILED` 一律 `retryable:false`：原請求重送不會有不同結果，修正 image 後重新註冊（同版號可以）。
 
-同一個 `agent_id + semver` 重複註冊 → `409 VERSION_CONFLICT`，不得建立第二列。
+**同版號重新註冊 = 取代**（v0.13.0，[ADR-0016](./adr/ADR-0016-same-semver-replaces-version.md)）：
+
+1. 同一個 `agent_id + semver` 再送一次 → `202`，建一筆新的 `BUILDING`（新的 `agent_version_id`）。
+2. 新的驗證通過才取代：舊的那筆從此不出現在任何版本端點，Run 與 MCP 改用新的。
+   驗證失敗 → 新的那筆 `FAILED`，**舊的照常服務**。
+3. 這個版號已有一筆 `BUILDING` → `409 VERSION_CONFLICT`。
+4. `image_ref` 與現役那筆完全相同 → `202` 回現役那筆（`status: PUBLISHED`），不重 build。
+5. `GET /versions/{semver}` 回**最近一次註冊**的那筆（輪詢靠它）；所以取代失敗後它回 `FAILED`，
+   但呼叫這個版號跑的仍是舊的 `PUBLISHED`。`GET /versions` 列表兩筆都會出現。
+6. 已建立的 Run 綁定建立當下的那一筆，取代不影響它；Run 詳情的 `version` 仍是 semver，
+   要知道實際跑的 image 看 digest。
+
 同一個 digest 可以被不同 Agent/semver 明確引用，但每一列仍是獨立不可變版本。
 
 **`PUBLISHED` 的必要條件**：`image_ref` 指向的 digest 必須是**可以重新 pull 回來的**。
@@ -1182,6 +1193,7 @@ SSE 以持久化 `seq` 去重並依 `seq` 排序。公開 SSE 的 `id` 仍是資
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.13.0 | 2026-10-15 | 依 [ADR-0016](./adr/ADR-0016-same-semver-replaces-version.md)：同版號重新註冊改為取代（§2 版本段落）；`VERSION_CONFLICT` 在版本註冊上只表示「同版號正在驗證中」；`GET /versions/{semver}` 明訂回最近一次註冊。**狀態枚舉對外不變**（`SUPERSEDED` 不會出現在任何回應） | 使用者裁示 |
 | v0.12.1 | 2026-09-30 | **收斂 ZEN-019 驗收時挖出的九處矛盾／未定義**（@reviewer 提，U1–U9）。**無新端點、無新欄位、無新錯誤 code。** **U1** 沙盒自帶 header 是 `422 VALIDATION_ERROR`（`details.header` 指名），**`HEADER_NOT_ALLOWED` 從 §4.3 移除** —— 那張表只服務 `EGRESS_BLOCKED`（403）。**U2 ⚠️ 行為反轉**：§4.1 第 4 點原本要求 validation 沙盒帶當下 `config`／`secret_names`，但沒有、也不該有那條路由；改為**一律 `config={}`、`secret_names=[]`**，並說明空 config 驗證比帶設定更嚴格（見 [ADR-0014 修訂 R1](./adr/ADR-0014-per-agent-config-secrets-and-egress.md)）。**U3** 通過認證後的每一條 return 路徑都寫 `egress_calls`，含 `422` 與被擋下的；唯一例外是認證未過（無可信 `run_id`），§2.10 第 4 點給出 `error`／`status_code`／`rule_id` 的四種組合。**U4** `timeout_seconds > 15` 是 `422`，不夾值。**U5** 次數上限計「通過認證的嘗試」，被擋下的也算，計數來源就是 `egress_calls` 不另設計數器。**U6** 寄信每小時上限是**滾動 60 分鐘窗口**（整點桶會允許兩分鐘 120 封），一樣計嘗試，含 `SMTP_AUTH` 失敗。**U7** `last_four` 在值長度 < 4 時是 `*` 重複該長度次（寫死既有行為）。**U8** 明定**不得存在**關閉私有位址檢查的旗標或環境變數，測試策略改走 ZEN-019 spec §5.3.1（純函式化的位址判斷 + 可注入 resolver／transport；`ZENTRA_TEST_ALLOW_PUBLIC_EGRESS` 只被 `tests/**` 讀，`apps/**` 零命中要有護欄測試）。**U9** `PUT /secrets/{name}` 新建與覆寫都回 `200`。另補 §4.2 第 2 點的 `User-Agent: Zentra-Egress/1` 註解（實測 OKX 擋 `Python-urllib/*`，改這個字串會讓備援源全掛） | @architect |
 | v0.12.0 | 2026-09-30 | **新增 per-agent 設定／機密／對外能力三層**（[ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md)，ZEN-019）。公開端點：`GET`/`PUT /v1/agents/{id}/config`（§2.6）、`GET /secrets` + `PUT`/`DELETE /secrets/{name}`（§2.7）、`GET`/`POST /egress-rules` + `PUT`/`DELETE /egress-rules/{rule_id}`（§2.8）、`GET`/`PUT`/`DELETE /email-sender`（§2.9）、`GET /egress-calls`（§2.10）。Internal Gateway：bootstrap 與工作項**兩條路都新增 `config` 與 `secret_names` 欄位**（§4.1），新增 `POST /internal/egress/request`（§4.2）與 `POST /internal/notify/email`（§4.4），新增 `details.reason` 枚舉（§4.3）。錯誤 code：`EGRESS_BLOCKED` 語意擴充為「出口請求被政策擋下」且指定 HTTP `403`，**新增 `EGRESS_FAILED`（502, retryable）**。**Runs／SSE／MCP／版本發布的形狀完全未變**；沙盒 env 的精確集合檢查**未放寬**（§4.1 第 3 點） | @architect |
 | v0.11.0 | 2026-09-29 | **`DELETE /v1/agents/{id}` 改為硬刪除**，一併清掉容器與 registry image（[ADR-0013](./adr/ADR-0013-hard-delete-agents-and-images.md)），見 §2.5。`GET /v1/runs` 的每一列新增 `agent_name`（只有 agent_id 的話列表得人肉比對 UUID） | @architect |

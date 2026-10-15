@@ -30,4 +30,4 @@
 
 ## 不做
 
-不改契約、不改 schema、不刪 `alembic_version`（留給 `0009`）、不加依賴、不宣稱變快。
+不改契約、不改 schema、不刪 `alembic_version`（留給之後的 migration）、不加依賴、不宣稱變快。

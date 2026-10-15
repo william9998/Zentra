@@ -76,35 +76,14 @@ def _docker() -> None:
     require_docker()
 
 
-def _strip_schema_migrations(dump: str) -> str:
-    """拿掉 schema_migrations 的區塊，方便比對「只差這張表」。"""
-    keep: list[str] = []
-    skipping = False
-    for line in dump.splitlines():
-        if "schema_migrations" in line:
-            skipping = True
-            continue
-        if skipping:
-            if line.startswith("--") and "Name:" in line and "schema_migrations" not in line:
-                skipping = False
-                keep.append(line)
-            elif line.startswith("--") and line.endswith("Owner: -"):
-                continue
-            elif line.strip() == "":
-                continue
-            elif skipping and not line.startswith("ALTER") and not line.startswith("CREATE") and not line.startswith("    "):
-                skipping = False
-                keep.append(line)
-            continue
-        keep.append(line)
-    return "\n".join(keep)
-
-
 @pytest.mark.asyncio
 async def test_z20_03_adopt_then_runner_does_not_apply_ddl() -> None:
+    """接過的舊庫：runner 不重套 0001…0008，只套之後新增的（0009…），資料一列不少。"""
+    from apps.api.migrations.__main__ import migration_files
+
+    later = [v for v, _name, _path in migration_files() if v > "0008"]
     async with temporary_database() as database:
         _restore_legacy(database)
-        before = _normalize_dump(_pg_dump(database))
         count_sql = (
             "SELECT 'agents=' || (SELECT count(*) FROM agents) || "
             " ' versions=' || (SELECT count(*) FROM agent_versions) || "
@@ -116,15 +95,17 @@ async def test_z20_03_adopt_then_runner_does_not_apply_ddl() -> None:
         assert "0001" in adopted.stdout and "0008" in adopted.stdout
         ran = run_runner(database)
         assert ran.returncode == 0, ran.stdout + ran.stderr
-        assert "套用 " not in ran.stdout
+        for version in ("0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"):
+            assert f"套用 {version}" not in ran.stdout
+        for version in later:
+            assert f"套用 {version}" in ran.stdout
         after = _normalize_dump(_pg_dump(database))
         assert "CREATE TABLE public.schema_migrations" in after
         assert "alembic_version" in after
-        assert _strip_schema_migrations(before) == _strip_schema_migrations(after)
         version = _psql(database, "-t", "-A", "-c", "SELECT version_num FROM alembic_version;").stdout.strip()
         assert version == "0008"
         n = _psql(database, "-t", "-A", "-c", "SELECT count(*) FROM schema_migrations;").stdout.strip()
-        assert n == "8"
+        assert n == str(8 + len(later))
         after_counts = _psql(database, "-t", "-A", "-c", count_sql).stdout
         assert after_counts == before_counts
 

@@ -7,10 +7,13 @@
 
 | 欄位 | 值 |
 |---|---|
-| Spec 版本 | `v0.6.0` |
+| Spec 版本 | `v0.7.0` |
 | 狀態 | `DRAFT` |
-| 最後更新 | 2026-10-14 |
+| 最後更新 | 2026-10-15 |
 | 擁有者 | `@architect` |
+
+> **v0.7.0 依 [ADR-0016](./adr/ADR-0016-same-semver-replaces-version.md)：同一個版號重新註冊 = 取代那個版本。**
+> 新 image 驗證通過才換，舊紀錄改成 `SUPERSEDED` 保留、舊 image 自動清掉。P5 的意思收斂為「一筆版本紀錄的 digest 永不改寫」。
 
 > **v0.6.0 依 [ADR-0015](./adr/ADR-0015-plain-sql-no-orm.md) 拿掉 SQLAlchemy 與 Alembic**（ZEN-020）。
 > `app` 用 asyncpg、`worker` 用 psycopg 3 直寫 SQL；migration 改為編號 `.sql` + 自寫 runner，
@@ -85,7 +88,7 @@
 | P2 | **Agent 框架統一 LangChain + LangGraph** | 收斂成一種，串流 / 觀測 / 之後的 checkpoint 才只要寫一次 | 使用者交出未 compile 的 `StateGraph`，平台負責 compile |
 | P3 | **每個 Agent 天生就有 API + MCP 兩個門面** | 不是額外功能，是出廠預設 | 同一份 `entrypoints` 生成 OpenAPI schema 與 MCP tool schema，MCP 掛在同一個 FastAPI app |
 | P4 | **沙盒內拿不到任何長期憑證** | 即使沙盒被攻陷，損失也要可控 | 沙盒網段 `internal: true`，唯一對端是 **Internal Gateway**；只拿綁定單一 `run_id`、TTL = run timeout 的 **run token** |
-| P5 | **Agent 版本不可變 (Immutable)** | 發布過的東西不能在腳下被換掉 | 發布與 Run 都使用完整 OCI manifest digest；tag-only reference 不接受 |
+| P5 | **Agent 版本不可變 (Immutable)** | 發布過的東西不能在腳下被換掉 | 發布與 Run 都使用完整 OCI manifest digest；tag-only reference 不接受。一筆版本紀錄的 digest 永不改寫；同版號重新註冊是**新增一筆並取代**，Run 綁定建立當下那一筆（[ADR-0016](./adr/ADR-0016-same-semver-replaces-version.md)） |
 
 ## 3. 名詞定義
 
@@ -262,6 +265,11 @@ docker inspect --format='{{index .RepoDigests 0}}' localhost:6000/my-agent:1.0.0
 6. 通過 → 保存完整 digest、manifest、entrypoints 並轉 `PUBLISHED`，配發 REST/MCP/OpenAPI（P3）；
    失敗 → `FAILED + BUILD_FAILED`（`details.stage` ∈ `PULL|INSPECT|VALIDATE`）。
    不論結果都撤銷 token、銷毀 validation container
+
+**同版號重新註冊（ADR-0016）**：建新的 `BUILDING`，走上面同一條路。第 6 步通過時，同一個交易裡把舊的 `PUBLISHED` 改成
+`SUPERSEDED`；失敗則舊的照常服務。舊 image 等綁著它的未終結 Run 都結束後，由 worker 停容器、刪主機 image 與 registry manifest
+（還有其他未被取代的版本用同一個 digest 時不刪）。同版號已有 `BUILDING` → `409 VERSION_CONFLICT`；
+送來的 `image_ref` 與現役那筆相同 → 不重 build，直接回現役那筆。
 
 **P5 的不變式**：沒有可重新 pull 的 canonical digest reference，**不得**成為 `PUBLISHED`。
 `image_ref` / `image_digest` / `version_id` 三欄**任何狀態下都是 `NOT NULL`**，
@@ -503,6 +511,7 @@ v0.5.0 追加在 MVP 外的（[ADR-0014](./adr/ADR-0014-per-agent-config-secrets
 
 | 版本 | 日期 | 變更 | 由 |
 |---|---|---|---|
+| v0.7.0 | 2026-10-15 | 依 [ADR-0016](./adr/ADR-0016-same-semver-replaces-version.md)：同版號重新註冊改為取代（§2 P5、§7.1）。版本狀態新增 `SUPERSEDED`（不對外） | 使用者裁示 |
 | v0.6.0 | 2026-10-14 | 依 [ADR-0015](./adr/ADR-0015-plain-sql-no-orm.md) 修改 §6「ORM / Migration」一列為「資料存取 / Migration：純 SQL」（ZEN-020）：移除 SQLAlchemy（ORM 與 Core）與 Alembic；`app` 用 asyncpg、`worker` 用 psycopg 3；migration 改為編號 `.sql` + 自寫 runner（只認 `schema_migrations` 版本表，只有 up）；既有資料庫由一次性腳本 `scripts/adopt-legacy-schema.sh` 從 `alembic_version='0008'` 接起（`0009` 時刪除）；新增硬規則「連線只在一個工作單元內借出，不跨 HTTP／DNS／SMTP／Redis／sleep」，把 2026-10-14 的連線熱修（`fbea4d5`）變成結構，並以 `app`／`worker` 連線的 `idle_in_transaction_session_timeout = 60s` 為安全網（觸發時沿用 `INTERNAL_ERROR`）；`DATABASE_URL` 接受舊的 `+driver` 前綴；`DB_POOL_SIZE`／`DB_MAX_OVERFLOW` 保留並對應到 asyncpg 的 `min_size`／`max_size`。**明記這不是效能修正**。**api-contract 不變、schema 不變、P1–P5 不變** | @architect |
 | v0.5.0 | 2026-09-30 | 依 [ADR-0014](./adr/ADR-0014-per-agent-config-secrets-and-egress.md) 新增 **per-agent 設定／機密／對外能力三層**（ZEN-019）：新增 §7.4；§5 新增分層硬規則 5（出口代打的 SSRF 防護在 `app` 這一側）；§8.1 的 ctx 能力表補上 `ctx.config` **從空殼變成真的會帶值**，新增 `ctx.secret_names` / `ctx.http` / `ctx.send_email()`，並把 `ctx.secrets`（取值）標為**永久不做**；§10 新增 `egress_calls` 稽核、出口上限與保留期三列，並修正「沙盒沒有其他出口」這個已不再成立的前提；§11 兩張清單各自更新。契約對應 api-contract v0.12.0。**P1／P2／P3／P5 不變，P4 的字面一條沒鬆**（沙盒網段仍 `internal: true`、env 仍是精確集合、機密仍不進沙盒）；**但 P4 的目的被削弱**，定價見 ADR-0014 §6 | @architect |
 | v0.4.1 | 2026-09-23 | 依 [ADR-0009 修訂 R2](./adr/ADR-0009-internal-registry-image-upload.md) **撤回 v0.4.0 的 tar 上傳路徑**，改為使用者在平台主機上直接 `docker push localhost:6000/<repo>:<tag>` 後以既有 JSON 端點註冊（**只限同機**，不綁 `0.0.0.0`，不加 TLS/認證）。移除 multipart、`LOAD`/`PUSH` stage、`artifact.origin`/`image_origin`、digest 三欄 nullable 化、`uploads` volume、2 GiB 上限、磁碟餘裕的 `QUOTA_EXCEEDED`；digest 三欄恢復 `NOT NULL`。新增：§5 硬規則 4（平台不得代理 Registry HTTP 端點）、§6.1 容量與 GC 責任歸屬與 `--delete-untagged` 禁令、§7.1 `image_ref` 正規化護欄。內部 OCI Registry（5 個長駐服務）**保留**。v0.4.0 的新增從未實作，**相對於實際跑著的系統是零變更**。P1–P5 與 `version_id` 語意不變 | @architect |

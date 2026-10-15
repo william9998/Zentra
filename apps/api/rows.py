@@ -46,6 +46,7 @@ class AgentVersion(RowMixin):
         "version_id", "image_platform", "image_size_bytes", "runtime_contract",
         "manifest", "entrypoints", "status", "error", "validation_payload",
         "build_claimed_at", "builder_task_id", "created_at", "published_at",
+        "superseded_at",
     )
     id: uuid.UUID
     agent_id: uuid.UUID
@@ -66,6 +67,7 @@ class AgentVersion(RowMixin):
     builder_task_id: str | None
     created_at: datetime
     published_at: datetime | None
+    superseded_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

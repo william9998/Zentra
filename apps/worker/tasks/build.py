@@ -162,6 +162,20 @@ def execute_build(self, agent_version_id: str) -> dict:
                 return {"agent_version_id": agent_version_id,
                         "status": locked.status if locked else "NOT_FOUND",
                         "idempotent_skip": True}
+            # ADR-0016：同版號的舊現役在**同一個交易**裡讓位。先讓位再發布，
+            # 不然「一個版號至多一筆 PUBLISHED」的 unique index 會擋下這次 UPDATE。
+            now = datetime.now(UTC)
+            replaced = conn.execute(
+                """
+                UPDATE agent_versions SET status = %(superseded)s, superseded_at = %(now)s
+                WHERE agent_id = %(agent_id)s AND semver = %(semver)s
+                  AND status = %(published)s AND id <> %(id)s
+                RETURNING id
+                """,
+                {"superseded": str(AgentVersionStatus.SUPERSEDED), "now": now,
+                 "agent_id": locked.agent_id, "semver": locked.semver,
+                 "published": str(AgentVersionStatus.PUBLISHED), "id": version_id},
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE agent_versions SET
@@ -183,11 +197,17 @@ def execute_build(self, agent_version_id: str) -> dict:
                     "manifest": Jsonb(payload["manifest"]),
                     "entrypoints": Jsonb(payload["entrypoints"]),
                     "status": str(AgentVersionStatus.PUBLISHED),
-                    "now": datetime.now(UTC),
+                    "now": now,
                 },
             )
+        if replaced is not None:
+            # commit 之後才派：retire 要看得到 SUPERSEDED，否則它會以為沒事可做。
+            from apps.worker.tasks.container import retire_version
+
+            retire_version.apply_async(args=[str(replaced["id"])])
         return {"agent_version_id": agent_version_id,
-                "status": str(AgentVersionStatus.PUBLISHED)}
+                "status": str(AgentVersionStatus.PUBLISHED),
+                "superseded": str(replaced["id"]) if replaced is not None else None}
     except Exception as exc:  # noqa: BLE001 - stage is mapped to the public build error
         log.exception("agent version %s failed at %s", agent_version_id, stage)
         mapped_stage = getattr(exc, "stage", stage)

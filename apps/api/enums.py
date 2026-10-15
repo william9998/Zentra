@@ -41,10 +41,13 @@ class AgentVersionStatus(StrEnum):
     BUILDING = "BUILDING"
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
+    #: 同版號重新註冊後被取代的舊紀錄（ADR-0016）。不出現在任何版本端點，
+    #: 只留給綁著它的舊 Run 查當時跑的是哪個 digest。
+    SUPERSEDED = "SUPERSEDED"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.PUBLISHED, self.FAILED}
+        return self in {self.PUBLISHED, self.FAILED, self.SUPERSEDED}
 
 
 class AgentSourceType(StrEnum):

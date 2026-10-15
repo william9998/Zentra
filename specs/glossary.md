@@ -14,7 +14,7 @@
 | 詞 | 英文 / 程式碼識別 | 定義 | 不要說成 |
 |---|---|---|---|
 | **Agent** | `agent` | 一個可被呼叫的智能體定義，由 manifest + OCI image 構成 | bot、assistant、model |
-| **Agent 版本** | `agent_version`, `agent@semver` | Agent 的不可變快照。**執行的最小單位**，以完整 OCI digest 凍結 | revision、build |
+| **Agent 版本** | `agent_version`, `agent@semver` | Agent 的快照。**執行的最小單位**，以完整 OCI digest 凍結；同版號重新註冊會取代它（ADR-0016） | revision、build |
 | **Version ID** | `version_id` | OCI digest hex 的前 12 碼，只供 UI/日誌短顯示；P5 的權威身份是完整 `image_digest` | digest、tag |
 | **Image Digest** | `image_digest` | `sha256:<64 hex>` 的 OCI manifest digest。發布與 Run 都使用它，不使用可變 tag | image tag、version id |
 | **Image Reference** | `image_ref` | canonical `registry/repository@sha256:...`。版本發布後不可改 | tag-only reference |

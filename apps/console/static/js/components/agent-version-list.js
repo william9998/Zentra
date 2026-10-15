@@ -83,7 +83,7 @@ export function mount(root, props) {
         code: ERROR_CODE.BUILD_FAILED, message: '版本驗證失敗，但 API 沒有提供錯誤內容。', details: {},
       };
       body.appendChild(createErrorBox(failure, {
-        hint: '此 semver 不可覆寫。修正 image 後請用新的 semver 註冊。',
+        hint: '修正 image 後可以用同一個版號重新註冊。',
       }));
       body.appendChild(createCopyButton(
         () => failure.code + '\n' + failure.message + '\n' + toPrettyJson(failure.details),

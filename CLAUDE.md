@@ -24,7 +24,7 @@
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。所有 agent 最終都是一個 `CompiledStateGraph`。 |
 | **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由平台從同一份 `entrypoints` 自動生成。 |
 | **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段無對外路由，唯一對端是 **Internal Gateway**（`app` 的 `/internal/*`）。 |
-| **P5** | **Agent 版本不可變**。以完整 OCI manifest digest 識別，不接受 tag-only；要改就發新版。 |
+| **P5** | **Agent 版本不可變**。以完整 OCI manifest digest 識別，不接受 tag-only。一筆版本紀錄的 digest 永不改寫；同版號重新註冊 = 新增一筆並取代舊的（ADR-0016）。 |
 
 ## 需要時才讀
 
