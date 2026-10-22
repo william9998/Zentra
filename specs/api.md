@@ -340,6 +340,9 @@ curl -s -X POST localhost:8000/v1/mcp-keys -H 'content-type: application/json' \
 
 ### 設定（config）
 
+**用途：** 給 Agent 程式的「參數」。同一個 image 不用重新打包發版，就能換行為——例如把搜尋輪數從 3 改成 5，下一筆 Run 就生效。
+Agent 在程式裡用 `ctx.config["MAX_ROUNDS"]` 讀。
+
 `GET` / `PUT /v1/agents/{id}/config`。body 和回應都是 `{"config": {...}, "updated_at"}`。
 
 ```json
@@ -351,6 +354,9 @@ curl -s -X POST localhost:8000/v1/mcp-keys -H 'content-type: application/json' \
 - **設定不是機密**：明文回傳、而且完整進到容器。密碼、token 請放「機密」。
 
 ### 機密（secrets）
+
+**用途：** Agent 去連「別的服務」要用的密碼或 key（例如交易所 API key、SMTP 密碼）。**打 LLM 用的金鑰不放這裡**，那是「LLM 憑證」。
+機密不會單獨起作用，一定要被引用才有用：出口規則的 `auth_secret_name`（平台代打外部 API 時把它塞進 header），或寄件者的 `password_secret_name`。Agent 程式本身讀不到值。
 
 | Method | Path | 說明 |
 |---|---|---|

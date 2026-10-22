@@ -172,6 +172,21 @@ Two things compose does **not** do for you:
   `bash scripts/adopt-legacy-schema.sh --dry-run`, confirm, run it again without
   `--dry-run`, then `make migrate`.
 
+### Starting over with a clean database
+
+If the old database holds only test data, rebuild from scratch. **This deletes every named volume**
+— `pgdata` (all agents, versions and runs) *and* `registrydata` (the registered images themselves) — and
+cannot be undone. Make sure nothing in there is still needed.
+
+```bash
+docker compose down -v
+docker compose up -d --build
+docker compose exec -T app python -m apps.api.migrations     # same as make migrate
+```
+
+The base image `zentra/agent-base:1.0` is not a volume, so it survives. Agents you registered are gone,
+so push them again.
+
 A **Run uses the agent's own image**, pulled by the digest registered for that version. There is no
 shared runtime container in that path. The one exception is the built-in `builtin-echo` fixture left over
 from ZEN-000, which still runs from `zentra/agent-runtime:dev` (`SANDBOX_IMAGE`) and is what the smoke
@@ -546,6 +561,19 @@ compose **不會**幫你做兩件事：
 - **migration。** 啟動時不會自動跑。既有資料庫：先
   `bash scripts/adopt-legacy-schema.sh --dry-run`，確認後再跑一次不帶 `--dry-run`，
   然後 `make migrate`。
+
+### 從乾淨的資料庫重來
+
+如果舊資料庫裡只有測試資料，可以直接重建。**這會刪掉所有具名 volume**：`pgdata`（所有 Agent、版本和 Run 紀錄）
+**以及** `registrydata`（已註冊的 image 本體），而且無法復原。請先確認裡面沒有還需要的東西。
+
+```bash
+docker compose down -v
+docker compose up -d --build
+docker compose exec -T app python -m apps.api.migrations     # 等同 make migrate
+```
+
+base image `zentra/agent-base:1.0` 不是 volume，會留著。但你註冊過的 Agent 都沒了，要重新 push。
 
 **每個 Run 用的是 agent 自己的 image**，依該版本註冊的 digest 拉下來，這條路徑上沒有共用的 runtime 容器。
 唯一的例外是 ZEN-000 留下的內建 fixture `builtin-echo`，它仍然跑 `zentra/agent-runtime:dev`

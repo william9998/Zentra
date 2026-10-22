@@ -1147,3 +1147,38 @@ a.agent-card-hit:focus-visible::after,
 }
 
 .mcp-key-agents { font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere; }
+
+/* ── Agent 詳情頁：可摺疊區塊（原生 <details>）──────────────────────── */
+
+.fold-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold-summary::-webkit-details-marker { display: none; }
+
+.fold-head { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+
+.fold-hint { font-size: var(--text-sm); color: var(--text-secondary); line-height: var(--leading-normal); }
+
+.fold-chevron { flex-shrink: 0; transition: transform 0.2s; }
+.fold[open] > .fold-summary .fold-chevron { transform: rotate(180deg); }
+
+.fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin-top: var(--space-4);
+}
+
+.fold-sub { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.fold-sub + .fold-sub { padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
+
+.fold-sub-title { font-size: var(--text-md); font-weight: 500; }
+
+@media (prefers-reduced-motion: reduce) { .fold-chevron { transition: none; } }

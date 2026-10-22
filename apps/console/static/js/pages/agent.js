@@ -16,6 +16,21 @@ import { mount as mountUsagePanel } from '../components/usage-panel.js';
 import { createCopyButton, createErrorBox, createTimers, el, formatDateTime } from '../dom.js';
 import { mount as mountShell } from '../shell.js';
 
+// 固定結構的樣板（標題與說明都是這個檔案裡的常數，不是 API 字串），所以可以用樣板字串。
+const CHEVRON = '<svg class="icon icon-md fold-chevron" aria-hidden="true">'
+  + '<use href="/console/static/icons.svg#i-chevron-down"/></svg>';
+
+function fold(title, hint, body, open = false) {
+  return `
+    <details class="card fold"${open ? ' open' : ''}>
+      <summary class="fold-summary">
+        <span class="fold-head"><h2 class="card-title">${title}</h2>
+        ${hint ? `<span class="fold-hint">${hint}</span>` : ''}</span>${CHEVRON}
+      </summary>
+      <div class="fold-body">${body}</div>
+    </details>`;
+}
+
 const PAGE = `
   <div class="page">
     <div class="page-header">
@@ -32,68 +47,75 @@ const PAGE = `
     <div data-page-error hidden></div>
     <div data-edit-dialog></div>
     <div data-delete-dialog></div>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">基本資料</h2></div>
-      <div class="meta-grid" data-meta></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">版本</h2></div>
-      <div data-versions></div>
-    </section>
-    <section class="card composer-card" id="run-composer">
-      <div class="card-header"><h2 class="card-title">執行 Agent</h2></div>
-      <div data-composer></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">Endpoints</h2></div>
-      <div data-endpoints></div>
-    </section>
-    <section class="card">
-      <div class="card-header">
-        <h2 class="card-title">LLM 憑證</h2>
+    ${fold('基本資料', '', '<div class="meta-grid" data-meta></div>', true)}
+    ${fold('版本', '已註冊的 image 版本。同版號重新註冊會在驗證通過後取代舊的。',
+      '<div data-versions></div>', true)}
+    <details class="card fold composer-card" id="run-composer" open>
+      <summary class="fold-summary">
+        <span class="fold-head"><h2 class="card-title">執行 Agent</h2>
+        <span class="fold-hint">選版本和入口，填輸入資料，直接跑一次。</span></span>${CHEVRON}
+      </summary>
+      <div class="fold-body"><div data-composer></div></div>
+    </details>
+    ${fold('Endpoints', 'REST 與 OpenAPI 網址。要開給外部 AI 平台用，到左邊的 MCP 頁勾選這個 Agent。',
+      '<div data-endpoints></div>')}
+    ${fold('最近 Runs', '這個 Agent 最近的執行紀錄。', '<div data-runs></div>')}
+    ${fold('LLM 憑證',
+      '只用於「打 LLM」。屬於這個 Agent、不屬於某個版本：發新版不用重填，更換則所有版本立刻一起變。沒設定就用平台預設金鑰。',
+      '<div data-credential></div>')}
+    ${fold('設定',
+      'Agent 的參數，<strong>不是機密</strong>。例如搜尋輪數、預設語言。改了不用重新發版，下一筆 Run 就生效。'
+      + '以<strong>明文</strong>儲存、完整傳進 Agent；密碼和 key 請放「對外連線 → 機密」。',
+      '<div data-config></div>')}
+    <details class="card fold">
+      <summary class="fold-summary">
+        <span class="fold-head"><h2 class="card-title">對外連線</h2>
+        <span class="fold-hint">Agent 要連外面的網站、或寄信，都要經過這裡。沒設定就一律擋下。</span></span>${CHEVRON}
+      </summary>
+      <div class="fold-body">
+        <section class="fold-sub">
+          <h3 class="fold-sub-title">出口白名單與寄件者</h3>
+          <p class="field-hint">只有列在白名單上的網址能被連到；寄信則只能用這裡設定的寄件者、寄給指定的收件人。</p>
+          <div data-egress></div>
+        </section>
+        <section class="fold-sub">
+          <h3 class="fold-sub-title">機密</h3>
+          <p class="field-hint">
+            Agent 去連<strong>別的服務</strong>要用的密碼或 key，例如交易所 API key、SMTP 密碼。
+            存進來後 Agent 程式讀不到值，只有平台代為連線時才會用：在上面的出口規則或寄件者裡<strong>引用它的名字</strong>。
+            打 LLM 用的金鑰不是放這裡，請到「LLM 憑證」。
+          </p>
+          <div data-secrets></div>
+        </section>
+        <section class="fold-sub">
+          <h3 class="fold-sub-title">出口稽核</h3>
+          <p class="field-hint">每一次對外請求（含被擋下的）都記在這裡。Agent 連不出去時，先看這裡找原因。</p>
+          <div data-egress-calls></div>
+        </section>
       </div>
-      <p class="field-hint">
-        憑證屬於這個 Agent，<strong>不屬於某個版本</strong> ——
-        發新版本不用重填，更換則所有版本立刻一起變。沒設定就用平台預設金鑰。
-      </p>
-      <div data-credential></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">設定</h2></div>
-      <div data-config></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">機密</h2></div>
-      <div data-secrets></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">對外出口與寄信</h2></div>
-      <div data-egress></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">出口稽核</h2></div>
-      <div data-egress-calls></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">常駐容器</h2></div>
-      <div data-containers></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">下游 API key</h2></div>
-      <div data-keys></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">用量與除錯</h2></div>
-      <p class="field-hint">
-        用量按 key 歸戶。沒帶 key 的呼叫記成<strong>未歸戶</strong> ——
-        那不是錯誤，是 Console 自己發起的。
-      </p>
-      <div data-usage></div>
-    </section>
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">最近 Runs</h2></div>
-      <div data-runs></div>
-    </section>
+    </details>
+    ${fold('常駐容器',
+      'Agent 的執行容器狀態。通常不用管：第一筆 Run 會自動啟動，閒置會自動回收。',
+      '<div data-containers></div>')}
+    <details class="card fold">
+      <summary class="fold-summary">
+        <span class="fold-head"><h2 class="card-title">API key 與用量</h2>
+        <span class="fold-hint">給呼叫這個 Agent 的下游應用發 key，用來記帳：知道每筆是誰打的。</span></span>${CHEVRON}
+      </summary>
+      <div class="fold-body">
+        <section class="fold-sub">
+          <h3 class="fold-sub-title">下游 API key</h3>
+          <div data-keys></div>
+        </section>
+        <section class="fold-sub">
+          <h3 class="fold-sub-title">用量與除錯</h3>
+          <p class="field-hint">
+            用量按 key 歸戶。沒帶 key 的呼叫記成<strong>未歸戶</strong> —— 那不是錯誤，是 Console 自己發起的。
+          </p>
+          <div data-usage></div>
+        </section>
+      </div>
+    </details>
   </div>
 `;
 
@@ -137,7 +159,9 @@ function main() {
     agentId,
     hasPublished: false,
     onCompose() {
-      app.querySelector('#run-composer').scrollIntoView({ block: 'start' });
+      const composerCard = app.querySelector('#run-composer');
+      composerCard.open = true;
+      composerCard.scrollIntoView({ block: 'start' });
     },
   });
   // key 卡片與用量面板共用同一份 key 清單：卡片拿到之後推給面板，
