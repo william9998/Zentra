@@ -19,7 +19,7 @@ export function mount(root, props = {}) {
     }
     if (!state.published && !state.building) {
       const empty = el('div', 'empty');
-      empty.appendChild(el('p', 'empty-text', '尚無已發布版本。發布版本後即可呼叫 REST、MCP 與 OpenAPI。'));
+      empty.appendChild(el('p', 'empty-text', '尚無已發布版本。發布版本後即可呼叫 REST 與 OpenAPI；要開給 MCP 客戶端，到 MCP 頁勾選。'));
       const link = el('a', 'btn-secondary', '註冊版本');
       link.href = '/console/agents/' + encodeURIComponent(state.agentId) + '/versions/new';
       empty.appendChild(link);
@@ -29,19 +29,18 @@ export function mount(root, props = {}) {
     const endpoints = state.endpoints || {};
     const rows = [
       ['REST', endpoints.rest],
-      ['MCP', endpoints.mcp],
       ['OpenAPI', endpoints.openapi],
     ];
     if (rows.some((entry) => !entry[1])) {
       root.appendChild(createErrorBox({
         code: ERROR_CODE.INTERNAL_ERROR,
-        message: 'Agent 詳情缺少 REST、MCP 或 OpenAPI endpoint。',
+        message: 'Agent 詳情缺少 REST 或 OpenAPI endpoint。',
         details: {},
       }, { hint: '請重新載入；問題持續時請回報 Agent ID。' }));
       return;
     }
     const note = el('p', 'field-hint', state.published
-      ? '三個入口使用同一份已發布 entrypoint schema。'
+      ? 'REST 與 OpenAPI 使用同一份已發布 entrypoint schema。MCP 是平台單一接口，到 MCP 頁勾選這個 Agent。'
       : '版本尚未發布，網址可先複製，但目前不可呼叫。');
     root.appendChild(note);
     const list = el('div', 'endpoint-list');

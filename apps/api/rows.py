@@ -76,7 +76,7 @@ class Run(RowMixin):
     COLUMNS: ClassVar[tuple[str, ...]] = (
         "id", "agent_id", "agent_version_id", "owner_id", "status", "trigger",
         "entrypoint", "celery_task_id", "sandbox_id", "input", "output", "error",
-        "usage", "timeout_seconds", "api_key_id", "session_id", "container_id",
+        "usage", "timeout_seconds", "api_key_id", "mcp_key_id", "session_id", "container_id",
         "created_at", "started_at", "finished_at", "result_received_at",
     )
     id: uuid.UUID
@@ -94,6 +94,7 @@ class Run(RowMixin):
     usage: Any
     timeout_seconds: int
     api_key_id: uuid.UUID | None
+    mcp_key_id: uuid.UUID | None
     session_id: uuid.UUID | None
     container_id: uuid.UUID | None
     created_at: datetime
@@ -185,6 +186,22 @@ class AgentApiKey(RowMixin):
     )
     id: uuid.UUID
     agent_id: uuid.UUID
+    name: str
+    key_hash: str
+    key_prefix: str
+    created_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class McpKey(RowMixin):
+    TABLE: ClassVar[str] = "mcp_keys"
+    COLUMNS: ClassVar[tuple[str, ...]] = (
+        "id", "name", "key_hash", "key_prefix",
+        "created_at", "last_used_at", "revoked_at",
+    )
+    id: uuid.UUID
     name: str
     key_hash: str
     key_prefix: str

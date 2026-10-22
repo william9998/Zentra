@@ -221,7 +221,6 @@ def agent_detail(row: Agent, latest: str | None, base_url: str) -> AgentDetail:
         latest_published_version=latest, created_at=row.created_at, updated_at=row.updated_at,
         endpoints=AgentEndpoints(
             rest=f"{root}/v1/agents/{row.id}/runs",
-            mcp=f"{root}/mcp/agents/{row.id}",
             openapi=f"{root}/v1/agents/{row.id}/openapi.json",
         ),
     )

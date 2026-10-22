@@ -22,12 +22,14 @@ async def create_run(
     *,
     trigger: RunTrigger,
     api_key_id: UUID | None = None,
+    mcp_key_id: UUID | None = None,
 ) -> tuple[Run, AgentVersion]:
     """建立一筆 Run。
 
     `api_key_id` 是哪一把下游 key 觸發的（ZEN-015）。**Console 發起時是 None**，
     那不是錯誤：MVP 的 Console 沒有 key，契約 §0 也還沒要求 `/v1` 認證。
     這個欄位買到的是「用量歸戶」，不是「擋住未授權的人」。
+    `mcp_key_id` 是哪一把 MCP key 觸發的，只有 `/mcp` 會帶。
     """
     agent = await agents.load_agent(conn, agent_id)
     version = await agents.resolve_published_version(conn, agent.id, body.version)
@@ -39,13 +41,13 @@ async def create_run(
         f"""
         INSERT INTO runs
             (id, agent_id, agent_version_id, status, trigger, entrypoint,
-             input, timeout_seconds, celery_task_id, api_key_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             input, timeout_seconds, celery_task_id, api_key_id, mcp_key_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING {Run.returning()}
         """,
         run_id, agent.id, version.id, str(RunStatus.QUEUED), str(trigger),
         body.entrypoint, body.input, body.config.timeout_seconds,
-        str(run_id), api_key_id,
+        str(run_id), api_key_id, mcp_key_id,
     )
     run = Run.from_row(rec)
     await status_event(conn, run)

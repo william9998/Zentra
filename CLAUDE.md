@@ -1,7 +1,7 @@
 # Zentra Agent Platform
 
 一個 **Agent 平台**：開發者把自己的 Python agent（LangGraph）打包成 OCI image 推上 Registry，
-平台凍結成不可變版本、在**隔離容器**中執行，自動對外開放 **REST API** 與 **MCP** 兩種接口。
+平台凍結成不可變版本、在**隔離容器**中執行，自動對外開放 **REST API**，並可把 Agent 勾選進平台唯一的 **MCP 接口**（Agent = tools）。
 
 交付條件：**內部工具 · 單租戶 · 只跑信任的程式碼**。一台主機 `docker compose`，5 個長駐服務
 （`postgres` · `redis` · `registry` · `app` · `worker`），**沒有 Kubernetes、沒有 gVisor**。
@@ -13,7 +13,7 @@
 |---|---|
 | **P1** | 使用者程式碼**永遠不在平台行程內執行**。Celery worker 只派工與監看，`exec` 一律在容器裡。 |
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。所有 agent 最終都是一個 `CompiledStateGraph`。 |
-| **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由平台從同一份 `entrypoints` 自動生成。 |
+| **P3** | 每個 Agent **天生有 REST 門面，並可被勾選進平台唯一的 MCP 接口（`/mcp`，Agent 是 tools）**，都由平台從同一份 `entrypoints` 自動生成。 |
 | **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段無對外路由，唯一對端是 **Internal Gateway**（`app` 的 `/internal/*`）。 |
 | **P5** | **版本不可變**。以完整 OCI digest 識別，不接受 tag-only。一筆版本紀錄的 digest 永不改寫；同版號重新註冊 = 新增一筆並取代舊的。 |
 

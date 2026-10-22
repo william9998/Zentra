@@ -1,101 +1,126 @@
 # Zentra 總覽
 
-> `specs/` 底下每一份都是**現行事實**，不是歷史。要改行為 → 先改對應那一份，再改程式碼。
-> 歷史（ADR、交接單、舊版規格）在 `git log`，不用讀。
+> 這個資料夾每份文件都是「**現在的真實狀況**」，不是歷史紀錄。
+> 想改行為：**先改對應的那份文件，再改程式碼，同一個 commit。** 文件和程式碼對不上就是 bug。
+> 歷史（舊決策、舊規格）去看 `git log`。
 
-## 產品一句話
+## 這是什麼
 
-開發者把 LangGraph Agent build 成 OCI image、push 到 Registry、用 digest 註冊；
-平台把它凍結成版本、在**隔離容器**裡執行，自動開出 **REST** 與 **MCP** 兩個門面。
+一個放 AI Agent 的平台。
 
-交付條件（**這張表變了，整份規格要重讀**）：
+1. 開發者用 LangGraph 寫好 Agent，打包成 Docker image，推到平台內建的 Registry。
+2. 在平台上「註冊」這個 image，平台就把它凍結成一個**版本**。
+3. 有人呼叫時，平台在**隔離的容器**裡執行它。
+4. 平台自動幫每個 Agent 開出 REST API；也可以把 Agent 勾選進平台**唯一的 MCP 接口**，讓別的 AI 平台當工具用。
 
-| 條件 | 值 |
+**一個完整的流程長這樣：**
+
+```
+開發者                          平台                               呼叫端
+  │  docker push image             │                                   │
+  ├──────────────────────────────▶ │ Registry                          │
+  │  POST /v1/agents/{id}/versions │                                   │
+  ├──────────────────────────────▶ │ 驗證 image → 版本變 PUBLISHED      │
+  │                                │ ◀───────────  POST /…/runs        │
+  │                                │ 在容器裡跑 → 回傳結果 ─────────────▶ │
+```
+
+## 適用範圍（這張表一變，所有文件都要重讀）
+
+| 條件 | 現在的值 |
 |---|---|
-| 使用場景 | 內部工具，單一租戶 |
-| 程式碼來源 | **只跑自己信得過的程式碼** —— 隔離設計建立在這個前提上 |
-| 部署 | 一台主機 `docker compose`，5 個長駐服務，本機與正式同一套 |
+| 用途 | 內部工具，**單一租戶**（只有一個團隊在用） |
+| 程式碼來源 | **只跑自己信得過的程式碼**。隔離設計是建立在這個前提上 |
+| 部署 | 一台主機用 `docker compose`，5 個長駐服務，開發和正式用同一套 |
 
-要跑別人寫的 Agent、出現第二個租戶、需要可用性承諾 → 現在的隔離與常駐容器設計都撐不住，要重新設計（優先評估 k3s + gVisor）。
+如果要跑**別人寫的** Agent、出現第二個租戶、或需要保證不中斷，現在的隔離方式不夠，要重新設計（先評估 k3s + gVisor）。
 
-## 五條不可妥協的立場（違反就是 bug）
+## 五條不能破的規則
 
-| # | 立場 | 怎麼成立 |
-|---|---|---|
-| P1 | **使用者程式碼永遠不在平台行程內執行** | worker 只呼叫 Docker API。連「import 一下檢查 `build()` 在不在」都在一次性容器裡做 |
-| P2 | **Agent 框架統一 LangChain + LangGraph** | 使用者交未 compile 的 `StateGraph`，平台 compile 並注入事件 hook |
-| P3 | **每個 Agent 天生有 REST + MCP 兩個門面** | 同一份 `entrypoints` 生成 REST 驗證、OpenAPI 與 MCP tool schema |
-| P4 | **沙盒內拿不到任何長期憑證** | 沙盒網段 `internal: true`，唯一對端是 `app` 的 Internal Gateway；只拿一個 Run 一把、跑完即撤銷的 run token |
-| P5 | **版本不可變** | 以完整 OCI digest 識別，不接受 tag-only。一筆版本紀錄的 digest 永不改寫；同版號重新註冊 = 新增一筆並取代舊的。Run 綁定建立當下那一筆 |
+違反任何一條就是 bug。
+
+| # | 規則 | 白話 | 怎麼做到 |
+|---|---|---|---|
+| P1 | 使用者的程式碼**永遠不在平台自己的行程裡跑** | 平台只負責派工，Agent 的程式碼一律在容器裡執行 | worker 只呼叫 Docker API。連「import 一下看 `build()` 在不在」都要開一次性容器做 |
+| P2 | Agent 一律用 **LangChain + LangGraph** | 全平台只有一種 Agent 寫法 | 使用者交出還沒 compile 的 `StateGraph`，平台 compile 並接上事件 hook |
+| P3 | 每個 Agent 都有 REST；也能被勾進唯一的 MCP 接口 | 寫一次 Agent，兩種方式都能呼叫 | REST 驗證、OpenAPI、MCP tool 的格式，全部來自同一份 `entrypoints` |
+| P4 | 容器裡**拿不到任何長期憑證** | 就算 Agent 程式碼有問題，也偷不走 API key | 容器的網路**沒有對外路由**，唯一能連的是 `app` 的 Internal Gateway；容器只拿一把「這一筆 Run 專用、跑完就作廢」的 run token |
+| P5 | **版本不可變** | 一個版本號指向的 image 永遠不變 | 用完整 digest（`sha256:…`）識別，不接受只有 tag 的寫法。同版號重新註冊 = 新增一筆並取代舊的 |
 
 ## 架構
 
 ```
-L0 接入 + 控制   app (FastAPI)   REST /v1 · MCP /mcp · SSE · Console 靜態檔 · Internal Gateway /internal
-L1 派工          worker (Celery, Redis broker)   q.run · q.build
-L2 執行          常駐 Agent 容器（預設）／一次性沙盒（退路、版本驗證）—— 都由 worker 經 docker.sock 建立
-L3 資料          PostgreSQL · Redis · 內部 OCI Registry · Docker daemon image cache
+L0 接入與控制   app（FastAPI）    REST /v1 · MCP /mcp · SSE · Console 網頁 · Internal Gateway /internal
+L1 派工         worker（Celery）  佇列 q.run（派工）· q.build（發布、容器、回收）
+L2 執行         Agent 容器        常駐容器（預設）／一次性沙盒（退路、驗證版本用）
+L3 資料         PostgreSQL · Redis · 內部 Registry · Docker image 快取
 ```
 
-compose 的 5 個長駐服務：`postgres` · `redis` · `registry` · `app` · `worker`。要加第六個先問。
+compose 的 5 個長駐服務：`postgres` · `redis` · `registry` · `app` · `worker`。**要加第六個，先問。**
 
-| 網段 | 誰在上面 |
+兩個 Docker 網路：
+
+| 網路 | 誰在上面 |
 |---|---|
 | `zentra-net` | postgres、redis、registry、app、worker |
-| `zentra-sandbox-net`（`internal: true`，無對外路由） | app、所有 Agent 容器 |
+| `zentra-sandbox-net`（`internal: true`，**沒有對外路由**） | app、所有 Agent 容器 |
 
-**分層硬規則**
-1. 沙盒（L2）不得直連 L3：沒有 Postgres、Redis、Registry 連線，一律經 Internal Gateway。
-2. `postgres` / `redis` / `registry` / `worker` **絕不**接 `zentra-sandbox-net`。`app` 是唯一的橋。
-3. 平台不得**對外**代理、轉發或嵌入任何 Registry HTTP 端點（`/v2/*`）—— `app` 橫跨兩個網段，任何「幫你查 registry」的端點都會變成沙盒的跳板。
-   平台內部會用到 registry API 的只有兩處：push 通知進來時 `app` 回頭確認 tag、刪版本時 worker 刪 manifest。
-4. 出口代打從 `app` 發出，所以 SSRF 防護在 `app` 這一側（見 [gateway.md](gateway.md)）。
-5. 只有 `worker` 掛 `docker.sock`（等同主機 root，常駐風險，誠實記著）。
-6. Console 沒有自己的容器，由 `app` 服務靜態檔，與 API 同源（見 [console-ui.md](console-ui.md)）。
+**`app` 是兩個網路之間唯一的橋。** 這就是 P4 的實體。
+
+### 分層硬規則
+
+1. 容器（L2）**不能直連**資料層（L3）：沒有 Postgres、Redis、Registry 連線，一律經 Internal Gateway。
+2. `postgres` / `redis` / `registry` / `worker` **絕對不接** `zentra-sandbox-net`。
+3. 平台**不對外**代理、轉發、嵌入 Registry 的 HTTP 端點（`/v2/*`）。
+   原因：`app` 同時在兩個網路上，任何「幫你查 registry」的端點都會變成容器的跳板。
+   平台內部只有兩處會用 registry API：push 通知進來時 `app` 回頭確認 tag；刪版本時 worker 刪 manifest。
+4. 代替容器對外發的請求，是從 `app` 送出的，所以防止 SSRF（被騙去打內網）的檢查也在 `app` 這一側（見 [gateway.md](gateway.md)）。
+5. 只有 `worker` 掛 `docker.sock`。這等於主機 root 權限，是一直存在的風險，這裡誠實記著。
+6. Console 沒有自己的容器，由 `app` 提供網頁，和 API 同源（見 [console-ui.md](console-ui.md)）。
 
 ## 文件地圖
 
 | 想知道 | 讀 |
 |---|---|
-| 對外 REST 的每個端點、欄位、錯誤碼 | [api.md](api.md) |
-| Run 怎麼從 API 走到容器、狀態機、終態誰決定 | [dispatch.md](dispatch.md) |
-| Agent / 版本註冊、驗證、取代、下游 API key、刪除 | [agent-registry.md](agent-registry.md) |
-| 主機資源怎麼分、上限、溢出、閒置回收、逾時 | [dispatcher-resources.md](dispatcher-resources.md) |
-| 容器怎麼建、四層隔離、生命週期 | [container-orchestration.md](container-orchestration.md) |
-| 沙盒唯一的對端：token、LLM 代打、出口、寄信 | [gateway.md](gateway.md) |
-| MCP 門面 | [mcp.md](mcp.md) |
-| 每張表、每個欄位 | [postgresql.md](postgresql.md) |
-| 每種 Redis key | [redis.md](redis.md) |
-| Console 的設計規則與元件 | [console-ui.md](console-ui.md) |
+| 對外 REST 有哪些端點、欄位、錯誤碼 | [api.md](api.md) |
+| 一筆 Run 怎麼從 API 走到容器、狀態有哪些、誰決定結束 | [dispatch.md](dispatch.md) |
+| Agent 與版本怎麼註冊、驗證、取代、刪除；下游 API key | [agent-registry.md](agent-registry.md) |
+| 主機資源怎麼分、同時最多跑幾個、滿了怎麼辦、閒置回收、逾時 | [dispatcher-resources.md](dispatcher-resources.md) |
+| 容器怎麼建、怎麼隔離、生命週期 | [container-orchestration.md](container-orchestration.md) |
+| 容器唯一的對端：token、代打 LLM、對外請求、寄信 | [gateway.md](gateway.md) |
+| MCP 接口怎麼用 | [mcp.md](mcp.md) |
+| 每張資料表、每個欄位 | [postgresql.md](postgresql.md) |
+| Redis 裡放什麼 | [redis.md](redis.md) |
+| Console 網頁的規則與元件 | [console-ui.md](console-ui.md) |
+| 現在該做什麼、什麼刻意不做 | [`coordination/BOARD.md`](../coordination/BOARD.md) |
 
 ## 名詞
 
 | 詞 | 意思 |
 |---|---|
-| Agent | 一個可被呼叫的智能體（metadata），底下有多個版本 |
-| 版本（Agent Version） | `agent_id + semver` → 一個 OCI image digest。執行的最小單位 |
-| Run | 一次呼叫。有 `run_id`、狀態機、事件流 |
-| Entrypoint | Agent 對外暴露的一個入口，含 input/output JSON Schema。REST 與 MCP 共用 |
-| 常駐容器 | 一個版本的長駐容器，同時跑多筆 Run（預設路徑） |
-| 一次性沙盒 | 一筆 Run 一個容器、跑完即刪。常駐容器起不來時的退路；版本驗證也用它 |
-| Internal Gateway | `app` 上的 `/internal/*`，沙盒唯一的網路對端 |
-| run token | 綁一個 `run_id` 的短命憑證，沙盒呼叫 Gateway 用 |
+| Agent | 一個可以被呼叫的智能體。只是名字和說明，底下有很多版本 |
+| 版本（Agent Version） | `agent_id + semver`（例如 `1.2.0`）→ 對應**一個** image digest。實際執行的最小單位 |
+| Run | 一次呼叫。有 `run_id`、狀態、事件流 |
+| Entrypoint | Agent 對外開放的一個入口，附輸入／輸出的 JSON Schema。REST 和 MCP 共用；在 MCP 裡就是一個 tool |
+| MCP key | 發給外部 AI 平台的憑證，用來連 `/mcp`。每把 key 勾選一組 Agent 當作它看得到的 tools |
+| 常駐容器 | 一個版本一個長期開著的容器，同時處理多筆 Run（預設做法） |
+| 一次性沙盒 | 一筆 Run 一個容器，跑完就刪。常駐容器起不來時的退路；驗證版本也用它 |
+| Internal Gateway | `app` 上的 `/internal/*`，容器唯一能連的對象 |
+| run token | 只綁一筆 Run 的短命憑證，容器用它呼叫 Gateway |
 
-## 技術選型（變更要先問）
+## 技術選型（要換先問）
 
-Python 3.12 · FastAPI + Pydantic v2 · 純 SQL（`app` 用 asyncpg、`worker` 用 psycopg 3，**無 ORM、無 Alembic**）·
-Celery 5.4（broker 與 result 都用 Redis）· LangChain + LangGraph · Docker（無 gVisor）· FastMCP（Streamable HTTP）·
-PostgreSQL 16 · Redis 7 · `registry:2` · 前端原生 HTML/CSS/ES modules（**零建置、無任何執行期函式庫**）· uv。
-觀測只有結構化 JSON log + `run_events` / `llm_calls` / `egress_calls` 三張表，不引入 OTel / Prometheus。
+Python 3.12 · FastAPI + Pydantic v2 · 純 SQL（`app` 用 asyncpg、`worker` 用 psycopg 3，**沒有 ORM、沒有 Alembic**）· Celery 5.4（broker 和 result 都用 Redis）· LangChain + LangGraph · Docker（沒有 gVisor）· FastMCP（Streamable HTTP）· PostgreSQL 16 · Redis 7 · `registry:2` · 前端是原生 HTML / CSS / ES modules（**零建置、不引入任何執行期函式庫**）· uv。
 
-## 範圍：刻意不做
+觀測只有結構化 JSON log，加上 `run_events` / `llm_calls` / `egress_calls` 三張表。不引入 OTel / Prometheus。
 
-見 [`coordination/BOARD.md`](../coordination/BOARD.md) §刻意不做。重點：知識庫、Tool Registry、HITL（`WAITING_INPUT`）、
-多租戶、K8s / gVisor、image tar 上傳、遠端 push 到內部 Registry、平台排程器、`ctx.secrets` 取值（永久否決）。
+## 刻意不做的
+
+完整清單看 [`coordination/BOARD.md`](../coordination/BOARD.md) §刻意不做。重點：知識庫、Tool Registry、人工介入（`WAITING_INPUT`）、多租戶、K8s / gVisor、上傳 image tar、從外面直接 push 到內部 Registry、平台排程器、`ctx.secrets` 取值（永久否決）。
 
 ## 程式碼註解裡的舊編號
 
-程式碼註解還會出現舊規格的編號，對照如下（不用回頭找原檔，它們已刪除）：
+程式碼註解裡還會看到舊規格的編號。對照如下（舊檔已刪，不用找）：
 
 | 舊編號 | 現在看 |
 |---|---|
