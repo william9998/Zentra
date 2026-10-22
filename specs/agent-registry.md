@@ -1,7 +1,7 @@
 # Agent 與版本註冊（含下游 API key）
 
 > Agent 怎麼進平台、版本怎麼驗證和發布、同一個版號怎麼取代、怎麼刪除，以及發給下游應用的 key。
-> 端點長什麼樣看 [api.md](api.md)。
+> 端點長什麼樣看 [api.md](api.md)。**要寫 Agent 的程式碼，看 [agent-development.md](agent-development.md)。**
 
 ## 先搞懂三個東西
 

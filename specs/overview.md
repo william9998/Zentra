@@ -84,6 +84,7 @@ compose 的 5 個長駐服務：`postgres` · `redis` · `registry` · `app` · 
 |---|---|
 | 對外 REST 有哪些端點、欄位、錯誤碼 | [api.md](api.md) |
 | 一筆 Run 怎麼從 API 走到容器、狀態有哪些、誰決定結束 | [dispatch.md](dispatch.md) |
+| **怎麼寫一個 Agent**（開發者從這裡開始） | [agent-development.md](agent-development.md) |
 | Agent 與版本怎麼註冊、驗證、取代、刪除；下游 API key | [agent-registry.md](agent-registry.md) |
 | 主機資源怎麼分、同時最多跑幾個、滿了怎麼辦、閒置回收、逾時 | [dispatcher-resources.md](dispatcher-resources.md) |
 | 容器怎麼建、怎麼隔離、生命週期 | [container-orchestration.md](container-orchestration.md) |

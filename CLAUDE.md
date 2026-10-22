@@ -17,7 +17,7 @@
 | **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段無對外路由，唯一對端是 **Internal Gateway**（`app` 的 `/internal/*`）。 |
 | **P5** | **版本不可變**。以完整 OCI digest 識別，不接受 tag-only。一筆版本紀錄的 digest 永不改寫；同版號重新註冊 = 新增一筆並取代舊的。 |
 
-## 規格：`specs/` 底下 11 份，每份都是現行事實
+## 規格：`specs/` 底下 12 份，每份都是現行事實
 
 要動到什麼，只讀那一份（先 `grep -n '^#' <file>` 看目錄，再取那一節）。沒有 ADR、沒有歷史版本 —— 歷史在 `git log`。
 
@@ -26,6 +26,7 @@
 | 整體架構、P1–P5、名詞、程式碼註解裡舊編號的對照 | [`specs/overview.md`](specs/overview.md) |
 | 對外 REST 端點、欄位、錯誤碼 | [`specs/api.md`](specs/api.md) |
 | Run 派工、狀態機、終態、事件 | [`specs/dispatch.md`](specs/dispatch.md) |
+| **寫 Agent**：怎麼寫、規則、`ctx` 能做什麼、常見錯誤 | [`specs/agent-development.md`](specs/agent-development.md) |
 | Agent / 版本註冊、驗證、取代、刪除、下游 API key | [`specs/agent-registry.md`](specs/agent-registry.md) |
 | 主機資源、上限、溢出、回收、逾時 | [`specs/dispatcher-resources.md`](specs/dispatcher-resources.md) |
 | 容器建立、隔離、常駐容器生命週期 | [`specs/container-orchestration.md`](specs/container-orchestration.md) |
@@ -41,7 +42,7 @@
 ## 目錄地圖
 
 ```
-specs/               📌 規格（11 份，見上表）
+specs/               📌 規格（12 份，見上表）
 apps/
   api/       FastAPI：REST · MCP · SSE · Console 靜態檔 · Internal Gateway；migrations/ 是 schema 唯一來源
   worker/    Celery：q.run（派工）· q.build（發布、容器、回收）
