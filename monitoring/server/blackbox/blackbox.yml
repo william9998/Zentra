@@ -1,0 +1,8 @@
+modules:
+  # 回 2xx 才算活著；5 秒沒回就算掛
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: []   # 空 = 任何 2xx

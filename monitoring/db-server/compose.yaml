@@ -1,0 +1,41 @@
+# 裝在「DB 主機」上的 exporter。
+#
+#   node-exporter      :9100  主機 CPU、記憶體、磁碟、網路
+#   postgres-exporter  :9187  PostgreSQL 連線數、交易、鎖
+#
+# ── DB 還沒拆出去之前（現在）──
+#   PostgreSQL 跟平台一起在 AP 主機上。在 AP 主機只起 postgres-exporter：
+#     docker compose up -d postgres-exporter
+#   node-exporter 不要起 —— AP 主機的已經由 monitoring/app-server 起了，port 會撞。
+#
+# ── DB 拆到獨立主機之後 ──
+#   把這個資料夾放到 DB 主機，.env 的 PG_HOST 改成 localhost 或 DB 的 IP，然後
+#     docker compose up -d
+#   再到監控主機的 prometheus.yml 把 postgres 目標改成 DB 主機 IP、打開 node 的 db 那一行。
+#
+# 防火牆只開給監控主機的 IP（見 monitoring/README.md）。
+
+name: zentra-monitoring-db
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    command:
+      - --path.rootfs=/host
+      # 9100 被占用時可改（Prometheus 那邊的目標要一起改）
+      - --web.listen-address=:${NODE_EXPORTER_PORT:-9100}
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_URI: ${PG_HOST:-host.docker.internal}:${PG_PORT:-5432}/${PG_DATABASE:-zentra}?sslmode=${PG_SSLMODE:-disable}
+      DATA_SOURCE_USER: ${PG_MONITOR_USER:?請在 monitoring/db-server/.env 設定 PG_MONITOR_USER}
+      DATA_SOURCE_PASS: ${PG_MONITOR_PASSWORD:?請在 monitoring/db-server/.env 設定 PG_MONITOR_PASSWORD}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["9187:9187"]
+    restart: unless-stopped

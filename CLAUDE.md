@@ -50,6 +50,7 @@ apps/
   console/   原生 HTML/CSS/JS，由 api 服務，無建置
 packages/sdk/        使用者在容器內寫 agent 時用的 zentra_sdk
 examples/            範例 agent（my-agent 是起點）
+monitoring/          維運監控（Prometheus + Grafana + exporter），獨立部署，不屬於五個服務
 scripts/             verify-zen000.sh（冒煙）· clean-test-data.sh · adopt-legacy-schema.sh
 coordination/BOARD.md 任務看板
 ```

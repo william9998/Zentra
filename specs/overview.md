@@ -113,7 +113,9 @@ compose 的 5 個長駐服務：`postgres` · `redis` · `registry` · `app` · 
 
 Python 3.12 · FastAPI + Pydantic v2 · 純 SQL（`app` 用 asyncpg、`worker` 用 psycopg 3，**沒有 ORM、沒有 Alembic**）· Celery 5.4（broker 和 result 都用 Redis）· LangChain + LangGraph · Docker（沒有 gVisor）· FastMCP（Streamable HTTP）· PostgreSQL 16 · Redis 7 · `registry:2` · 前端是原生 HTML / CSS / ES modules（**零建置、不引入任何執行期函式庫**）· uv。
 
-觀測只有結構化 JSON log，加上 `run_events` / `llm_calls` / `egress_calls` 三張表。不引入 OTel / Prometheus。
+觀測只有結構化 JSON log，加上 `run_events` / `llm_calls` / `egress_calls` 三張表。平台程式不引入 OTel / Prometheus（不加 `/metrics`、不埋點）。
+
+主機、容器、PostgreSQL、Redis 的維運監控在 [`monitoring/`](../monitoring/README.md)：Prometheus + Grafana 跑在獨立的監控主機，被監控的主機只裝現成的 exporter。它不屬於五個長駐服務，平台不依賴它。
 
 ## 刻意不做的
 

@@ -1,0 +1,66 @@
+# Prometheus 要去哪裡抓數字。
+#
+# ⚠️ 部署到正式環境時，只需要改這個檔：把 host.docker.internal 換成
+#    AP 主機與 DB 主機的實際 IP。改完 `curl -X POST localhost:9090/-/reload`。
+#
+# 預設值是「本機練習」：所有 exporter 都跑在同一台電腦上。
+# 每個目標都帶 server 標籤（ap / db），儀表板和告警靠它分主機。
+
+global:
+  scrape_interval: 15s       # 多久抓一次
+  evaluation_interval: 15s   # 多久算一次告警規則
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # Prometheus 自己
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 主機：CPU、記憶體、磁碟、網路（node-exporter，port 9100）
+  - job_name: node
+    static_configs:
+      - targets: ["host.docker.internal:9100"]   # 正式：<AP 主機 IP>:9100
+        labels: { server: ap }
+      # DB 拆到獨立主機後，取消註解：
+      # - targets: ["<DB 主機 IP>:9100"]
+      #   labels: { server: db }
+
+  # 容器：每個容器的 CPU、記憶體、重啟、OOM（cAdvisor，port 8081）
+  # agent 容器帶 zentra.managed=true 標籤，在這裡變成 container_label_zentra_managed
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["host.docker.internal:8081"]   # 正式：<AP 主機 IP>:8081
+        labels: { server: ap }
+
+  # Redis：記憶體、連線，以及派工佇列長度（redis-exporter，port 9121）
+  - job_name: redis
+    static_configs:
+      - targets: ["host.docker.internal:9121"]   # 正式：<AP 主機 IP>:9121
+        labels: { server: ap }
+
+  # PostgreSQL：連線數、交易、鎖（postgres-exporter，port 9187）
+  - job_name: postgres
+    static_configs:
+      # DB 還在 AP 主機上時，exporter 也在 AP 主機；拆出去後改成 DB 主機 IP
+      - targets: ["host.docker.internal:9187"]
+        labels: { server: ap }
+
+  # 平台對外活著嗎：從監控主機打 AP 的 /healthz（透過 blackbox）
+  - job_name: app-health
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://host.docker.internal:8000/healthz"]   # 正式：http://<AP 主機 IP>:8000/healthz
+        labels: { server: ap }
+    relabel_configs:
+      # blackbox 的固定寫法：把要探測的網址當參數交給 blackbox，再把 instance 標成那個網址
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115

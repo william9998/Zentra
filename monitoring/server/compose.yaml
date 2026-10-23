@@ -1,0 +1,65 @@
+# Zentra 監控主機 —— 部署在「獨立的監控 VM」上，不是 AP 主機。
+#
+# 監控不能跟被監控的對象一起倒：AP 主機當機時，告警必須還發得出來。
+# 這份 compose 跟平台的 compose.yaml 完全無關，不屬於平台的五個長駐服務。
+#
+#   prometheus  每 15 秒去 AP / DB 主機抓數字、存起來、算告警規則
+#   grafana     畫儀表板（資料來源是 prometheus）
+#   blackbox    從外面打 AP 的 /healthz，確認平台「對外真的活著」
+#
+# 啟動：cp .env.example .env（填密碼）→ 改 prometheus/prometheus.yml 裡的 IP → docker compose up -d
+
+name: zentra-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 資料保留多久。磁碟大約每個監控目標每天幾十 MB，30 天綽綽有餘。
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      # 允許 `curl -X POST localhost:9090/-/reload` 重讀設定，不用重啟
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - promdata:/prometheus
+    # Prometheus 沒有登入機制。預設只綁本機，要看它的網頁請用 SSH tunnel；
+    # 日常看圖走 Grafana。
+    ports: ["${PROMETHEUS_BIND:-127.0.0.1}:9090:9090"]
+    # 本機練習時，被監控的 exporter 就在同一台，用 host.docker.internal 連回主機
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.27.0
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox:/etc/blackbox:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    # 不發布 port：只有 prometheus 會叫它
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?請在 monitoring/server/.env 設定 GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # 地端隔離網路：不要讓它試著連外回報或檢查更新
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      # 資料來源與儀表板都用檔案佈建（provisioning），重建 Grafana 不會遺失
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports: ["${GRAFANA_BIND:-0.0.0.0}:3000:3000"]
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  promdata:
+  grafanadata:
