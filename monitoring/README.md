@@ -1,129 +1,262 @@
-# 監控（Prometheus + Grafana）
+# 監控 SOP（Prometheus + Grafana）
 
 這個資料夾是**維運用的監控**，跟平台本身分開：不屬於平台的五個長駐服務，平台程式也不依賴它。
-監控停了，平台照跑；平台倒了，監控還要能告警 —— 所以它應該跑在**獨立的監控主機**上。
+監控停了，平台照跑；平台倒了，監控還要能告警 —— 所以正式環境它跑在**獨立的監控主機**上。
 
-## 兩個名詞
+- [先懂三個名詞](#先懂三個名詞)
+- [SOP A：Mac 本機練習](#sop-amac-本機練習)
+- [SOP B：正式部署](#sop-b正式部署)
+- [SOP C：日常維運](#sop-c日常維運)
 
-- **Prometheus**：記錄員。每 15 秒去各台主機問一次數字（CPU、記憶體、佇列長度……），連同時間存下來，並依規則判斷要不要告警。
-- **Grafana**：儀表板。去 Prometheus 拿數字畫成圖。
-- **exporter**：裝在被監控的主機上的小程式，把那台主機的狀態吐成 Prometheus 看得懂的數字。
+---
 
-## 誰裝在哪裡
+## 先懂三個名詞
+
+- **exporter**：裝在**被監控的主機**上的小程式，把那台主機的狀態變成一串數字，開一個網址等人來讀。
+- **Prometheus**：裝在**監控主機**上。每 15 秒主動去各台主機的 exporter 讀一次數字、連同時間存起來，並依規則判斷要不要告警。
+- **Grafana**：裝在**監控主機**上。去 Prometheus 拿數字畫成儀表板。
+
+**重點：數字是監控主機「主動來拿」的，不是 AP / DB 主機「推過去」的。**
+所以 AP / DB 主機上**不用寫任何程式、不用改平台程式碼、不用設定要送去哪**，
+只要把 exporter 跑起來、讓監控主機連得到它的 port 就好。這跟 log 拋轉到 NFS 是相反的方向。
 
 ```
 ┌─ 監控主機 ─────────────── monitoring/server/
-│   prometheus :9090   抓數字、存、算告警
+│   prometheus :9090   去各台拿數字、存、算告警
 │   grafana    :3000   儀表板
-│   blackbox           從外面打 AP 的 /healthz
+│   blackbox           從外面打 AP 的 /healthz，確認平台對外活著
 │
-│ 每 15 秒去抓 ↓
+│ 每 15 秒主動去拿 ↓
 │
 ├─ AP 主機 ──────────────── monitoring/app-server/
-│   node-exporter  :9100  主機 CPU / 記憶體 / 磁碟
-│   cadvisor       :8081  每個容器（含 agent 常駐容器）的資源、重啟、OOM
-│   redis-exporter :9121  Redis 狀態、Celery 佇列與 agent_work:* 佇列長度
+│   node-exporter      :9100  主機 CPU / 記憶體 / 磁碟
+│   cadvisor           :8081  每個容器（含 agent 常駐容器）的資源、重啟、OOM
+│   redis-exporter     :9121  Redis 狀態、Celery 佇列與 agent_work:* 佇列長度
+│   postgres-exporter  :9187  （DB 還在這台時才起：--profile db）
 │
-└─ DB 主機 ──────────────── monitoring/db-server/
+└─ DB 主機（拆出去之後）──── monitoring/db-server/
     node-exporter      :9100
-    postgres-exporter  :9187  連線數、交易、鎖
+    postgres-exporter  :9187
 ```
 
-DB 還沒拆出去之前，PostgreSQL 在 AP 主機上，`postgres-exporter` 也先裝在 AP 主機（見下方步驟 2）。
+---
 
-## 部署步驟
+## SOP A：Mac 本機練習
 
-### 1. AP 主機
+三份全部起在同一台 Mac 上，`prometheus.yml` 的預設值（`host.docker.internal`）就是給這個情境的。
 
-平台要先跑起來（`make up`），因為 redis-exporter 要加入平台的 `zentra-net`。
+### A-0. 先知道 Mac 跟正式環境不一樣的地方
+
+Mac 上的 Docker（Colima 或 Docker Desktop）其實跑在一台 Linux 虛擬機裡：
+
+- node-exporter 看到的是那台**虛擬機**，不是 Mac 本身（例如記憶體會顯示成虛擬機的 2 GB）。
+- `host.docker.internal` 指回 Mac 本身。Mac 上如果有別的程式占著 8000 / 9100 等 port，
+  Prometheus 會連到那個程式，而不是 Zentra 的。
+- 先檢查 port 有沒有被占：`lsof -nP -iTCP -sTCP:LISTEN | grep -E ':(8000|8081|9090|9100|9121|9187|3000) '`
+
+### A-1. 起平台
+
+```bash
+make up
+curl -s localhost:8000/healthz          # 要回 200
+```
+
+### A-1.5. 建唯讀監控帳號（建議練習）
+
+跟正式環境的 [B-1](#b-1-建-postgresql-唯讀監控帳號一次就好) 一樣的指令，本機先練一次，上正式環境就不是第一次做。
+
+```bash
+# 在 repo 根目錄
+docker compose exec -T postgres psql -U zentra -d zentra -c \
+  "CREATE ROLE zentra_monitor LOGIN PASSWORD 'monitor-local'; GRANT pg_monitor TO zentra_monitor;"
+```
+
+確認它真的「只能看統計、不能看資料」：
+
+```bash
+# 看得到連線統計 → 會列出數字
+docker compose exec -T postgres psql -U zentra_monitor -d zentra -c "SELECT count(*) FROM pg_stat_activity;"
+# 讀不到業務資料 → 要出現 permission denied
+docker compose exec -T postgres psql -U zentra_monitor -d zentra -c "SELECT * FROM agents LIMIT 1;"
+```
+
+帳號已經建過會出現 `role "zentra_monitor" already exists`，可以直接往下走。
+
+> **想省事可以跳過這步，直接用 `zentra` / `zentra`，但正式環境不可以。**
+> 原因：`zentra` 是資料庫的最高權限帳號，能看、能改、能刪所有資料；監控程式的密碼放在主機的 `.env` 裡，
+> 一旦外洩就等於整個資料庫被拿走。唯讀帳號外洩，最多只是被看到統計數字。
+
+### A-2. 起 AP 端的 exporter
 
 ```bash
 cd monitoring/app-server
+cp env.example .env                     # 填 A-1.5 的 zentra_monitor / monitor-local（跳過 A-1.5 就填 zentra / zentra）
+docker compose --profile db up -d
+```
+
+確認每個 exporter 都吐得出數字（有輸出就對了）：
+
+```bash
+curl -s localhost:9100/metrics | grep ^node_memory_MemTotal_bytes
+curl -s localhost:8081/metrics | grep -m1 ^container_memory_working_set_bytes
+curl -s localhost:9121/metrics | grep -E '^redis_up|^redis_key_size'
+curl -s localhost:9187/metrics | grep ^pg_up                 # 要是 1
+```
+
+9100 被占了（例如 MinIO）→ 在 `.env` 設 `NODE_EXPORTER_PORT=9110`，重跑上面的 up，
+再把 `server/prometheus/prometheus.yml` 裡 node 的目標改成 `host.docker.internal:9110`。
+
+### A-3. 起監控端
+
+```bash
+cd monitoring/server
+cp env.example .env                     # 填 GRAFANA_ADMIN_PASSWORD
 docker compose up -d
 ```
 
-### 2. PostgreSQL 的 exporter
+### A-4. 驗收
 
-先在資料庫建一個**只能看、不能改**的監控帳號（`pg_monitor` 是 PostgreSQL 內建的唯讀監控角色）：
+1. 開 `http://localhost:9090/targets` → 每一列都是綠色 **UP**。
+2. 開 `http://localhost:3000`，用 admin 和 `.env` 的密碼登入 → Dashboards → Zentra → **Zentra 總覽**，最上面四顆燈都是綠的。
+3. 開 `http://localhost:9090/alerts` → 正常情況下沒有紅色（Firing）的告警。
+
+### A-5. 收掉
 
 ```bash
+(cd monitoring/server     && docker compose down)
+(cd monitoring/app-server && docker compose --profile db down)
+# 加 -v 會連 Prometheus / Grafana 的歷史資料一起刪
+```
+
+---
+
+## SOP B：正式部署
+
+順序：**DB 監控帳號 → AP 主機 → (DB 主機) → 監控主機 → 防火牆 → 驗收**。
+每台主機都需要 Docker 與 docker compose，並把這個 repo 的 `monitoring/` 資料夾放上去。
+
+### B-1. 建 PostgreSQL 唯讀監控帳號（一次就好）
+
+`pg_monitor` 是 PostgreSQL 內建的角色：只能**看**統計資訊，不能讀業務資料、不能改任何東西。
+
+```bash
+# 在平台主機的 repo 目錄
 docker compose exec -T postgres psql -U zentra -d zentra -c \
   "CREATE ROLE zentra_monitor LOGIN PASSWORD '換成強密碼'; GRANT pg_monitor TO zentra_monitor;"
 ```
 
-```bash
-cd monitoring/db-server
-cp env.example .env              # 填 PG_MONITOR_PASSWORD
-# DB 還在 AP 主機上：只起 postgres-exporter（node-exporter 步驟 1 已經起了）
-docker compose up -d postgres-exporter
-# DB 拆到獨立主機後：把這個資料夾放到 DB 主機，.env 的 PG_HOST 改掉，然後
-# docker compose up -d
-```
+DB 拆到獨立主機後，改在那台用 DBA 帳號執行同一句 SQL，並確認 `pg_hba.conf` 允許本機連線。
 
-### 3. 監控主機
+### B-2. AP 主機
 
 ```bash
-cd monitoring/server
-cp env.example .env              # 填 GRAFANA_ADMIN_PASSWORD
-vi prometheus/prometheus.yml     # 把 host.docker.internal 全部換成 AP / DB 主機的 IP
+# 平台要先跑著（make up）
+cd monitoring/app-server
+cp env.example .env                     # 填 B-1 的監控帳號密碼
+
+# DB 還在這台（現在）：
+docker compose --profile db up -d
+# DB 已經拆出去：
 docker compose up -d
 ```
 
-打開 `http://<監控主機>:3000`，登入後在 **Dashboards → Zentra → Zentra 總覽**。
+用 SOP A-2 的四行 curl 確認每個 exporter 都有數字（DB 拆出去後，9187 那行改到 DB 主機上跑）。
 
-改了 `prometheus.yml` 或告警規則之後，不用重啟：
+### B-3. DB 主機（DB 拆出去之後才做）
 
 ```bash
-curl -X POST localhost:9090/-/reload
+cd monitoring/db-server
+cp env.example .env                     # 填監控帳號密碼；PostgreSQL 在本機就維持 PG_HOST=localhost
+docker compose up -d
+
+curl -s localhost:9100/metrics | grep ^node_memory_MemTotal_bytes
+curl -s localhost:9187/metrics | grep ^pg_up                 # 要是 1
 ```
 
-### 4. 防火牆（一定要做）
-
-exporter 和 Prometheus **都沒有登入機制**，誰連得到誰就看得到。
-AP / DB 主機上的 exporter port 只開給監控主機。RHEL 系（firewalld）的例子：
+然後回 AP 主機把它的 postgres-exporter 停掉，避免兩邊重複：
 
 ```bash
-# 在 AP 主機上，監控主機 IP 假設是 10.0.0.50
-sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=10.0.0.50 port port=9100 protocol=tcp accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=10.0.0.50 port port=8081 protocol=tcp accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=10.0.0.50 port port=9121 protocol=tcp accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=10.0.0.50 port port=9187 protocol=tcp accept'
+cd monitoring/app-server && docker compose --profile db stop postgres-exporter && docker compose --profile db rm -f postgres-exporter
+```
+
+### B-4. 監控主機
+
+```bash
+cd monitoring/server
+cp env.example .env                     # 填 GRAFANA_ADMIN_PASSWORD
+vi prometheus/prometheus.yml            # 見下方
+docker compose up -d
+```
+
+`prometheus.yml` 要改的只有目標位址，把每個 `host.docker.internal` 換成實際 IP：
+
+| job | 改成 | DB 拆出去之後 |
+|---|---|---|
+| node | `<AP IP>:9100` | 再打開註解的 `<DB IP>:9100`（server: db） |
+| cadvisor | `<AP IP>:8081` | 不變 |
+| redis | `<AP IP>:9121` | 不變 |
+| postgres | `<AP IP>:9187` | 改成 `<DB IP>:9187`，`server` 標籤改 `db` |
+| app-health | `http://<AP IP>:8000/healthz` | 不變 |
+
+### B-5. 防火牆（一定要做）
+
+exporter 和 Prometheus **都沒有登入機制**，誰連得到誰就看得到。
+AP / DB 主機上的 exporter port **只開給監控主機**。RHEL 系（firewalld）的例子，監控主機 IP 假設是 10.0.0.50：
+
+```bash
+# AP 主機：9100 8081 9121 9187（DB 拆出去後 9187 改在 DB 主機開）
+for port in 9100 8081 9121 9187; do
+  sudo firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=10.0.0.50 port port=$port protocol=tcp accept"
+done
 sudo firewall-cmd --reload
 ```
 
-⚠️ Docker 發布的 port 會繞過 firewalld 的一般規則，正式環境要跟公司 infra 確認他們怎麼處理
-（常見做法是在 `DOCKER-USER` chain 加規則，或用網路層的防火牆）。
+⚠️ Docker 發布的 port 會繞過 firewalld 的一般規則。正式環境要跟公司 infra 確認怎麼處理
+（常見做法是在 `DOCKER-USER` chain 加規則，或在網路層的防火牆擋）。
 
-## 看哪裡、怎麼查
+AP 主機的 8000（平台本身）也要讓監控主機連得到，`/healthz` 檢查才會通。
 
-| 想知道 | 去哪看 |
-|---|---|
-| 現在整體好不好 | Grafana「Zentra 總覽」最上面一排 |
-| 哪個監控目標連不到 | Prometheus 網頁 → Status → Targets |
-| 現在有哪些告警 | Prometheus 網頁 → Alerts，或 Grafana → Alerting |
-| 告警條件是什麼 | `server/prometheus/rules/alerts.yml`（每條都有中文說明與排查第一步） |
+### B-6. 驗收
 
-Prometheus 網頁預設只綁監控主機本機，從自己電腦看要開 SSH tunnel：
+在**監控主機**上：
 
 ```bash
-ssh -L 9090:localhost:9090 <監控主機>
-# 然後開 http://localhost:9090
+# 每個目標都要是 up
+curl -s localhost:9090/api/v1/targets | python3 -c \
+  'import json,sys; [print(t["labels"]["job"], t["health"], t["lastError"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
 ```
 
-## 告警目前只會「亮燈」，不會通知人
+再用瀏覽器開 `http://<監控主機>:3000` → Zentra 總覽，四顆燈都綠。
+從自己電腦看 Prometheus 網頁（它預設只綁監控主機本機）：
+
+```bash
+ssh -L 9090:localhost:9090 <監控主機>   # 然後開 http://localhost:9090
+```
+
+---
+
+## SOP C：日常維運
+
+| 想知道 / 想做 | 怎麼做 |
+|---|---|
+| 現在整體好不好 | Grafana「Zentra 總覽」最上面一排 |
+| 哪個目標連不到 | Prometheus → Status → Targets，看 Error 欄 |
+| 現在有哪些告警 | Prometheus → Alerts，或 Grafana → Alerting |
+| 告警是什麼意思、先查什麼 | `server/prometheus/rules/alerts.yml`，每條都有中文說明與排查第一步 |
+| 改了 `prometheus.yml` 或告警規則 | 不用重啟：`curl -X POST localhost:9090/-/reload` |
+| 在 Grafana 網頁上改了儀表板想保留 | 儀表板右上 Export → JSON，蓋回 `server/grafana/dashboards/zentra-overview.json` 並 commit |
+| 加一台新主機 | 新主機起 `app-server` 或 `db-server` → 開防火牆 → `prometheus.yml` 加一行目標 → reload |
+| 升級 exporter / Prometheus / Grafana | 改 compose 裡的版本號 → `docker compose up -d`（地端環境要先把新 image 搬進公司的 registry） |
+
+### 某個目標變紅（DOWN）時的排查順序
+
+1. 監控主機 `ping <主機 IP>` —— 不通 = 主機或網路的問題。
+2. 那台主機 `docker compose ps` —— exporter 容器還在嗎？`docker compose logs --tail 50 <服務名>` 看錯誤。
+3. 那台主機 `curl localhost:<port>/metrics` —— 本機讀得到、監控主機讀不到 = 防火牆。
+4. postgres-exporter 特有：`pg_up` 是 0 → 帳號密碼錯，或 `pg_hba.conf` 不讓它連。
+
+### 告警目前只會「亮燈」，不會通知人
 
 告警會顯示在 Prometheus 和 Grafana，但**還不會寄信或發 Teams**。
 要通知人得再加一個 Alertmanager，並填公司的 SMTP 或 Teams webhook —— 這些要先問 infra 團隊。
 （如果公司已經有統一的監控平台，可能是把 Prometheus 接過去，而不是自己發通知。）
-
-## 本機練習
-
-三份 compose 可以全部起在同一台電腦上，`prometheus.yml` 的預設值就是給這個情境的。
-但在 macOS 上有幾個跟正式環境不同的地方：
-
-- node-exporter 看到的是 Docker Desktop 的 Linux VM，不是 Mac 本身（記憶體會顯示成 VM 的大小）。
-- 本機若有別的程式占了 9100 / 5432 / 8000，`host.docker.internal:<port>` 會連到那個程式。
-  node-exporter 可以用 `NODE_EXPORTER_PORT=9110 docker compose up -d` 換 port（`prometheus.yml` 的目標要一起改）。
-- 本機的監控帳號可以先用平台的 `zentra` / `zentra`。
-
-收掉：在三個資料夾各跑一次 `docker compose down`（加 `-v` 會連歷史資料一起刪）。

@@ -44,8 +44,9 @@ scrape_configs:
   # PostgreSQL：連線數、交易、鎖（postgres-exporter，port 9187）
   - job_name: postgres
     static_configs:
-      # DB 還在 AP 主機上時，exporter 也在 AP 主機；拆出去後改成 DB 主機 IP
-      - targets: ["host.docker.internal:9187"]
+      # DB 還在 AP 主機上時，exporter 也在 AP 主機（app-server 的 --profile db）；
+      # 拆出去後改成 DB 主機 IP、server 標籤改成 db
+      - targets: ["host.docker.internal:9187"]   # 正式：<AP 主機 IP>:9187
         labels: { server: ap }
 
   # 平台對外活著嗎：從監控主機打 AP 的 /healthz（透過 blackbox）

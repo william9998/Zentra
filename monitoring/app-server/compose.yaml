@@ -1,14 +1,18 @@
 # 裝在「AP 主機」上的 exporter —— 把這台主機的狀態吐成數字，給監控主機的 Prometheus 來抓。
 #
-#   node-exporter   :9100  主機 CPU、記憶體、磁碟、網路
-#   cadvisor        :8081  每個容器的 CPU、記憶體、重啟、OOM（含 agent 常駐容器）
-#   redis-exporter  :9121  Redis 狀態與派工佇列長度
+#   node-exporter      :9100  主機 CPU、記憶體、磁碟、網路
+#   cadvisor           :8081  每個容器的 CPU、記憶體、重啟、OOM（含 agent 常駐容器）
+#   redis-exporter     :9121  Redis 狀態與派工佇列長度
+#   postgres-exporter  :9187  PostgreSQL（只在 DB 還跟平台同一台時起，見下方）
 #
 # 這幾個 port 沒有登入機制：防火牆只開給監控主機的 IP（見 monitoring/README.md）。
 # 它們不接 zentra-sandbox-net —— 沙盒的唯一對端仍然只有 app（P4）。
 #
-# 前提：平台已經 `make up`（redis-exporter 要加入平台的 zentra-net）。
-# 啟動：docker compose up -d
+# 前提：平台已經 `make up`（redis / postgres exporter 要加入平台的 zentra-net）。
+#
+# 啟動：
+#   DB 還在這台（現在）：  cp env.example .env（填監控帳號）→ docker compose --profile db up -d
+#   DB 拆出去之後：        docker compose up -d   （postgres-exporter 改由 monitoring/db-server 負責）
 
 name: zentra-monitoring-ap
 
@@ -54,6 +58,18 @@ services:
       REDIS_EXPORTER_CHECK_SINGLE_KEYS: db0=q.run,db0=q.build
       REDIS_EXPORTER_CHECK_KEYS: db0=agent_work:*
     ports: ["9121:9121"]
+    networks: [zentra-net]
+    restart: unless-stopped
+
+  # DB 還跟平台在同一台時用。走 zentra-net 直接連 `postgres`，不經過主機的 5432。
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    profiles: [db]
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${PG_DATABASE:-zentra}?sslmode=disable
+      DATA_SOURCE_USER: ${PG_MONITOR_USER:?請在 monitoring/app-server/.env 設定 PG_MONITOR_USER}
+      DATA_SOURCE_PASS: ${PG_MONITOR_PASSWORD:?請在 monitoring/app-server/.env 設定 PG_MONITOR_PASSWORD}
+    ports: ["9187:9187"]
     networks: [zentra-net]
     restart: unless-stopped
 
