@@ -727,7 +727,10 @@ def execute_run(self, run_id: str) -> dict:
             else:
                 live = _live_containers(conn, run.agent_id, version.id)
         #: 上面那個交易已經幫這筆預留了名額（inflight + 1）。冷啟動拿到的容器還沒有。
-        reserved = container is not None
+        #: **不要和 `reserved` 共用變數。** `reserved` 是一次性沙盒的併發名額，finally 靠它歸還；
+        #: 以前這裡直接覆寫 `reserved`，沒有常駐容器的 Run 跑完就不歸還，
+        #: 名額要等 LEASE_SECONDS 過期才回來 —— 實測 10 筆之後全部 QUOTA_EXCEEDED。
+        container_slot = container is not None
         #: True = 全部容器都滿了，這筆只是排進佇列，還沒有歸屬到任何容器。
         queued_only = False
         if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
@@ -772,12 +775,12 @@ def execute_run(self, run_id: str) -> dict:
             # 才轉 RUNNING 並開始計時 —— 排隊的時間不算進 Run 的逾時。
             if not queued_only:
                 with worker_db.transaction() as conn:
-                    if not reserved:
+                    if not container_slot:
                         # 冷啟動（或等別人啟動好）拿到的容器，**還沒幫這筆記上名額**。
                         # 以前漏了這一步：Run 明明在跑，inflight_runs 卻是 0，跑完要減時又被
                         # `> 0` 擋住 —— 數字一路偏低，容量判斷與卡死偵測都建立在它上面。
                         # 有條件地加：同時等同一個冷啟動的 Run 可能超過 N，超過的就當排隊。
-                        reserved = conn.execute(
+                        container_slot = conn.execute(
                             """
                             UPDATE agent_containers SET inflight_runs = inflight_runs + 1
                             WHERE id = %(id)s AND inflight_runs < %(limit)s
@@ -785,7 +788,7 @@ def execute_run(self, run_id: str) -> dict:
                             """,
                             {"id": container.id, "limit": settings.sandbox_runs_per_container},
                         ).fetchone() is not None
-                    if reserved:
+                    if container_slot:
                         conn.execute(
                             "UPDATE runs SET container_id = %(cid)s WHERE id = %(id)s",
                             {"cid": container.id, "id": rid},
