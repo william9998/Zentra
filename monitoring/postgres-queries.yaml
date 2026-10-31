@@ -1,0 +1,30 @@
+# postgres-exporter 的自訂查詢：把 Zentra 平台記在 DB 裡、Prometheus 本來看不到的狀態變成指標。
+# app-server 與 db-server 的 postgres-exporter 都掛這一份。
+#
+# 監控帳號（zentra_monitor）預設讀不到業務表，要另外給**欄位級**的唯讀權限（見 monitoring/README.md）：
+#   GRANT SELECT (id, name) ON agents TO zentra_monitor;
+#   GRANT SELECT (agent_id, agent_version_id, status, restarts_in_window, created_at)
+#         ON agent_containers TO zentra_monitor;
+
+# 被存活檢查放棄的版本（常駐容器 10 分鐘內死了 4 次）→ 指標 zentra_containers_given_up{agent="…"}
+# 「放棄」= 這個版本最新的那一列容器是 FAILED 且 restarts_in_window >= 3。
+# 門檻 3 要跟 apps/api/services/containers.py 的 MAX_RESTARTS_IN_WINDOW 一致。
+# 沒有任何版本被放棄時這條查詢沒有資料列，指標就不存在（告警規則用 > 0，不受影響）。
+zentra_containers:
+  query: |
+    SELECT a.name AS agent, count(*) AS given_up
+    FROM (
+      SELECT DISTINCT ON (agent_version_id) agent_id, status, restarts_in_window
+      FROM agent_containers
+      ORDER BY agent_version_id, created_at DESC
+    ) latest
+    JOIN agents a ON a.id = latest.agent_id
+    WHERE latest.status = 'FAILED' AND latest.restarts_in_window >= 3
+    GROUP BY a.name
+  metrics:
+    - agent:
+        usage: LABEL
+        description: Agent 名稱
+    - given_up:
+        usage: GAUGE
+        description: 這個 Agent 有幾個版本的常駐容器被存活檢查放棄，需要人處理

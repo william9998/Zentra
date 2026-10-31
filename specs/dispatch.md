@@ -76,14 +76,16 @@ t=8.4s   容器 POST /internal/runs/{id}/result，app 只把 output/error 存起
 ```
 POST /v1/agents/{id}/runs
   app：驗 input schema → 決定版本（指定版號的現役那筆，或最新 PUBLISHED）
-       → INSERT runs（QUEUED）→ 送 zentra.run.execute → 回 202 {run_id}
+       → 這個版本的常駐容器被存活檢查放棄了？
+           是 → INSERT runs（直接 FAILED + AGENT_NOT_RUNNING，不派工）→ 回 409（帶 run_id）
+           否 → INSERT runs（QUEUED）→ 送 zentra.run.execute → 回 202 {run_id}
 
 worker：zentra.run.execute
   1. 鎖住 Run 那一列；不是 QUEUED 就放棄（同一個任務被投遞兩次時的保護）→ 轉 SCHEDULING
   2. 預留一個一次性沙盒名額（Redis 租約；滿了 → FAILED + QUOTA_EXCEEDED）
   3. 發 run token（有效期 = timeout_seconds）
   4. 讀版本：狀態必須是 PUBLISHED 或 SUPERSEDED（Run 建立時綁定的就是這一筆，後來被取代也不影響）
-  5. 順手掃一下逾時的常駐 Run（見 §逾時）
+  5. 這個版本被存活檢查放棄了 → FAILED + AGENT_NOT_RUNNING，結束（放棄前就建好、還沒派出去的 Run 走這裡）
   6. 選路：常駐容器（預設）／一次性沙盒（退路）
 ```
 
@@ -95,7 +97,8 @@ worker：zentra.run.execute
       · 有 READY 的但都滿了 → 只把工作放進 Redis 佇列，不算在任何容器頭上，
         也不會開第二個容器；等有容器空出位子來拿
       · 一個都沒有        → 冷啟動並「等它」（上限 CONTAINER_START_TIMEOUT_SECONDS）；
-                           起不來 → 退回路徑 B，Run 照樣會跑
+                           起來了 → 有條件地 inflight + 1（< N 才加；滿了就當排隊，不記 container_id）
+                           起不來 → 退回路徑 B，Run 照樣會跑（被存活檢查放棄的版本除外：FAILED + AGENT_NOT_RUNNING）
 6c. 狀態維持 SCHEDULING，不記 started_at（如果預留到位子，就記 container_id）→ commit
 6d. commit 之後才把工作項 LPUSH 到 agent_work:{agent_id}:{version_id}
 6e. 撤銷第 3 步發的 run token（常駐路徑用不到那把）、放掉一次性沙盒名額，任務結束——不等結果
@@ -181,12 +184,11 @@ SSE 端怎麼讀：從 `run_events` 依 `seq` 讀（去重和排序靠資料庫�
 | 路徑 | 誰負責抓 | 怎麼收 |
 |---|---|---|
 | 一次性沙盒 | `driver.wait(timeout)` | 容器被殺 → `SANDBOX_TIMEOUT` |
-| 常駐容器（執行中） | `_sweep_timeouts`，**每次派工時順手掃**（最多 50 筆） | `started_at`（被取走的時間）`+ timeout_seconds` 已過 → FAILED + `SANDBOX_TIMEOUT`，撤銷 token，inflight - 1 |
+| 常駐容器（執行中） | `_sweep_timeouts`，worker 的 **60 秒排程**（`zentra.container.sweep_idle`，最多 50 筆） | `started_at`（被取走的時間）`+ timeout_seconds` 已過 → FAILED + `SANDBOX_TIMEOUT`，撤銷 token，inflight - 1 |
 | 常駐容器（排隊中） | 同上 | `created_at + RUN_QUEUE_TIMEOUT_SECONDS` 已過還在 SCHEDULING → FAILED + `SANDBOX_TIMEOUT` |
 | 同步呼叫 `runs:invoke` / MCP | API 端輪詢 60 秒 | 回 `SANDBOX_TIMEOUT`，**Run 本身繼續跑** |
 
-⚠️ 常駐路徑的逾時清掃**沒有流量就不會跑**：最後幾筆卡住的 Run 會停在 RUNNING，直到下一次有人派工。
-而且常駐容器裡的執行緒不會被殺——清掃只是讓帳面誠實，不是真的中止那段程式。
+⚠️ 常駐容器裡的執行緒不會被殺——清掃只是讓帳面誠實，不是真的中止那段程式。
 
 ## 已知的缺口
 

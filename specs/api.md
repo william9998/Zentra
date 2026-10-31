@@ -57,7 +57,7 @@ curl -s localhost:8000/v1/runs/01a2…
 | `VALIDATION_ERROR` | 422 | 否 | 請求格式錯，`details` 會指出是哪個欄位 |
 | `QUOTA_EXCEEDED` | 429 | 是 | 一次性沙盒同時數量滿了（預設 10） |
 | `AGENT_NOT_PUBLISHED` | 409 | 否 | 這個 Agent 沒有可用的 `PUBLISHED` 版本 |
-| `AGENT_NOT_RUNNING` | 409 | 否 | 已定義但**目前沒有路徑會回它**（常駐容器起不來會自動退回一次性沙盒） |
+| `AGENT_NOT_RUNNING` | 409 | 否 | 這個版本的常駐容器在 10 分鐘內死了 4 次、被平台放棄，要人處理（看 [container-orchestration.md](container-orchestration.md) §存活檢查）。**Run 仍會建立**，直接是 `FAILED`，回應帶 `run_id` 方便事後查 |
 | `VERSION_CONFLICT` | 409 | 否 | 同版號正在驗證中；刪除仍被引用的機密；出口規則 host 重複；改已撤銷的 MCP key |
 | `BUILD_FAILED` | — | 否 | 版本驗證失敗（寫在版本的 `error` 裡） |
 | `SANDBOX_TIMEOUT` | — | 是 | Run 逾時；或同步呼叫等超過 60 秒 |
@@ -102,6 +102,8 @@ HTTP 欄是 `—` 的，只會出現在 Run 或版本的 `error` 物件裡，不
 請求格式同上。不同的是：**等到 Run 結束才回**，最多等 **60 秒**。回應是完整的 Run 物件（同下一節）。
 
 超過 60 秒會回 `SANDBOX_TIMEOUT`，但 **Run 本身繼續在跑**，用 `GET /v1/runs/{run_id}` 查。
+
+兩個端點在版本被放棄時都回 `409 AGENT_NOT_RUNNING`，`run_id` 是那筆直接 `FAILED` 的 Run（`error` 同一份）。
 
 ### 查 Run：`GET /v1/runs/{run_id}`
 

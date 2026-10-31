@@ -24,6 +24,42 @@ from apps.api.rows import AgentContainer, AgentVersion, Run
 #: 這些狀態表示容器正在或應該在服務。
 LIVE_STATUSES = ("STARTING", "READY", "UNHEALTHY")
 
+#: 存活檢查的自動重啟上限：10 分鐘內 3 次，第 4 次死掉就放棄這個版本、等人處理
+#: （specs/container-orchestration.md §存活檢查）。api 與 worker 共用這一份。
+RESTART_WINDOW_SECONDS = 600
+MAX_RESTARTS_IN_WINDOW = 3
+
+
+async def given_up_container(
+    conn: asyncpg.Connection, version_id: uuid.UUID,
+) -> AgentContainer | None:
+    """這個版本**最新的那一列**容器，如果是被存活檢查放棄的就回傳它，否則 `None`。
+
+    只看最新一列：手動預熱會新增一列，判定就該改看那一列，
+    不能被更早以前放棄的舊紀錄永遠擋住。
+    """
+    rec = await conn.fetchrow(
+        f"SELECT {AgentContainer.returning()} FROM agent_containers "
+        "WHERE agent_version_id = $1 ORDER BY created_at DESC LIMIT 1",
+        version_id,
+    )
+    if rec is None:
+        return None
+    row = AgentContainer.from_row(rec)
+    if row.status == "FAILED" and row.restarts_in_window >= MAX_RESTARTS_IN_WINDOW:
+        return row
+    return None
+
+
+def given_up_message(row: AgentContainer) -> str:
+    """給呼叫端與 Run 紀錄看的說明：為什麼不跑、要誰做什麼、最後一次怎麼死的。"""
+    return (
+        f"the resident container for this agent version died {MAX_RESTARTS_IN_WINDOW + 1} times "
+        f"within {RESTART_WINDOW_SECONDS // 60} minutes and was given up on; "
+        "it needs a manual restart after the cause is fixed. "
+        f"Last death: {(row.last_death_reason or 'unknown')[:500]}"
+    )
+
 
 async def latest_published_version(
     conn: asyncpg.Connection, agent_id: uuid.UUID,
@@ -123,12 +159,17 @@ async def request_restart(
 
     **計數要留著。** 一直重啟的容器是壞掉了，不是需要再重啟一次 ——
     沒有這個數字，那件事在畫面上看起來跟「剛啟動」一模一樣。
+
+    自動重啟那一輪（`restarts_in_window`）則**歸零**：手動重啟表示有人看過了，
+    被存活檢查放棄的容器要能重新開始算，派工也才會再用常駐容器。
     """
     rec = await conn.fetchrow(
         f"""
         UPDATE agent_containers SET
             status = $2,
             restart_count = restart_count + 1,
+            restart_window_started_at = NULL,
+            restarts_in_window = 0,
             error = NULL,
             container_id = NULL,
             inflight_runs = 0

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from redis.asyncio import Redis
 
 from apps.api import db
@@ -19,7 +19,8 @@ from apps.api.schemas import (
 )
 from apps.api.services import containers as container_service
 from apps.api.services import (
-    agent_credentials, agent_secrets, agent_settings, egress, events, llm, notify, runtoken, work,
+    agent_credentials, agent_secrets, agent_settings, containertoken, egress, events, llm, notify,
+    runtoken, work,
 )
 from apps.api.services.runs import save_result
 from apps.api.services.validation import save_validation
@@ -174,6 +175,7 @@ async def take_work(
     agent_id: str,
     bound: tuple[str, str] = Depends(require_container_token),
     redis: Redis = Depends(get_redis),
+    authorization: str = Header(default=""),
 ) -> Response:
     """常駐容器 long-poll 取工作（ZEN-015 / ADR-0012）。
 
@@ -212,6 +214,14 @@ async def take_work(
             return Response(status_code=204)
         item = await work.pop(redis, bound_agent_id, row.agent_version_id, timeout=remaining)
         if item is None:
+            return Response(status_code=204)
+        # **交出去之前再驗一次 token。** 容器死掉時，它最後那次長輪詢還掛在這裡（最多 25 秒），
+        # 對端已經不在了也不會知道 —— 不擋的話這筆工作會回給不存在的連線，Run 卡在 RUNNING。
+        # 存活檢查發現它死了會先撤銷 token，所以到這裡 token 已失效 → 放回佇列最前面。
+        if await containertoken.resolve(redis, authorization.partition(" ")[2]) is None:
+            await work.push_front(redis, bound_agent_id, row.agent_version_id, item)
+            logging.getLogger(__name__).warning("returned run %s to the queue: the container that long-polled for it "
+                           "(%s) has been revoked", item.get("run_id"), row.id)
             return Response(status_code=204)
         async with db.transaction() as conn:
             started = await container_service.start_taken_run(conn, row.id, item.get("run_id"))

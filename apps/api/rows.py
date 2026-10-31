@@ -163,6 +163,7 @@ class AgentContainer(RowMixin):
         "id", "agent_id", "agent_version_id", "container_id", "status",
         "inflight_runs", "started_at", "last_health_at", "restart_count",
         "error", "created_at",
+        "restart_window_started_at", "restarts_in_window", "last_died_at", "last_death_reason",
     )
     id: uuid.UUID
     agent_id: uuid.UUID
@@ -175,6 +176,10 @@ class AgentContainer(RowMixin):
     restart_count: int
     error: str | None
     created_at: datetime
+    restart_window_started_at: datetime | None
+    restarts_in_window: int
+    last_died_at: datetime | None
+    last_death_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)

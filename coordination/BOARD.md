@@ -11,6 +11,7 @@
 | ZEN-019 | 每個 Agent 自己的設定、機密與對外能力（[gateway.md](../specs/gateway.md)） | `REVIEW` | — |
 | ZEN-008 | OCI image 型 Agent：digest 註冊 → validate → REST/MCP | `REVIEW` | 被 ZEN008-ISO-01 擋（見下） |
 | ZEN-000 / 002 / 009 / 012 / 013 / 014 / 015 / 018 | 已交付，未正式驗收 | `REVIEW` | 使用者自己用過沒問題就直接刪列 |
+| LIVENESS | 常駐容器存活檢查：死掉／卡死 → 自動重啟（10 分鐘內 3 次）→ 放棄後新 Run 一律 `409 AGENT_NOT_RUNNING` 並留 FAILED 紀錄、監控告警；GHOST-POLL；`inflight_runs` 冷啟動計數；逾時清掃改由 60 秒排程（[container-orchestration.md](../specs/container-orchestration.md) §存活檢查） | `REVIEW` | OOMKilled 的死因字串沒實測（測試用 `docker kill`／`docker pause`） |
 
 ## 待辦
 
@@ -31,7 +32,9 @@
 | AGENT-D1 | `agents.name` 無條件 `UNIQUE` + 軟刪除 → 刪掉的名稱永久被佔。ZEN-018 改硬刪後可能已不成立 |
 | DEV-DB-ECHO | 開發庫沒有 `builtin-echo`（空庫跑 runner 會 seed，舊庫曾被清掉）→ `make smoke` 404。不是產品缺陷；要嘛手動補回，要嘛等 ZEN-010 退休它 |
 | CANCEL-404 | `POST /v1/runs/{id}/cancel` 沒有後端路由，Console 的「停止」按了會 404（整理規格時發現） |
-| NO-LIVENESS | 常駐容器啟動後死掉（OOM、崩潰）沒有人偵測，DB 仍是 `READY`；新工作派進去沒人取，直到逾時清掃。`UNHEALTHY` 沒有任何路徑寫入（整理規格時發現） |
+| MANUAL-STOP-RUNS | 手動停止／重啟常駐容器（`POST …/restart`、`DELETE …/containers/{id}`）時，裡面跑到一半的 Run 不會立即 FAILED，要等逾時清掃收成 `SANDBOX_TIMEOUT`。存活檢查那條路已經會立即收（`SANDBOX_ERROR`），可共用 `_fail_runs` |
+| CONTAINER-API-FIELDS | `last_death_reason` / `last_died_at` / `restarts_in_window` 只在 DB，容器 API 和 Console 看不到，排查要下 SQL。要露出得先改 api.md 的容器回應 |
+| NO-RESTART-POLICY | `compose.yaml` 五個服務都沒有 `restart:`。Docker／主機重啟後要手動 `make up`（實測 registry 停在 Exited 255）。正式機要決定是否加 `restart: unless-stopped` |
 | ZEN-006A-D1 | RUNNING 時「已耗時」可能顯示 `—` 一秒（時鐘偏差）。修法：`Math.max(0, …)` |
 
 ## 未決問題（要問使用者）

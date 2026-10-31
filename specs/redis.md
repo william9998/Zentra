@@ -151,9 +151,9 @@ worker（派工）  ──LPUSH──▶  agent_work:{agent_id}:{version_id}  �
 | 型別 | List，`LPUSH` + `BRPOP` = **先進先出**（先到的 Run 先處理） |
 | 每個項目 | JSON：`run_id`、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names`。**沒有 run token**——app 在容器取走時才發，加在回應裡 |
 | 誰寫 | `worker` 的 `q.run` 任務，**在 commit Run 的 `container_id` 和 `inflight_runs` 之後**才 LPUSH |
-| 誰讀 | `app` 收到容器的長輪詢時 `BRPOP`，最多等 25 秒；沒工作回 204，容器重新輪詢 |
+| 誰讀 | `app` 收到容器的長輪詢時 `BRPOP`，最多等 25 秒；沒工作回 204，容器重新輪詢。取到後 container token 已撤銷（容器已死）→ `RPUSH` 放回最前面 |
 | 有效期 | 無 |
-| 刪除 | 該版本最後一個容器停止時 `DEL`（沒人會來取了，留著只會讓那些 Run 停在 SCHEDULING 直到排隊上限） |
+| 刪除 | 該版本最後一個容器停止時 `DEL`（沒人會來取了，留著只會讓那些 Run 停在 SCHEDULING 直到排隊上限）。存活檢查放棄一個版本時，先讀出全部項目把那些 Run 收成 `FAILED`，再 `DEL`（同一個 `MULTI`） |
 
 > **一個版本一條佇列，不是一個 Agent 一條。** 容器只綁一個版本（P5）。共用一條的話，切換版本期間新舊容器並存，
 > 舊容器會把新版本的工作撈走：說好要跑 1.0.2 的 Run 實際跑了 1.0.0（實際踩過）。
@@ -213,7 +213,7 @@ worker（派工）  ──LPUSH──▶  agent_work:{agent_id}:{version_id}  �
 | 遺失的東西 | 後果 | 怎麼恢復 |
 |---|---|---|
 | `q.run` / `q.build` 裡的任務 | 排隊中的 Run 停在 `QUEUED`；`BUILDING` 的版本卡住 | **目前沒有自動恢復**：逾時清掃只處理 `RUNNING`。這些 Run 會一直停在 `QUEUED`；卡在 `BUILDING` 的版本會讓同版號重新註冊回 `409`，要手動把那一列改成 `FAILED` |
-| `agent_work:*` | 已派進常駐容器佇列的 Run 停在 `SCHEDULING` | 排隊逾時清掃會收成 FAILED。清掃是「每次派工時順手掃」，**沒有新流量就不會掃** |
+| `agent_work:*` | 已派進常駐容器佇列的 Run 停在 `SCHEDULING` | 排隊逾時清掃會收成 FAILED（worker 的 60 秒排程） |
 | `run_token:*` | 正在跑的 Run 回寫結果時 401 → 失敗 | 重新呼叫 |
 | `container_token:*` | 常駐容器取不到工作 | 重啟容器（Console 按「重啟」，或等閒置回收後重新拉起） |
 | `run:*` Stream | **不影響**。SSE 從 `run_events` 讀 | — |

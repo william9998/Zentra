@@ -112,6 +112,7 @@ MCP 的錯誤**不是 HTTP 4xx**。HTTP 還是 `200`，差在 `"isError": true`�
 | 沒帶 key、key 無效或已撤銷 | **HTTP `401`**（在進入 MCP 之前就擋掉，格式同 [api.md](api.md) 的錯誤格式） |
 | 呼叫不在清單裡的 tool（沒勾選、沒已發布版本、Agent 已刪除） | `isError`，`Unknown tool`。刻意不透露那個 Agent 存不存在 |
 | Run 失敗 | `isError`，文字是 `<error.code>: <message> (run_id=…)` |
+| 版本被存活檢查放棄（常駐容器一直死掉） | 同上，code 是 `AGENT_NOT_RUNNING`。Run 有建立（直接 `FAILED`），不派工 |
 | 同步等超過 60 秒 | `isError`，`SANDBOX_TIMEOUT: …`。**Run 本身會繼續跑**，用 `run_id` 去 REST 查 |
 
 ## Tool 是怎麼生出來的

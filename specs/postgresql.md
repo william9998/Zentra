@@ -2,7 +2,7 @@
 
 > **資料表結構的唯一事實來源是 `apps/api/migrations/NNNN_*.sql`**，不是這份文件，也不是任何 Python 檔。
 > 這份文件說明每張表「為什麼長這樣」。落後於 migration 就是 bug，改 schema 時要一起改。
-> 目前對齊 migration `0010`。
+> 目前對齊 migration `0011`。
 
 ## 放什麼
 
@@ -262,10 +262,13 @@ Console 改勾選 = 刪掉 K1 的所有列，再重新插入新的勾選（整�
 | `agent_id` | uuid | FK，CASCADE |
 | `agent_version_id` | uuid | FK，**沒有 CASCADE**。容器只綁一個版本 |
 | `container_id` | varchar(80) | **Docker 的** id，每次重建都會換 |
-| `status` | varchar(16) | `STARTING / READY / UNHEALTHY / STOPPED / FAILED`（`UNHEALTHY` 目前沒有任何路徑會寫入） |
+| `status` | varchar(16) | `STARTING / READY / UNHEALTHY / STOPPED / FAILED`。`UNHEALTHY` 只在存活檢查處理死掉的容器時短暫出現 |
 | `inflight_runs` | int | 派進來還沒結束的 Run 數，`>= 0` |
 | `started_at` / `last_health_at` | timestamptz | `last_health_at` = 最近一次長輪詢 |
-| `restart_count` | int | `>= 0` |
+| `restart_count` | int | `>= 0`，累計總數（手動與自動重啟都算） |
+| `restart_window_started_at` | timestamptz | 自動重啟這一輪的起點。超過 10 分鐘就重新算 |
+| `restarts_in_window` | int | 這一輪自動重啟了幾次，`>= 0`。`FAILED` 且 `>= 3` = 因為一直死掉而放棄，派工不再自動開常駐容器。手動重啟歸零 |
+| `last_died_at` / `last_death_reason` | timestamptz / text | 存活檢查最後一次發現它死掉的時間與原因（exit code、OOMKilled、最後輸出）。重啟成功也保留 |
 | `error` | text | FAILED 的原因（含容器輸出） |
 | `created_at` | timestamptz | |
 

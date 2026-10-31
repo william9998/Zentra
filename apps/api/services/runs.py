@@ -11,7 +11,7 @@ from apps.api.errors import ZentraError
 from apps.api.ids import uuid7
 from apps.api.rows import AgentVersion, Run
 from apps.api.schemas import CreateRunRequest, RunResponse, SandboxResult
-from apps.api.services import agents, llm, pagination
+from apps.api.services import agents, containers, llm, pagination
 from apps.api.services.events import lock_run, require_active, status_event
 
 
@@ -37,21 +37,49 @@ async def create_run(
     agents.validate_input(selected["input_schema"], body.input)
 
     run_id = uuid7()
+    # 版本被存活檢查放棄了：**仍然建一筆**，直接 FAILED、不派工。
+    # 不建的話故障期間被拒絕的請求在 DB 裡完全沒有痕跡，事後查不到影響了誰。
+    # 呼叫端看 `creation_rejection` 決定回 409。
+    status, error, finished_at = RunStatus.QUEUED, None, None
+    gave_up = await containers.given_up_container(conn, version.id)
+    if gave_up is not None:
+        status, finished_at = RunStatus.FAILED, datetime.now(UTC)
+        error = {
+            "code": str(ErrorCode.AGENT_NOT_RUNNING),
+            "message": containers.given_up_message(gave_up),
+            "run_id": str(run_id), "retryable": False,
+        }
     rec = await conn.fetchrow(
         f"""
         INSERT INTO runs
             (id, agent_id, agent_version_id, status, trigger, entrypoint,
-             input, timeout_seconds, celery_task_id, api_key_id, mcp_key_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             input, timeout_seconds, celery_task_id, api_key_id, mcp_key_id,
+             error, finished_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING {Run.returning()}
         """,
-        run_id, agent.id, version.id, str(RunStatus.QUEUED), str(trigger),
+        run_id, agent.id, version.id, str(status), str(trigger),
         body.entrypoint, body.input, body.config.timeout_seconds,
-        str(run_id), api_key_id, mcp_key_id,
+        str(run_id), api_key_id, mcp_key_id, error, finished_at,
     )
     run = Run.from_row(rec)
-    await status_event(conn, run)
+    await status_event(conn, run, terminal=status.is_terminal)
     return run, version
+
+
+def creation_rejection(run: Run) -> ZentraError | None:
+    """`create_run` 建出來就是終態（版本被放棄）→ 給呼叫端的 409；正常的 Run 回 `None`。
+
+    要在**交易結束之後**才 raise —— 在交易裡 raise 會連那筆紀錄一起回滾。
+    """
+    if not RunStatus(run.status).is_terminal:
+        return None
+    error = run.error or {}
+    return ZentraError(
+        ErrorCode(error.get("code") or ErrorCode.AGENT_NOT_RUNNING),
+        error.get("message") or "the run was rejected at creation",
+        409, run_id=str(run.id),
+    )
 
 
 async def save_result(conn: asyncpg.Connection, run_id: UUID, body: SandboxResult) -> bool:

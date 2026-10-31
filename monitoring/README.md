@@ -71,12 +71,22 @@ docker compose exec -T postgres psql -U zentra -d zentra -c \
   "CREATE ROLE zentra_monitor LOGIN PASSWORD 'monitor-local'; GRANT pg_monitor TO zentra_monitor;"
 ```
 
+再給它兩張表**幾個欄位**的唯讀權限 —— 告警「Agent 常駐容器已放棄」要靠它（查詢在 `monitoring/postgres-queries.yaml`）：
+
+```bash
+docker compose exec -T postgres psql -U zentra -d zentra -c \
+  "GRANT SELECT (id, name) ON agents TO zentra_monitor;
+   GRANT SELECT (agent_id, agent_version_id, status, restarts_in_window, created_at) ON agent_containers TO zentra_monitor;"
+```
+
+只給欄位、不給整張表：它看得到「哪個 Agent 的容器是什麼狀態」，看不到 Agent 的說明、Run 的輸入輸出等任何業務資料。
+
 確認它真的「只能看統計、不能看資料」：
 
 ```bash
 # 看得到連線統計 → 會列出數字
 docker compose exec -T postgres psql -U zentra_monitor -d zentra -c "SELECT count(*) FROM pg_stat_activity;"
-# 讀不到業務資料 → 要出現 permission denied
+# 讀不到業務資料 → 要出現 permission denied（SELECT * 包含沒授權的欄位）
 docker compose exec -T postgres psql -U zentra_monitor -d zentra -c "SELECT * FROM agents LIMIT 1;"
 ```
 
@@ -133,7 +143,7 @@ docker compose up -d
 ## SOP B：正式部署
 
 順序：**DB 監控帳號 → AP 主機 → (DB 主機) → 監控主機 → 防火牆 → 驗收**。
-每台主機都需要 Docker 與 docker compose，並把這個 repo 的 `monitoring/` 資料夾放上去。
+每台主機都需要 Docker 與 docker compose，並把這個 repo 的**整個** `monitoring/` 資料夾放上去（`app-server` / `db-server` 會用到上一層的 `postgres-queries.yaml`）。
 
 ### B-1. 建 PostgreSQL 唯讀監控帳號（一次就好）
 
@@ -142,8 +152,16 @@ docker compose up -d
 ```bash
 # 在平台主機的 repo 目錄
 docker compose exec -T postgres psql -U zentra -d zentra -c \
-  "CREATE ROLE zentra_monitor LOGIN PASSWORD '換成強密碼'; GRANT pg_monitor TO zentra_monitor;"
+  "CREATE ROLE zentra_monitor LOGIN PASSWORD '換成強密碼'; GRANT pg_monitor TO zentra_monitor;
+   GRANT SELECT (id, name) ON agents TO zentra_monitor;
+   GRANT SELECT (agent_id, agent_version_id, status, restarts_in_window, created_at) ON agent_containers TO zentra_monitor;"
 ```
+
+後兩句是**欄位級**的唯讀權限，給告警「Agent 常駐容器已放棄」用（查詢在 `monitoring/postgres-queries.yaml`）。
+它只看得到「哪個 Agent 的容器是什麼狀態」，看不到任何業務資料。
+
+⚠️ postgres-exporter 啟動時會印 `The extended queries.yaml config is DEPRECATED`：自訂查詢這個功能官方已標為**將來會移除**。
+目前固定在 `v0.17.1`，可以正常用。**升級 postgres-exporter 前先確認新版還支援**，不支援就要改用 sql_exporter 跑同一條查詢。
 
 DB 拆到獨立主機後，改在那台用 DBA 帳號執行同一句 SQL，並確認 `pg_hba.conf` 允許本機連線。
 

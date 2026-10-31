@@ -93,6 +93,11 @@ class _EntrypointTool(Tool):
             )
             run_id = str(run.id)
 
+        # 版本被存活檢查放棄：Run 建出來就是 FAILED（AGENT_NOT_RUNNING），不派工，
+        # 直接走終態那條路回 isError —— 跟 REST 的 409 是同一件事。
+        if RunStatus(run.status).is_terminal:
+            return _terminal_result(run, run_id)
+
         # Broker I/O 是同步的，不要跑在事件迴圈上（與 routers/runs.py 同樣的理由）
         await asyncio.to_thread(dispatch_run, run_id)
 

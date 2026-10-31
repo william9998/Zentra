@@ -93,6 +93,14 @@ groups:
 
   - name: 派工
     rules:
+      # 平台把狀態寫進 DB，postgres-exporter 的自訂查詢把它變成指標（monitoring/postgres-queries.yaml）。
+      - alert: Agent 常駐容器已放棄
+        expr: zentra_containers_given_up > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Agent {{ $labels.agent }} 的常駐容器 10 分鐘內死了 4 次，已停止服務"
+          description: "新的 Run 一律回 409 AGENT_NOT_RUNNING。查 agent_containers 的 last_death_reason（OOMKilled → 記憶體；其他看最後輸出），修好後在 Console 對那個容器按「重啟」。"
+
       # 佇列只增不減 = 沒人在消化：worker 掛了、卡住，或量真的超過處理能力
       - alert: Celery 佇列堆積
         expr: redis_key_size{key=~"q.run|q.build"} > 20

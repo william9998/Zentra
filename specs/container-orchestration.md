@@ -8,7 +8,7 @@
 | 模式 | 用途 | 壽命 | 一個容器服務 |
 |---|---|---|---|
 | `SERVE`（常駐容器） | **預設的執行路徑** | 第一筆 Run 拉起，閒置後回收 | 一個版本、最多 N 筆並行的 Run |
-| `RUN`（一次性沙盒） | 常駐容器起不來時的退路 | 一筆 Run，結束就刪，**絕不重用** | 一筆 Run |
+| `RUN`（一次性沙盒） | 常駐容器起不來時的退路（被存活檢查放棄的版本不退，見 §存活檢查） | 一筆 Run，結束就刪，**絕不重用** | 一筆 Run |
 | `VALIDATE`（驗證容器） | 發布版本時，import 使用者模組、抽出 entrypoints | 驗證完就刪 | 一個版本 |
 
 三種用**同一個 image**（使用者的 Agent image）、同一組隔離與配額。差別只在啟動指令（`zentra-agent serve|run|validate`）和環境變數。
@@ -81,7 +81,11 @@ LLM 金鑰、資料庫密碼、使用者的機密，**永遠不會出現在 env 
 ```
 (第一筆 Run，或「預熱」) ──▶ STARTING ──確認活著──▶ READY ──停止／閒置回收／版本被取代──▶ STOPPED
                               │                      │
-                              └─起不來，或一啟動就退出──▶ FAILED ──重啟──▶ STARTING（restart_count + 1）
+                              │                      └─存活檢查發現死了──▶ UNHEALTHY ──自動重啟──▶ STARTING
+                              │                                              │
+                              │                                   10 分鐘內第 4 次死掉
+                              │                                              ▼
+                              └─起不來，或一啟動就退出────────────────────▶ FAILED ──手動重啟──▶ STARTING
 ```
 
 狀態存在 `agent_containers`（[postgresql.md](postgresql.md)）。`api` 只負責寫「想要的狀態」並發任務；真正的動作是 worker 的 `zentra.container.apply`，或派工時的冷啟動。
@@ -110,6 +114,9 @@ LLM 金鑰、資料庫密碼、使用者的機密，**永遠不會出現在 env 
 - 每次取工作都會更新 `last_health_at`（`STARTING` / `UNHEALTHY` 會被翻成 `READY`）：**能來要工作，就是最好的健康訊號**，所以不另做 `/healthz`。
 - 每個工作項帶的是**那一筆 Run 專屬**的 run token，由 app 在容器取走工作的那一刻才發；容器啟動時手上沒有任何 run token。
 - 容器只在自己有空位時才長輪詢（`ZENTRA_MAX_CONCURRENT_RUNS` 的 semaphore），所以超過 N 的工作會留在 Redis 排隊。
+- **交出工作前再驗一次 container token。** 容器死掉時，它最後那次長輪詢在 app 端還掛著（最多 25 秒），
+  不擋的話會從佇列吞掉一筆工作、回給已經不存在的連線，那筆 Run 卡在 `RUNNING`。存活檢查發現它死了會先撤銷 token，
+  所以 `BRPOP` 拿到工作後 token 已失效 → 把工作 `RPUSH` 放回佇列最前面、回 `204`。
 
 ### 停止、重啟、回收
 
@@ -118,11 +125,55 @@ LLM 金鑰、資料庫密碼、使用者的機密，**永遠不會出現在 env 
 | 停止 | 撤銷**這一個容器**的 token → 銷毀 → `STOPPED`、`inflight_runs = 0` |
 | 重啟 | 同上，再走一次啟動；`restart_count + 1`（一直重啟的容器是壞掉了，這個數字讓它看得見） |
 | 閒置回收 | 排程每 60 秒掃一次，看 [dispatcher-resources.md](dispatcher-resources.md) §回收 |
+| 存活檢查 | 同一個 60 秒排程，看下面 §存活檢查 |
 | 版本被取代 | `zentra.version.retire`：等綁著舊版本的 Run 都結束，再停容器並刪舊 image（[agent-registry.md](agent-registry.md)） |
 | 新版本成為最新版 | `zentra.container.drain_other_versions`：其他版本的容器等手上的 Run 跑完就停（不刪 image） |
 | 刪 Agent | `zentra.agent.purge` 逐一停掉 |
 
 撤銷一律**以容器為單位**。同一個 Agent 可能同時有新舊兩個版本的容器；如果照 Agent 撤，會把另一個容器的 token 也撤掉，它還在長輪詢卻每次都 401，**畫面上看起來完全正常**。
+
+### 存活檢查：容器死掉時
+
+常駐容器的 Docker 重啟策略是 `no`，死掉就停在那裡，所以由平台自己發現、自己決定要不要重啟。
+worker 的 `zentra.container.sweep_idle` 排程（每 60 秒）在回收閒置容器之後，接著做存活檢查：
+
+1. **每個 `READY` 的容器都問 Docker**（`inspect`）。`Running = true` 就是活著；容器不存在、或 `Running = false` 才算死了。
+   **不看心跳**：容器只在有空位時才長輪詢，全滿的容器心跳也會停，心跳停了分不出「在忙」還是「死了」。
+   問 Docker 很便宜，直接問最多 60 秒就發現，不必先等心跳過期。
+   **活著但卡死**也當成死了：Docker 說在跑，但 `last_health_at` 超過 **90 秒**沒更新（≈ 錯過 3 次長輪詢），
+   而且 `inflight_runs < N`（有空位，照理一定會來要工作）。典型原因是在 `async def` 裡做阻塞呼叫，整個 event loop 停住。
+   **先確認 app 健康**才下這個判斷：app 掛了或在重啟時，所有容器都要不到工作、心跳一起停，不確認會全部被誤殺。
+2. **死了**（`UNHEALTHY`）：卡死的容器在這一步被銷毀（`docker rm -f`），之後跟死掉的走同一條路。
+   - 死因寫進 `last_death_reason`、時間寫進 `last_died_at`：exit code、是不是 `OOMKilled`、容器最後的輸出。
+     `error` 不放死因 —— 重啟成功時 `error` 會被清空，死因就不見了。
+   - 撤銷這個容器的 container token、銷毀殘骸。先撤銷，`take_work` 才擋得住它留下的長輪詢（§取工作）。
+   - **跑到一半的 Run**（`status = RUNNING` 且 `container_id` 是它）一律 `FAILED`，
+     錯誤碼 `SANDBOX_ERROR`、`retryable: true`、訊息帶死因。**不自動重跑**：平台不知道 Agent 做了什麼副作用（例如寄信）。
+     它們的 run token 立即撤銷。
+   - **還在排隊的 Run** 不動：佇列是一個版本一條，重啟後的容器會接著取。
+3. **重啟**：再走一次 §啟動，`restart_count + 1`。
+   啟動流程把 `inflight_runs` **重算**成「還掛在這個容器上、沒結束的 Run 數」（手動重啟也一樣），不是歸零 —— 排隊的那些還掛在它身上。
+4. **重啟上限：10 分鐘內 3 次。** `restart_window_started_at` 是這一輪的起點，`restarts_in_window` 是這一輪的次數；
+   距離起點超過 10 分鐘就重新算。**第 4 次死掉就放棄這個版本**：
+   - 容器 `FAILED`，`error` 寫明放棄的原因與最後一次死因。
+   - **佇列裡的每一筆**（直接讀 `agent_work:{agent}:{版本}`，讀完即刪）`FAILED` + `AGENT_NOT_RUNNING`。
+     讀佇列而不是查 DB：DB 分不出「已經推進佇列」和「還在派工途中」的 `SCHEDULING`。
+
+處理期間（`UNHEALTHY`，通常幾秒）派工把它當成「正在啟動」**等它**，不另開新容器 —— 否則同一個版本會同時有兩個。
+
+**放棄之後：明確停下來，等人處理。** 連續死掉通常是程式或資源（記憶體）真的有問題，退回一次性沙盒只會把問題藏起來。
+「放棄」的判定：這個版本**最新的那一列**容器是 `FAILED` 且 `restarts_in_window >= 3`。
+
+- **新的 Run**：`POST /v1/agents/{id}/runs`、`runs:invoke`、MCP `tools/call` 仍然**建立一筆 Run，但直接是 `FAILED` + `AGENT_NOT_RUNNING`**
+  （訊息帶最後一次死因），不派工，並回 `409`（MCP 回 `isError`）。留紀錄是為了事後查「故障期間影響了誰」。
+- **派工途中的 Run**（放棄前就建好、還沒派出去的）：worker 派工時再檢查一次，同樣 `FAILED` + `AGENT_NOT_RUNNING`。
+- **告警**：平台只負責把狀態寫進 DB；發告警是監控主機的事（`monitoring/` 的 postgres-exporter 自訂查詢 + 告警規則）。
+- **恢復**：手動重啟那個容器（`POST …/containers/{id}/restart`）會把 `restarts_in_window` 歸零；
+  手動預熱（`POST …/containers`）會新增一列，判定就改看那一列。
+
+冷啟動失敗（容器根本起不來）**不是**放棄：那條路仍然退回一次性沙盒，看 [dispatch.md](dispatch.md)。
+
+偵測不到的情況，見 §已知缺口。
 
 ### 容器只綁一個版本
 
@@ -131,8 +182,13 @@ LLM 金鑰、資料庫密碼、使用者的機密，**永遠不會出現在 env 
 
 ## 已知缺口
 
-- **沒有存活監控。** `UNHEALTHY` 是保留值，**目前沒有任何路徑會寫入它**。
-  常駐容器啟動後如果死掉（OOM、程式崩潰），資料庫仍然顯示 `READY`，新工作照樣被派進它的佇列卻沒人取，
-  直到逾時清掃把它收成 `SANDBOX_TIMEOUT`，或閒置回收把它標成 STOPPED。
-- 常駐容器裡卡死的 Run（例如在 `async def` 裡做阻塞呼叫）不會被殺，只是帳面上被逾時清掃收掉。
+- **滿載又卡死的容器要等一陣子才抓得到。** `inflight_runs >= N` 時不來要工作是正常的，分不出卡死；
+  手上那些 Run 逾時被清掃收掉（inflight - 1）之後，有了空位卻還是不來，下一輪才會判定卡死。
+- **發現有延遲**：最多 60 秒（排程間隔）。這段期間派進去的工作會在佇列等，重啟後被接走。
+- **死掉到被發現之間被吞掉的工作擋不住**：那時 container token 還沒撤銷，`take_work` 的再驗一次會通過。
+  機率低（長輪詢最多掛 25 秒），被吞的 Run 在下一次存活檢查時隨著「跑到一半的 Run」一起收成 `FAILED`。
+- **放棄那一刻剛好在推佇列的工作**：派工端檢查完「沒放棄」、還沒推進佇列時發生放棄，那筆會留在已清空的佇列裡，
+  由排隊上限（`RUN_QUEUE_TIMEOUT_SECONDS`）收掉。
+- **單一 Run 卡住、但容器其他部分正常**（例如某個 Run 在等永遠不回應的外部呼叫）：容器照樣來要工作，不算卡死。
+  那筆 Run 由逾時清掃收成 `SANDBOX_TIMEOUT`，但它的協程不會被中止，只是帳面上結束。
 - ZEN008-ISO-01（`VOLUME` 逃逸），見上。

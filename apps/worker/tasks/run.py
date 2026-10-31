@@ -227,9 +227,9 @@ def _sweep_timeouts(redis: Redis) -> int:
     **常駐容器不會被殺**，所以那個機制不存在：沙盒裡的 Run 若卡住或崩潰而沒回報，
     這一列會永遠停在 RUNNING，而且畫面上看不出哪裡不對。
 
-    這裡刻意在「每次派工時順手掃」而不是開 celery beat ——
-    多一個排程服務要維運，而派工本來就會發生，掃描成本又極低。
-    代價誠實講：**沒有流量時不會掃**，所以最後幾筆可能停在 RUNNING 直到下次派工。
+    由 worker 的 60 秒排程（`zentra.container.sweep_idle`）呼叫。以前是「每次派工時順手掃」，
+    代價是沒有流量就不會掃 —— 而被存活檢查放棄的版本不會再有派工，它的 Run 就永遠卡著。
+    排程本來就為了閒置回收存在，搬過去不用多養東西。
 
     對「`async def` 裡阻塞」那種情況這條也救不了執行緒（ADR-0012 已寫明），
     它只是讓**帳面上**的狀態誠實。
@@ -487,18 +487,24 @@ def _claim_container_slot(agent_id, version_id) -> tuple[AgentContainer | None, 
         ready = _ready_container(conn, agent_id, version_id)
         if ready is not None:
             return ready, False
+        # UNHEALTHY = 存活檢查正在處理一個死掉的容器，幾秒後會回到 STARTING。
+        # 也要等它 —— 這時另開一個，同一個版本就會有兩個容器。
         starting = conn.execute(
             f"""
             SELECT {AgentContainer.returning()} FROM agent_containers
             WHERE agent_id = %(agent_id)s
               AND agent_version_id = %(version_id)s
-              AND status = 'STARTING'
+              AND status IN ('STARTING', 'UNHEALTHY')
             LIMIT 1
             """,
             {"agent_id": agent_id, "version_id": version_id},
         ).fetchone()
         if starting is not None:
             return AgentContainer.from_row(starting), False
+        if _given_up(conn, version_id) is not None:
+            # 一直死掉而被放棄的版本，不再自動開常駐容器 —— 等人處理。
+            # 呼叫端（execute_run）會把這筆 Run 收成 AGENT_NOT_RUNNING，不退回一次性沙盒。
+            return None, False
         rec = conn.execute(
             f"""
             INSERT INTO agent_containers (id, agent_id, agent_version_id, status)
@@ -508,6 +514,46 @@ def _claim_container_slot(agent_id, version_id) -> tuple[AgentContainer | None, 
             {"id": uuid7(), "agent_id": agent_id, "version_id": version_id},
         ).fetchone()
         return AgentContainer.from_row(rec), True
+
+
+def _given_up(conn, version_id) -> AgentContainer | None:
+    """這個版本**最新的那一列**容器，如果是被存活檢查放棄的就回傳它。
+
+    與 api 的 `containers.given_up_container` 同一條規則（同步版）：只看最新一列 ——
+    有人手動預熱會新增一列，判定就該改看那一列，不能被更早以前放棄的舊紀錄永遠擋住。
+    """
+    from apps.api.services.containers import MAX_RESTARTS_IN_WINDOW
+
+    rec = conn.execute(
+        f"""
+        SELECT {AgentContainer.returning()} FROM agent_containers
+        WHERE agent_version_id = %(version_id)s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        {"version_id": version_id},
+    ).fetchone()
+    if rec is None:
+        return None
+    row = AgentContainer.from_row(rec)
+    if row.status == "FAILED" and row.restarts_in_window >= MAX_RESTARTS_IN_WINDOW:
+        return row
+    return None
+
+
+def _fail_given_up(redis: Redis, rid: uuid.UUID, row: AgentContainer) -> dict:
+    """版本被放棄 → 這筆 Run 直接 FAILED + AGENT_NOT_RUNNING，不派工、不退回一次性沙盒。
+
+    連續死掉通常是程式或記憶體真的有問題，退回一次性沙盒只會把問題藏起來。
+    """
+    from apps.api.services.containers import given_up_message
+
+    with worker_db.transaction() as conn:
+        _transition(conn, rid, RunStatus.FAILED, terminal=True,
+                    error=_error(ErrorCode.AGENT_NOT_RUNNING, given_up_message(row),
+                                 str(rid), False))
+    publish_pending(redis, rid)
+    return {"run_id": str(rid), "status": str(RunStatus.FAILED), "reason": "given_up"}
 
 
 def _live_containers(conn, agent_id, version_id) -> list[AgentContainer]:
@@ -656,13 +702,13 @@ def execute_run(self, run_id: str) -> dict:
         #
         # 這是新舊兩條路的分岔點。**沒啟動容器的 Agent 行為完全不變** ——
         # 舊 image（沒有 serve 模式）也照樣能跑，因為它們走的還是下面那條。
-        # 順手掃逾時的常駐 Run。放在這裡是為了不用多養一個 celery beat ——
-        # 代價是沒有流量時不會掃（見 _sweep_timeouts 的說明）。
-        try:
-            _sweep_timeouts(redis)
-        except Exception:                          # noqa: BLE001
-            # 掃描失敗不該影響這次派工。
-            log.exception("sweeping timed-out runs failed")
+        # （常駐 Run 的逾時清掃在 worker 的 60 秒排程裡，不在這裡。）
+        #
+        # 版本被存活檢查放棄了：放棄前就建好、還沒派出去的 Run 走到這裡。
+        with worker_db.connection() as conn:
+            given_up = _given_up(conn, version.id)
+        if given_up is not None:
+            return _fail_given_up(redis, rid, given_up)
 
         live: list[AgentContainer] = []
         with worker_db.transaction() as conn:
@@ -680,6 +726,8 @@ def execute_run(self, run_id: str) -> dict:
                 )
             else:
                 live = _live_containers(conn, run.agent_id, version.id)
+        #: 上面那個交易已經幫這筆預留了名額（inflight + 1）。冷啟動拿到的容器還沒有。
+        reserved = container is not None
         #: True = 全部容器都滿了，這筆只是排進佇列，還沒有歸屬到任何容器。
         queued_only = False
         if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
@@ -697,6 +745,12 @@ def execute_run(self, run_id: str) -> dict:
                 container = serving[0]
             else:
                 container = _ensure_container(redis, run.agent_id, version.id)
+                if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
+                    # 等容器的期間它被放棄了（UNHEALTHY → FAILED）：不退回一次性沙盒。
+                    with worker_db.connection() as conn:
+                        given_up = _given_up(conn, version.id)
+                    if given_up is not None:
+                        return _fail_given_up(redis, rid, given_up)
         if container is not None:
             # 常駐路徑的 run token **由 app 在容器取走工作時才發**（TTL 從那一刻算）。
             # 這裡先發的那把用不到 —— 在佇列裡等久了它會先過期 —— 直接撤掉。
@@ -718,10 +772,24 @@ def execute_run(self, run_id: str) -> dict:
             # 才轉 RUNNING 並開始計時 —— 排隊的時間不算進 Run 的逾時。
             if not queued_only:
                 with worker_db.transaction() as conn:
-                    conn.execute(
-                        "UPDATE runs SET container_id = %(cid)s WHERE id = %(id)s",
-                        {"cid": container.id, "id": rid},
-                    )
+                    if not reserved:
+                        # 冷啟動（或等別人啟動好）拿到的容器，**還沒幫這筆記上名額**。
+                        # 以前漏了這一步：Run 明明在跑，inflight_runs 卻是 0，跑完要減時又被
+                        # `> 0` 擋住 —— 數字一路偏低，容量判斷與卡死偵測都建立在它上面。
+                        # 有條件地加：同時等同一個冷啟動的 Run 可能超過 N，超過的就當排隊。
+                        reserved = conn.execute(
+                            """
+                            UPDATE agent_containers SET inflight_runs = inflight_runs + 1
+                            WHERE id = %(id)s AND inflight_runs < %(limit)s
+                            RETURNING id
+                            """,
+                            {"id": container.id, "limit": settings.sandbox_runs_per_container},
+                        ).fetchone() is not None
+                    if reserved:
+                        conn.execute(
+                            "UPDATE runs SET container_id = %(cid)s WHERE id = %(id)s",
+                            {"cid": container.id, "id": rid},
+                        )
 
             # **推工作一定要在 commit 之後。** 反過來的話，容器可能在 DB 寫完之前
             # 就取走這筆工作並做歸屬校正 —— 那時它看到的 `run.container_id` 還是空的，
