@@ -2,7 +2,7 @@
 
 # Zentra
 
-**An agent platform where every agent runs in an isolated sandbox and ships with both a REST API and an MCP endpoint.**
+**An agent platform where every agent runs in an isolated sandbox, ships with a REST API, and can be exposed as tools on one shared MCP endpoint.**
 
 [繁體中文](#繁體中文) · [Specs](specs/overview.md)
 
@@ -10,33 +10,34 @@
 
 ---
 
-Zentra lets you upload your own Python agent (LangGraph), freezes it into an immutable version, runs it inside an
-isolated sandbox, and automatically publishes it behind **two front doors: a REST API and an MCP endpoint** —
-generated from a single definition so they can never drift apart.
+Zentra lets you package your own Python agent (LangGraph) as an OCI image and push it to the platform, freezes it into an
+immutable version, runs it inside an isolated container, and automatically publishes it behind a **REST API**. Agents can also be ticked into the platform's
+**single MCP endpoint (`/mcp`)**, where each one shows up as tools — REST and MCP are generated from a single
+definition so they can never drift apart.
 
-> **Status: under implementation.** The walking skeleton runs end to end — upload-free builtin agent,
-> OCI image registration, sandboxed execution, REST + MCP and the Run observation console. Nothing has been
-> accepted as `DONE` beyond the console slice; [`coordination/BOARD.md`](coordination/BOARD.md) is the
-> authority on what is verified and what is still open.
+> **Status: under implementation.** The core path runs end to end — pushing an OCI image registers a version,
+> runs execute in isolated containers, REST + MCP, and the Run observation console. Most of it is delivered but
+> not yet formally accepted; [`coordination/BOARD.md`](coordination/BOARD.md) is the authority on what is
+> verified and what is still open.
 >
-> **Scoped down in [ADR-0005](specs/overview.md):** internal tool, single tenant,
-> trusted code, 8-week MVP. Deployment is **one host running `docker compose`** — no Kubernetes.
+> **Delivery conditions ([`specs/overview.md`](specs/overview.md)):** internal tool, single tenant,
+> trusted code only. Deployment is **one host running `docker compose`** — no Kubernetes.
 > The console is **plain HTML + CSS + ES modules with no build step**
-> ([ADR-0006](specs/console-ui.md)), served by the API itself — **four services total**.
-> The five commitments below are unchanged; the infrastructure under them is a quarter of the size.
+> ([`specs/console-ui.md`](specs/console-ui.md)), served by the API itself — **five long-running services**
+> (`postgres` · `redis` · `registry` · `app` · `worker`).
 
 ## Why this exists
 
-Running user code is the hard part of any agent platform. Most of the design work here goes into one question: **what stops an uploaded agent from touching platform credentials, reaching the data layer, or calling out to the internet?**
+Running user code is the hard part of any agent platform. Most of the design work here goes into one question: **what stops an agent from touching platform credentials, reaching the data layer, or calling out to the internet?**
 
 The answer is five commitments that the rest of the architecture follows from.
-ADR-0005 relaxed the *threat model* to trusted code — **it did not relax these five.**
+The delivery conditions assume trusted code — **that assumption does not relax these five.**
 
 | | Commitment |
 |---|---|
 | **P1** | User code **never executes inside a platform process**. Celery workers only dispatch and observe — every `exec` happens in a sandbox. |
 | **P2** | Agents are **always LangChain + LangGraph**. One framework means streaming, event hooks and tracing are written once. |
-| **P3** | Every agent gets **both an API and an MCP interface**, generated from the same `entrypoints` definition. |
+| **P3** | Every agent gets a **REST API** and can be ticked into the platform's **single MCP endpoint** (`/mcp`, agents are tools) — both generated from the same `entrypoints` definition. |
 | **P4** | **No long-lived credential ever enters a sandbox.** The sandbox network has no route out; its only peer is an **Internal Gateway** that holds the secrets. |
 | **P5** | **Versions are immutable.** Identified by the full OCI digest; a version record's digest is never rewritten, and re-registering a semver adds a new record that replaces the old one. |
 
@@ -111,9 +112,9 @@ L3  Data               PostgreSQL · Redis · internal OCI registry · Docker im
 
 ### The two hard parts
 
-**Sandbox isolation** ([ADR-0001](specs/container-orchestration.md), scoped by [ADR-0005](specs/overview.md)) — four Docker-native layers, on the assumption that each one can be breached: an internal-only network, dropped capabilities and a non-root user, cgroup limits, and a read-only filesystem. A resident container is bound to one version and serves only that agent's runs. **There is no gVisor**, so `capabilities()` reports `l2_kernel_isolation: false` and the matching security tests are marked `skipped`, never `passed` — this tier fits trusted code, not a public multi-tenant platform.
+**Container isolation** ([`specs/container-orchestration.md`](specs/container-orchestration.md)) — four Docker-native layers, on the assumption that each one can be breached: an internal-only network, dropped capabilities and a non-root user, cgroup limits, and a read-only filesystem. A resident container is bound to one version and serves only that agent's runs. **There is no gVisor**, so `capabilities()` reports `l2_kernel_isolation: false` and the matching security tests are marked `skipped`, never `passed` — this tier fits trusted code, not a public multi-tenant platform.
 
-**Celery ↔ LangGraph boundary** ([ADR-0002](specs/dispatch.md)) — one rule: *crosses machines, needs queueing, or scales independently → Celery; just the next step inside one agent → a LangGraph node.* One run is one Celery task, however many nodes the graph has.
+**Celery ↔ LangGraph boundary** ([`specs/dispatch.md`](specs/dispatch.md)) — one rule: *crosses machines, needs queueing, or scales independently → Celery; just the next step inside one agent → a LangGraph node.* One run is one Celery task, however many nodes the graph has.
 
 ## Repository layout
 
@@ -122,7 +123,7 @@ L3  Data               PostgreSQL · Redis · internal OCI registry · Docker im
 | [`examples/my-agent/`](examples/my-agent/) | **Start here to write an agent.** A working text-analysis agent — copy the directory, edit `agent.py` |
 | [`examples/llm-agent/`](examples/llm-agent/) | The same thing but calling a model through `ctx.llm()`, with the credential staying on the platform |
 | [`examples/stock-agent/`](examples/stock-agent/) | A bounded retry loop: search, judge whether the answer is there, search again with what was missing |
-| [`specs/`](specs/) | **Single source of truth.** Eleven files, one per subsystem; start at `overview.md` |
+| [`specs/`](specs/) | **Single source of truth.** Twelve files, one per subsystem; start at `overview.md` |
 | [`coordination/BOARD.md`](coordination/BOARD.md) | Open tasks, known defects, and what is deliberately out of scope |
 | [`.claude/`](.claude/) | One `builder` agent and a `/verify` command for Claude Code |
 
@@ -145,8 +146,8 @@ To understand the project:
 2. [`coordination/BOARD.md`](coordination/BOARD.md) — what is actually built, what is still open
 
 Local and production are the same `docker compose` stack — there is no separate deployment target. See
-[ADR-0005](specs/overview.md) for what was cut and why, and the
-[runtime notes](specs/container-orchestration.md) for how sandboxes are actually launched.
+[`specs/overview.md`](specs/overview.md) for the delivery conditions and what is deliberately out of scope, and
+[`specs/container-orchestration.md`](specs/container-orchestration.md) for how containers are actually launched.
 
 ## Running the stack
 
@@ -201,7 +202,7 @@ test and nine test files, so it is a task of its own rather than a deletion.
 
 The registry publishes on **host port 6000**, not the 5000 registries usually take: macOS runs AirPlay
 Receiver on `*:5000`, which shadows it. Inside the container it is still 5000 — only the host side moved
-([ADR-0009](specs/agent-registry.md) R3). Check it with the header, not just
+(the reasoning is in the `registry` comments in [`compose.yaml`](compose.yaml)). Check it with the header, not just
 reachability, since anything else on that port would also answer:
 
 ```bash
@@ -271,7 +272,7 @@ and the per-agent OpenAPI document are all generated from it (P3), so changing i
 version.
 
 The module must be importable as `agent` — the filename can differ, the module name cannot
-([ADR-0003](specs/agent-registry.md)).
+([`specs/agent-development.md`](specs/agent-development.md)).
 
 ### 2. Write the Dockerfile
 
@@ -350,16 +351,26 @@ RID=$(curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs" \
   | python3 -c 'import sys, json; print(json.load(sys.stdin)["run_id"])')
 curl -sN "http://localhost:8000/v1/runs/$RID/events"
 
-# MCP — same agent, same schema, generated from the same entrypoints
-curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
+# MCP — one endpoint for the whole platform. Issue an MCP key that ticks this agent,
+# then the agent's entrypoints show up as tools named <agent>__<entrypoint>
+KEY=$(curl -s -X POST http://localhost:8000/v1/mcp-keys -H 'Content-Type: application/json' \
+  -d "{\"name\":\"local test\",\"agent_ids\":[\"$AID\"]}" \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["key"])')
+curl -s -X POST http://localhost:8000/mcp \
+  -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"default","arguments":{"question":"hello"}}}'
+       "params":{"name":"my-agent__default","arguments":{"question":"hello"}}}'
 ```
 
-The stream runs `QUEUED → SCHEDULING → RUNNING → node.start → node.end → SUCCEEDED`. Each Run gets its own
-sandbox container, which is destroyed when the Run ends and never reused.
+The MCP key is shown only once, in that response. Same schema as REST, because both come from the same
+`entrypoints`. Keys, tool naming and errors: [`specs/mcp.md`](specs/mcp.md).
+
+The stream runs `QUEUED → SCHEDULING → RUNNING → node.start → node.end → SUCCEEDED`. Runs execute in the
+version's **resident container**: the first Run starts it, it serves many Runs at once, and it is stopped after
+sitting idle. A one-off sandbox per Run — destroyed when the Run ends, never reused — is only the fallback when
+the resident container cannot start. See [`specs/container-orchestration.md`](specs/container-orchestration.md).
 
 ### Three ways to get it wrong
 
@@ -387,9 +398,8 @@ holds the credentials on its behalf. Calling a model goes through `ctx.llm()`, w
 See [`examples/llm-agent/`](examples/llm-agent/).
 
 You can use OpenAI's **models** this way. You cannot use OpenAI's **Agents SDK** to orchestrate: `build()`
-must return an uncompiled `StateGraph`, and the runtime checks the type (P2). The reasoning and what
-overturning it would cost is priced out in
-[ADR-0010](specs/overview.md).
+must return an uncompiled `StateGraph`, and the runtime checks the type (P2). This is P2 in
+[`specs/overview.md`](specs/overview.md).
 
 ### Publishing a new version
 
@@ -409,7 +419,7 @@ bash scripts/verify-zen000.sh
 One end-to-end pass plus the isolation probes: SSE events, sandbox lifecycle, the four isolation layers, and
 the contract error paths. Expect `通過 27 ／ 失敗 0 ／ 跳過 2`. The two skips are gVisor kernel isolation and
 container escape — this architecture does not provide them, so they are reported as **skipped, never passed**
-([ADR-0005](specs/overview.md)). Needs the stack up, migrations applied and the
+(trusted code only, see [`specs/overview.md`](specs/overview.md)). Needs the stack up, migrations applied and the
 runtime image built.
 
 There is no automated test suite in the repo. Changes are verified by running the changed path on the real
@@ -422,34 +432,33 @@ above and the isolation checklist in [`.claude/commands/verify.md`](.claude/comm
 
 ## 繁體中文
 
-**Zentra 是一個 Agent 平台**：開發者上傳自己的 Python 程式碼（LangGraph），
-平台把它凍結成不可變版本、在**隔離沙盒**中執行，並自動對外開放 **REST API** 與 **MCP** 兩種接口——
-兩者由同一份 `entrypoints` 定義生成，因此永遠不會不一致。
+**Zentra 是一個 Agent 平台**：開發者把自己的 Python Agent（LangGraph）打包成 OCI image 推上平台，
+平台把它凍結成不可變版本、在**隔離容器**中執行，並自動對外開放 **REST API**；
+也可以把 Agent 勾選進平台**唯一的 MCP 接口（`/mcp`）**，每個 Agent 在那裡變成 tools——
+REST 與 MCP 由同一份 `entrypoints` 定義生成，因此永遠不會不一致。
 
-> **目前狀態：實作中。** 貫穿骨架已經跑得通——內建 Agent、OCI image 註冊、沙盒執行、
-> REST + MCP，以及 Run 觀測 Console。除了 Console 切片之外**都還沒被驗收為 `DONE`**，
+> **目前狀態：實作中。** 主要路徑已經跑得通——push OCI image 就註冊版本、在隔離容器執行、
+> REST + MCP，以及 Run 觀測 Console。大部分已交付但**還沒正式驗收**，
 > 哪些驗過、哪些還開著，以 [`coordination/BOARD.md`](coordination/BOARD.md) 為準。
 >
-> **已依 [ADR-0005](specs/overview.md) 降維：** 內部工具、單租戶、信任的程式碼、八週 MVP。
+> **交付條件（[`specs/overview.md`](specs/overview.md)）：** 內部工具、單租戶、只跑信任的程式碼。
 > 部署是**一台主機跑 `docker compose`**，不用 Kubernetes。
-> 前端再依 [ADR-0006](specs/console-ui.md) 改為**原生 HTML + CSS + ES modules，零建置**，
-> 由 API 自己服務 —— compose 是**五個服務**（[ADR-0009](specs/agent-registry.md)
-> 的內部 Registry 是第五個）。
-> 下面五條立場一條沒動，但底下的基礎設施只剩四分之一。
+> 前端是**原生 HTML + CSS + ES modules，零建置**（[`specs/console-ui.md`](specs/console-ui.md)），
+> 由 API 自己服務 —— compose 是**五個長駐服務**（`postgres` · `redis` · `registry` · `app` · `worker`）。
 
 ### 為什麼這樣設計
 
 執行使用者程式碼是 Agent 平台最難的部分。整份設計都在回答一個問題：
-**要怎麼確保上傳的 Agent 摸不到平台憑證、碰不到資料層、打不了外網？**
+**要怎麼確保 Agent 摸不到平台憑證、碰不到資料層、打不了外網？**
 
 答案是五條核心立場，其餘架構都是它們的推論：
-（威脅模型隨 ADR-0005 降級為「信任的程式碼」，但**這五條沒有跟著降**）
+（交付條件假設「只跑信任的程式碼」，但**這五條不因此放寬**）
 
 | | 立場 |
 |---|---|
 | **P1** | 使用者程式碼**永遠不在平台行程內執行**。Celery worker 只派工與監看，`exec` 一律在沙盒。 |
 | **P2** | Agent 框架**統一 LangChain + LangGraph**。收斂成一種，串流、事件 hook、觀測才只要寫一次。 |
-| **P3** | 每個 Agent **天生就有 API + MCP 兩個門面**，由同一份定義生成。 |
+| **P3** | 每個 Agent **天生有 REST 門面，並可被勾選進平台唯一的 MCP 接口**（`/mcp`，Agent 是 tools），都由同一份 `entrypoints` 生成。 |
 | **P4** | **沙盒內拿不到任何長期憑證**。沙盒網段沒有對外路由，唯一對端是代持憑證的 **Internal Gateway**。 |
 | **P5** | **版本不可變**。以完整 OCI digest 識別；一筆版本紀錄的 digest 永不改寫，同版號重新註冊是新增一筆並取代舊的。 |
 
@@ -518,12 +527,12 @@ flowchart LR
 
 ### 兩個技術核心
 
-**沙盒隔離**（[ADR-0001](specs/container-orchestration.md)，範圍見 [ADR-0005](specs/overview.md)）——
-四層 Docker 原生隔離，且**假設每一層都可能被突破**：internal 網段、`cap_drop ALL` + non-root、cgroups 限額、唯讀檔案系統，外加 SDK 攔截層。沙盒一 Run 一盒，絕不重用。
+**容器隔離**（[`specs/container-orchestration.md`](specs/container-orchestration.md)）——
+四層 Docker 原生隔離，且**假設每一層都可能被突破**：internal 網段、`cap_drop ALL` + non-root、cgroups 限額、唯讀檔案系統，外加 SDK 攔截層。常駐容器只綁一個版本、只服務那個 Agent 的 Run。
 **沒有 gVisor**——`capabilities()` 誠實回報 `l2_kernel_isolation: false`，對應的安全測試標 `skipped` 而非 `passed`。
 這個等級適用於**信任的程式碼**，不適用於公開多租戶。
 
-**Celery 與 LangGraph 的邊界**（[ADR-0002](specs/dispatch.md)）——
+**Celery 與 LangGraph 的邊界**（[`specs/dispatch.md`](specs/dispatch.md)）——
 一條判準：*跨機器、需排隊、需獨立擴縮 → Celery；只是同一 Agent 內部的下一步 → LangGraph node。*
 一次 Run 就是一個 Celery task，不管圖裡有幾個節點。
 
@@ -588,7 +597,7 @@ docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
 
 Registry 發布在**主機 port 6000**，不是 registry 慣用的 5000：macOS 的 AirPlay Receiver
 在 `*:5000` 聽，會蓋掉它。容器內仍是 5000，換的只有主機端
-（[ADR-0009](specs/agent-registry.md) R3）。
+（理由寫在 [`compose.yaml`](compose.yaml) 的 `registry` 註解）。
 確認要看 header 而不是「連得上」——別的服務也會回應：
 
 ```bash
@@ -651,7 +660,7 @@ def build(ctx) -> StateGraph:
 全部從它生成（P3）。改了它就要發新版本。
 
 模組必須能以 `agent` 這個名字被 import ——
-檔名可以不同，模組名不行（[ADR-0003](specs/agent-registry.md)）。
+檔名可以不同，模組名不行（[`specs/agent-development.md`](specs/agent-development.md)）。
 
 #### 2. 寫 Dockerfile
 
@@ -727,16 +736,26 @@ RID=$(curl -s -X POST "http://localhost:8000/v1/agents/$AID/runs" \
   | python3 -c 'import sys, json; print(json.load(sys.stdin)["run_id"])')
 curl -sN "http://localhost:8000/v1/runs/$RID/events"
 
-# MCP —— 同一個 agent、同一份 schema，都從同一份 entrypoints 生成
-curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
+# MCP —— 整個平台只有一個接口。先發一把勾選這個 Agent 的 MCP key，
+# 這個 Agent 的 entrypoint 就會變成 tool，名稱是 <agent>__<entrypoint>
+KEY=$(curl -s -X POST http://localhost:8000/v1/mcp-keys -H 'Content-Type: application/json' \
+  -d "{\"name\":\"本機測試\",\"agent_ids\":[\"$AID\"]}" \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["key"])')
+curl -s -X POST http://localhost:8000/mcp \
+  -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"default","arguments":{"question":"哈囉"}}}'
+       "params":{"name":"my-agent__default","arguments":{"question":"哈囉"}}}'
 ```
 
+MCP key 的明文只在發 key 的那次回應出現一次。輸入格式跟 REST 是同一份，因為都來自同一份 `entrypoints`。
+key、tool 命名、錯誤格式看 [`specs/mcp.md`](specs/mcp.md)。
+
 事件流是 `QUEUED → SCHEDULING → RUNNING → node.start → node.end → SUCCEEDED`。
-每個 Run 有自己的沙盒容器，結束即銷毀，絕不重用。
+Run 在該版本的**常駐容器**裡執行：第一筆 Run 把它拉起，之後同時服務多筆 Run，閒置一段時間後回收。
+一次性沙盒（一筆 Run 一個、結束即銷毀、絕不重用）只是常駐容器起不來時的退路。
+見 [`specs/container-orchestration.md`](specs/container-orchestration.md)。
 
 #### 三個會寫錯的地方
 
@@ -764,7 +783,7 @@ curl -s -X POST "http://localhost:8000/mcp/agents/$AID" \
 
 這樣能用 OpenAI 的**模型**。但**不能**用 OpenAI 的 **Agents SDK** 編排流程：
 `build()` 必須回傳未 compile 的 `StateGraph`，runtime 會實際檢查型別（P2）。
-理由與推翻它的代價評估見 [ADR-0010](specs/overview.md)。
+這是 [`specs/overview.md`](specs/overview.md) 的 P2。
 
 #### 發新版本
 
@@ -774,7 +793,7 @@ push 已存在的版號會**取代**它：
 見 [`specs/agent-registry.md`](specs/agent-registry.md)。
 
 驗收腳本：一次貫穿加上隔離探測，預期 `通過 27 ／ 失敗 0 ／ 跳過 2`。
-那 2 個 skip 是 gVisor 核心隔離與容器逃逸，本架構不提供，因此**永遠是 skipped 而不是 passed**（ADR-0005）。
+那 2 個 skip 是 gVisor 核心隔離與容器逃逸，本架構不提供，因此**永遠是 skipped 而不是 passed**（只跑信任的程式碼，見 [`specs/overview.md`](specs/overview.md)）。
 
 ```bash
 bash scripts/verify-zen000.sh
