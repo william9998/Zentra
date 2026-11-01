@@ -49,3 +49,6 @@ helm-values.local.yaml
 .vscode/
 *.log
 *.local
+
+# 壓測結果（locust --csv / --html）
+test/performance/results/
