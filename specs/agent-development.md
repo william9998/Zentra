@@ -359,7 +359,7 @@ print(app.invoke({"name": "小明"}))      # 就是你的 input
 | `examples/stock-agent/` | 完整的實戰例子：多輪搜尋、判斷是否足夠、可重複的流程 |
 | `examples/crypto-quant-agent/` | 連外部 API（`ctx.http`）+ 寄信（`ctx.send_email()`） |
 | `examples/demo-echo/` | 最簡單的回聲 Agent，驗證流程用 |
-| `examples/probe-agent/` | 平台的測試 Agent（`make smoke`、壓測打它）。`asyncio.sleep` 模擬等待外部服務、用 input 的 `mode` 在同一張 graph 裡分流 |
+| `examples/probe-agent/` | 平台的測試 Agent（`make smoke`、壓測打它）。`asyncio.sleep` 模擬等待外部服務、`context_kb`／`reply_kb` 模擬 state 與回答的大小、用 input 的 `mode` 在同一張 graph 裡分流 |
 
 ## 開發前檢查清單
 

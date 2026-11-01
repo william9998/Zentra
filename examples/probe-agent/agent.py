@@ -8,22 +8,30 @@
 
 | `mode` | 做什麼 | 誰用 |
 |---|---|---|
-| `simulate`（預設） | 分類問題 → 模擬等待外部服務 → 組回答。**不打 LLM、不花錢、結果固定** | 冒煙測試、壓測 |
-| `llm` | 真的呼叫 `ctx.llm()` 回答問題 | 手動測 LLM 路徑（要先在 Console 設好 LLM 憑證） |
+| `simulate`（預設） | 分類問題 → 載入資料 → 模擬等待外部服務 → 組回答。**不打 LLM、不花錢、結果固定** | 冒煙測試、壓測 |
+| `llm` | 分類 → 載入資料 → 真的呼叫 `ctx.llm()`，把資料和問題一起送過去 | 手動測 LLM 路徑；壓測時配 `test/performance/mock_llm.py` |
 
 不用兩個 entrypoint：不管呼叫哪個入口，平台跑的都是同一張 graph
 （specs/agent-development.md §entrypoint），分流本來就得寫在 graph 裡。
 
-## 為什麼要「模擬等待」
+## 模擬真實 Agent 的記憶體用量
 
-真實 Agent 的時間幾乎都花在等 LLM 或外部 API，不是在算東西。`work_ms` 讓壓測可以
-模擬「一筆 Run 要等 2 秒」這種情況，量出常駐容器同時接很多筆、排隊時的行為，
-而不必真的花 LLM 的錢。等待用 `asyncio.sleep`，**不卡住同一個容器裡的其他 Run** ——
+真實 Agent 的時間幾乎都花在等 LLM 或外部 API，**等的這段期間，這筆 Run 的東西全留在容器記憶體裡**。
+光是 `sleep` 量不出記憶體壓力 —— 一筆只帶幾個字的 Run 幾乎不佔記憶體。所以每個會佔記憶體的來源都有一個旋鈕：
+
+| 真實 Agent | 旋鈕 |
+|---|---|
+| 使用者貼一大段文字進來 | `question` 本身的長度（壓測端的 `ZENTRA_QUESTION_CHARS`） |
+| 讀進來的文件、對話歷史、工具查回來的資料，放在 state 裡 | `context_kb`：`load_context` 產生這麼多的資料，**等待期間一直留在 state 裡** |
+| LLM 回來的長文字 | `simulate`：`reply_kb` 決定回答多長；`llm`：由 LLM（或假 LLM）決定 |
+| 等 LLM 時連線掛著、回覆在路上 | `mode=llm` 時是真的連線：容器 → Gateway → LLM，Gateway 收完整段回覆才轉回容器 |
+
+等待用 `asyncio.sleep`，**不卡住同一個容器裡的其他 Run** ——
 這也是真實 Agent 該有的寫法（specs/agent-development.md §容器裡的限制）。
 
 ## 冒煙測試依賴的固定行為（改了要一起改 scripts/verify-zen000.sh）
 
-- `simulate` 一定經過 `classify` → `wait` → `reply_short`（問題 ≤ 40 字）或 `reply_long`
+- `simulate` 一定經過 `classify` → `load_context` → `wait` → `reply_short`（問題 ≤ 40 字）或 `reply_long`
 - output 的 `echo` 一定等於輸入的 `question`
 """
 
@@ -39,25 +47,46 @@ LONG_QUESTION_CHARS = 40
 #: `work_ms` 上限。同步呼叫最多等 60 秒，留一點餘裕。
 MAX_WORK_MS = 30_000
 
+#: `context_kb` / `reply_kb` 上限（100 MB）。故意比「容器 2 GB ÷ 同時 50 筆」大很多，
+#: 才能用它把容器逼到 OOM、驗證平台怎麼收拾。
+MAX_KB = 100 * 1024
+
+#: 產生資料用的一段中文。一個中文字 UTF-8 佔 3 bytes。
+_FILLER = "平台測試資料，模擬真實 Agent 讀進來的文件、對話歷史與工具查回來的結果。"
+
+
+def _text_of_kb(kb: int) -> str:
+    """產生約 `kb` KB（UTF-8）的文字。每次都是新的字串，不會被 Python 共用。"""
+    if kb <= 0:
+        return ""
+    # 依字元數切，不先 encode 再切：那樣會在記憶體裡多出好幾份大字串，
+    # 量到的峰值是這個函式造成的，不是 Agent 本身。
+    chars = kb * 1024 * len(_FILLER) // len(_FILLER.encode())
+    return (_FILLER * (chars // len(_FILLER) + 1))[:chars]
+
 
 class State(TypedDict, total=False):
     """**每個 key 都會出現在 output 裡**（output 就是最終 state），所以只放輸入與結果。"""
     question: str     # 輸入
     mode: str         # 輸入（選填）：simulate / llm
     work_ms: int      # 輸入（選填）
+    context_kb: int   # 輸入（選填）
+    reply_kb: int     # 輸入（選填）
     category: str     # classify 產出：short / long
+    context: str      # load_context 產出，回答前清空（見 _drop_context）
     echo: str         # 原樣回傳的問題
     answer: str
 
 
 @agent(
     name="probe-agent",
-    version="1.0.0",
+    version="1.1.0",
     entrypoints=[{
         "name": "default",
         "description": (
-            "平台測試用 Agent。預設模式把問題分類成長或短、等待 work_ms 毫秒模擬呼叫外部服務，"
-            "再回傳固定格式的回答，不呼叫 LLM；mode=llm 時改用 LLM 回答。"
+            "平台測試用 Agent。預設模式把問題分類成長或短、載入 context_kb 的資料、"
+            "等待 work_ms 毫秒模擬呼叫外部服務，再回傳 reply_kb 大小的回答，不呼叫 LLM；"
+            "mode=llm 時把資料和問題一起交給 LLM 回答。"
         ),
         "input_schema": {
             "type": "object",
@@ -80,6 +109,20 @@ class State(TypedDict, total=False):
                     "default": 0,
                     "minimum": 0,
                     "maximum": MAX_WORK_MS,
+                },
+                "context_kb": {
+                    "type": "integer",
+                    "description": "模擬讀進來的文件或對話歷史有多少 KB，整段 Run 期間都留在記憶體裡",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": MAX_KB,
+                },
+                "reply_kb": {
+                    "type": "integer",
+                    "description": "simulate 模式下回答有多少 KB，模擬 LLM 回來的長文字",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": MAX_KB,
                 },
             },
         },
@@ -105,6 +148,13 @@ def build(ctx) -> StateGraph:
         ctx.logger.info("分類完成", chars=len(question), category=category)
         return {"category": category, "echo": question}
 
+    async def load_context(state: State) -> dict:
+        # 模擬讀文件、撈對話歷史、查資料庫。放進 state，等待與回答期間都留著。
+        context_kb = state.get("context_kb") or 0
+        if context_kb:
+            ctx.emit("context_loaded", {"context_kb": context_kb})
+        return {"context": _text_of_kb(context_kb)}
+
     def pick_mode(state: State) -> str:
         return "llm" if state.get("mode") == "llm" else "simulate"
 
@@ -119,28 +169,42 @@ def build(ctx) -> StateGraph:
     def pick_reply(state: State) -> str:
         return state["category"]
 
+    # 回答時把 context 清空：output 是整個最終 state，原文整包回傳會讓回應、
+    # 資料庫裡的 output 一起變大 —— 真實 Agent 通常也只回答案，不回檢索到的原文。
+    # 回應要多大另外用 reply_kb 控制，兩件事分開量。
+    _drop_context = {"context": ""}
+
     async def reply_short(state: State) -> dict:
-        return {"answer": f"收到短問題：{state['question']}"}
+        answer = f"收到短問題：{state['question']}" + _text_of_kb(state.get("reply_kb") or 0)
+        return {"answer": answer, **_drop_context}
 
     async def reply_long(state: State) -> dict:
         question = state["question"]
-        return {"answer": f"收到長問題（{len(question)} 字），開頭是：{question[:20]}…"}
+        answer = (f"收到長問題（{len(question)} 字），開頭是：{question[:20]}…"
+                  + _text_of_kb(state.get("reply_kb") or 0))
+        return {"answer": answer, **_drop_context}
 
     async def ask_llm(state: State) -> dict:
         # 系統提示放在 Console 的「設定」，改了不用發版
         system = ctx.config.get("SYSTEM_PROMPT", "用繁體中文簡短回答。")
-        reply = await ctx.llm().ainvoke([("system", system), ("human", state["question"])])
+        messages = [("system", system)]
+        if state.get("context"):
+            messages.append(("human", f"參考資料：\n{state['context']}"))
+        messages.append(("human", state["question"]))
+        reply = await ctx.llm().ainvoke(messages)
         ctx.logger.info("LLM 回答完成", chars=len(reply.content))
-        return {"answer": reply.content}
+        return {"answer": reply.content, **_drop_context}
 
     graph.add_node("classify", classify)
+    graph.add_node("load_context", load_context)
     graph.add_node("wait", wait)
     graph.add_node("reply_short", reply_short)
     graph.add_node("reply_long", reply_long)
     graph.add_node("ask_llm", ask_llm)
 
     graph.add_edge(START, "classify")
-    graph.add_conditional_edges("classify", pick_mode, {"simulate": "wait", "llm": "ask_llm"})
+    graph.add_edge("classify", "load_context")
+    graph.add_conditional_edges("load_context", pick_mode, {"simulate": "wait", "llm": "ask_llm"})
     graph.add_conditional_edges("wait", pick_reply, {"short": "reply_short", "long": "reply_long"})
     graph.add_edge("reply_short", END)
     graph.add_edge("reply_long", END)

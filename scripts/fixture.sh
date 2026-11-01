@@ -12,7 +12,7 @@ set -euo pipefail
 API=${API:-http://localhost:8000}
 REGISTRY=${REGISTRY:-localhost:6000}
 NAME=probe-agent
-VERSION=1.0.0
+VERSION=1.1.0
 REF="${REGISTRY}/${NAME}:${VERSION}"
 WAIT_SECONDS=${WAIT_SECONDS:-180}
 

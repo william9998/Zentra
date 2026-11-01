@@ -60,6 +60,43 @@ cd test/performance
 - 每筆 Run 預設等 **1 秒**（`ZENTRA_WORK_MS`），模擬「等 LLM 回應」—— 真實 Agent 的時間大多花在這裡。
   設成 `0` 量的是平台本身的開銷；設成 `5000` 模擬比較慢的 Agent。
 
+## 量記憶體：讓每筆 Run 像真的一樣重
+
+光是「等 1 秒」量不出記憶體壓力 —— 一筆只帶幾個字的 Run 幾乎不佔記憶體。
+真實 Agent 會佔記憶體的每個來源都有一個旋鈕：
+
+| 真實 Agent | 怎麼模擬 | 記憶體佔在哪裡 |
+|---|---|---|
+| 使用者貼一大段文字 | `ZENTRA_QUESTION_CHARS=100000` | app（解析、驗證）、排隊時的 Redis、Postgres |
+| 文件、對話歷史、工具結果放在 state 裡 | `ZENTRA_CONTEXT_KB=10240` | 常駐容器（等待期間一直留著） |
+| LLM 回來的長文字 | `ZENTRA_REPLY_KB=64` | 容器、回應、Postgres 的 output |
+| 等 LLM 時連線掛著 | `ZENTRA_MODE=llm` + 假 LLM（下面） | 容器 + app（Gateway 收完整段回覆才轉回容器） |
+
+壓測時另開一個終端機跑 `bash memwatch.sh`，每隔幾秒記一次容器、app、Redis 的記憶體與排隊筆數，存到 `results/mem.csv`。
+
+### 走真的 LLM 連線（假 LLM）
+
+```bash
+docker run -d --rm --name zentra-mock-llm --network zentra-net \
+  -v "$PWD/mock_llm.py:/mock_llm.py:ro" python:3.12-slim \
+  python /mock_llm.py --bind 0.0.0.0 --delay-ms 2000 --reply-kb 32
+
+ZENTRA_MODE=llm ZENTRA_MOCK_LLM_URL=http://zentra-mock-llm:8090/v1 ZENTRA_CONTEXT_KB=1024 .venv/bin/locust
+
+docker stop zentra-mock-llm      # 用完關掉
+```
+
+- 假 LLM 要**跑在 Docker 網路裡**，不要跑在主機上經 `host.docker.internal` 連回來：在 Colima 上實測會有一成的呼叫卡在剛好 70 秒。
+- 壓測開始時，locustfile 把 probe-agent 的 LLM 憑證指向假 LLM；**等這個 Agent 的 Run 全部跑完才撤掉**。
+  提早撤掉的話，排隊中的 Run 會退回平台預設的真金鑰、打到真的供應商。等超過 3 分鐘還沒跑完就不撤，會印出手動刪的指令。
+- probe-agent 已經設了自己的 LLM 憑證時，壓測會拒絕開始（API 讀不回原本的金鑰，蓋掉就還原不了）。
+
+### 不要拿這個壓到正式環境
+
+`ZENTRA_CONTEXT_KB` 夠大時（例如 `61440`，50 筆 × 60 MB > 2 GB）**會把常駐容器撐爆**：
+跑到一半的 Run 全部失敗，10 分鐘內死 4 次平台就放棄這個版本，之後的 Run 一律 `AGENT_NOT_RUNNING`。
+要恢復：Console 的容器頁按「重啟」，或 `POST /v1/agents/{id}/containers/{container_id}/restart`。
+
 ## 設定（環境變數）
 
 | 變數 | 預設 | 說明 |
@@ -67,7 +104,12 @@ cd test/performance
 | `ZENTRA_AGENT_NAME` | `probe-agent` | 要壓哪個 Agent（用名稱找） |
 | `ZENTRA_AGENT_ID` | （空） | 直接給 id，就不用名稱找 |
 | `ZENTRA_WORK_MS` | `1000` | probe-agent 每筆 Run 模擬等待幾毫秒 |
-| `ZENTRA_INPUT` | `{"question": "locust", "work_ms": <ZENTRA_WORK_MS>}` | 送進去的 `input`（JSON 字串）。**換別的 Agent 時一定要改**，要符合它的 `input_schema` |
+| `ZENTRA_QUESTION_CHARS` | `0` | 問題有多少字（`0` = 固定送 `"locust"`） |
+| `ZENTRA_CONTEXT_KB` | `0` | 每筆 Run 在 state 裡留多少 KB 的資料 |
+| `ZENTRA_REPLY_KB` | `0` | 回答多少 KB（`simulate` 模式） |
+| `ZENTRA_MODE` | `simulate` | `llm` = 真的呼叫 `ctx.llm()`，要配 `ZENTRA_MOCK_LLM_URL` |
+| `ZENTRA_MOCK_LLM_URL` | （空） | 假 LLM 的位址（從 app 容器看出去的），有給才會改憑證 |
+| `ZENTRA_INPUT` | 由上面幾個組出來 | 直接給整個 `input`（JSON 字串），上面的旋鈕就不用了。**換別的 Agent 時一定要改**，要符合它的 `input_schema` |
 | `ZENTRA_ENTRYPOINT` | `default` | 呼叫哪個入口 |
 | `ZENTRA_MCP_KEY` | 自動發一把 | 沒給的話，開始時發一把只勾這個 Agent 的 key，結束時撤銷 |
 | `ZENTRA_MCP_TOOL` | `{agent 名稱}__{entrypoint}` | 通常不用設 |
