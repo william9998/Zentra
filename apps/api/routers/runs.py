@@ -15,12 +15,10 @@ from apps.api.errors import ZentraError
 from apps.api.schemas import (
     CreateRunRequest, CreateRunResponse, RunListResponse, RunResponse, RunSummary,
 )
-from apps.api.services.runs import create_run as create_run_record
-from apps.api.services.runs import creation_rejection
+from apps.api.services.runs import creation_rejection, start_run
 from apps.api.services.runs import list_runs as list_run_rows
 from apps.api.services.runs import to_response, version_semver
 from apps.api.services.streaming import event_stream
-from apps.api.tasks import dispatch_run
 
 router = APIRouter(prefix="/v1", tags=["runs"])
 
@@ -30,17 +28,12 @@ async def create_run(
     agent_id: str, body: CreateRunRequest, response: Response,
     api_key = Depends(optional_agent_api_key),
 ) -> CreateRunResponse:
-    async with db.transaction() as conn:
-        run, version = await create_run_record(
-            conn, agent_id, body, trigger=RunTrigger.API,
-            api_key_id=api_key.id if api_key else None,
-        )
+    # 寫入 + 派工，呼叫端斷線也會做完（start_run）
+    run, version = await start_run(
+        agent_id, body, trigger=RunTrigger.API, api_key_id=api_key.id if api_key else None)
     # 版本被存活檢查放棄：Run 已經以 FAILED 留下紀錄，不派工，回 409。
     if (rejection := creation_rejection(run)) is not None:
         raise rejection
-    # The worker publishes QUEUED along with subsequent events. Broker I/O is
-    # synchronous, so never run send_task on FastAPI's event loop.
-    await asyncio.to_thread(dispatch_run, str(run.id))
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return CreateRunResponse(
         run_id=str(run.id), agent_id=agent_id, agent_version=version.semver,
@@ -55,14 +48,10 @@ async def invoke_run(
     body: CreateRunRequest,
     api_key = Depends(optional_agent_api_key),
 ) -> RunResponse:
-    async with db.transaction() as conn:
-        run, version = await create_run_record(
-            conn, agent_id, body, trigger=RunTrigger.API,
-            api_key_id=api_key.id if api_key else None,
-        )
+    run, version = await start_run(
+        agent_id, body, trigger=RunTrigger.API, api_key_id=api_key.id if api_key else None)
     if (rejection := creation_rejection(run)) is not None:
         raise rejection
-    await asyncio.to_thread(dispatch_run, str(run.id))
     deadline = asyncio.get_running_loop().time() + 60
     while asyncio.get_running_loop().time() < deadline:
         async with db.connection() as conn:

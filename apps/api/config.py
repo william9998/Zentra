@@ -35,11 +35,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://zentra:zentra@postgres:5432/zentra"
     redis_url: str = "redis://redis:6379/0"
 
-    # app 的連線池（只有一個 uvicorn 行程，所以這就是整個 HTTP 端的上限）。
+    # app **每個行程**的連線池。app 跑 APP_WORKERS 個 uvicorn 行程（compose.yaml），
+    # 每個都有一份，所以整個 HTTP 端的上限是 APP_WORKERS ×（size + overflow）。
     # 等外部回應的路徑都會先結束交易，所以連線只在真的查詢時被占用。
-    # ⚠️ 加總要低於 Postgres 的 max_connections（預設 100），worker 的 10 個子行程也要連。
-    db_pool_size: int = Field(default=10, validation_alias="DB_POOL_SIZE")
-    db_max_overflow: int = Field(default=20, validation_alias="DB_MAX_OVERFLOW")
+    # ⚠️ 加總要低於 Postgres 的 max_connections（預設 100），worker 的 10 個子行程也要連：
+    #    預設 2 × 15 = 30；APP_WORKERS 調到 4 也只有 60，加 worker 10、migration 1 仍在範圍內。
+    db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=10, validation_alias="DB_MAX_OVERFLOW")
 
     # Console 靜態檔（ADR-0006）：api 同時是 Console 的 web server，沒有 console 容器。
     console_dir: Path = _CONSOLE_DIR

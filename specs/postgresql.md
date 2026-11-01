@@ -324,6 +324,6 @@ Console 改勾選 = 刪掉 K1 的所有列，再重新插入新的勾選（整�
 | 服務 | compose 的 `postgres`（`pgvector/pgvector:pg16`，擴充備而不用），只掛 `zentra-net`，volume `pgdata` |
 | 備份 | **`pgdata` 和 `registrydata` 必須一起備份**；`ZENTRA_SECRET_KEY` 另外保管 |
 | 成長 | `run_events` > `runs` ≈ `llm_calls`、`egress_calls`。沒有保留期限、沒有分區 |
-| 連線數 | app 最多 30 + worker 10 + migration 1，要低於 `max_connections`（100） |
+| 連線數 | app `APP_WORKERS`（預設 2）× 15 + worker 10 + migration 1，要低於 `max_connections`（100） |
 | 測試資料 | `make clean-test-data` 依名稱前綴清掉測試 Agent 與 Run；測試 Agent `probe-agent` 本身保留，它的 Run 與 API key 清掉 |
 | ⚠️ 從主機連 | 主機上如果也有 Postgres 佔著 5432，會連錯庫。請在容器內跑：`docker compose exec postgres psql -U zentra -d zentra` |

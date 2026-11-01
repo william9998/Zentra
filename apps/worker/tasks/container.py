@@ -273,8 +273,9 @@ def sweep_idle_containers() -> dict:
       · 存活檢查（`_check_liveness`）
       · 常駐 Run 的逾時清掃（`run._sweep_timeouts`）。以前是「每次派工時順手掃」，
         沒有流量就不會掃 —— 被放棄的版本不會再有派工，它的 Run 就永遠卡著。
+      · 補派停在 QUEUED 的 Run（`run._redispatch_orphans`）。
     """
-    from apps.worker.tasks.run import _sweep_timeouts
+    from apps.worker.tasks.run import _redispatch_orphans, _sweep_timeouts
 
     redis = Redis.from_url(settings.redis_url)
     manager = _manager(redis)
@@ -290,6 +291,10 @@ def sweep_idle_containers() -> dict:
             result["timed_out_runs"] = _sweep_timeouts(redis)
         except Exception:                          # noqa: BLE001
             log.exception("sweeping timed-out runs failed")
+        try:
+            result["redispatched_runs"] = _redispatch_orphans()
+        except Exception:                          # noqa: BLE001
+            log.exception("re-dispatching orphaned runs failed")
         return result
     finally:
         redis.close()

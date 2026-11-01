@@ -287,6 +287,42 @@ def _sweep_timeouts(redis: Redis) -> int:
     return swept
 
 
+#: 建立超過這麼久還在 QUEUED，就當成派工漏掉了，補派一次。
+#: 正常的 QUEUED 在 worker 有空時毫秒內就被認領；誤判也無害（見 _redispatch_orphans）。
+REDISPATCH_AFTER_SECONDS = 30
+
+
+def _redispatch_orphans() -> int:
+    """補派停在 QUEUED、沒有任務會來認領的 Run（specs/dispatch.md §派工主流程）。
+
+    app 建 Run 是「寫 DB → 送任務」兩步。呼叫端斷線已由 `start_run` 的 shield 擋住，
+    剩下的是 app 剛好在兩步之間掛掉、或 Redis 弄丟了 q.run 的任務 —— 那筆 Run 永遠停在 QUEUED。
+
+    **重送是安全的**：`_claim_run` 鎖住那一列、不是 QUEUED 就放棄。原任務其實還在
+    Celery 佇列裡排著（只是 worker 太忙）的話，兩個任務只有先到的那個會真的執行。
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=REDISPATCH_AFTER_SECONDS)
+    with worker_db.connection() as conn:
+        orphans = conn.execute(
+            """
+            SELECT id FROM runs
+            WHERE status = %(status)s AND created_at < %(cutoff)s
+            ORDER BY created_at
+            LIMIT 50
+            """,
+            {"status": str(RunStatus.QUEUED), "cutoff": cutoff},
+        ).fetchall()
+    for row in orphans:
+        # task_id 與 app 派工時一樣用 run_id（apps/api/tasks.py dispatch_run）
+        execute_run.apply_async(args=[str(row["id"])], task_id=str(row["id"]))
+    if orphans:
+        log.warning("re-dispatched %d runs stuck in QUEUED for over %ds",
+                    len(orphans), REDISPATCH_AFTER_SECONDS)
+    return len(orphans)
+
+
 def _sweep_queue_timeouts(redis: Redis, now: datetime) -> int:
     """在常駐容器佇列裡等太久、一直沒被取走的 Run 收成 FAILED。
 

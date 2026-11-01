@@ -76,7 +76,12 @@ services:
   # `apps.app.main:app` 更難讀，而且要動每一個 import。目錄名與服務名刻意脫鉤。
   app:
     build: { context: ., dockerfile: docker/app.Dockerfile }
-    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # 多個行程：app 是所有 HTTP 的入口（REST、MCP、Console、容器的 Gateway 呼叫），
+    # 單一行程最多吃滿一顆 CPU。長輸入壓測時它是瓶頸（容器反而閒著）。
+    # 預設 2：4 核心的主機上 2 和 4 一樣快（再多就換 Postgres 卡住），2 少用約 250 MB。
+    # 每個行程有自己的 DB 連線池 —— 調大前先看 specs/dispatcher-resources.md §其他行程與連線。
+    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--workers", "${APP_WORKERS:-2}"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
       DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}

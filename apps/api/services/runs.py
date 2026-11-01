@@ -1,11 +1,13 @@
 """Run creation and result persistence; never imports image code."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
+from apps.api import db
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
 from apps.api.errors import ZentraError
 from apps.api.ids import uuid7
@@ -13,6 +15,11 @@ from apps.api.rows import AgentVersion, Run
 from apps.api.schemas import CreateRunRequest, RunResponse, SandboxResult
 from apps.api.services import agents, containers, llm, pagination
 from apps.api.services.events import lock_run, require_active, status_event
+from apps.api.tasks import dispatch_run
+
+#: 正在建立中的 start_run。asyncio 只對 task 留弱參照 —— 呼叫端被取消後
+#: 沒人持有它，不放在這裡的話可能做到一半就被回收。
+_starting: set[asyncio.Task] = set()
 
 
 async def create_run(
@@ -65,6 +72,51 @@ async def create_run(
     run = Run.from_row(rec)
     await status_event(conn, run, terminal=status.is_terminal)
     return run, version
+
+
+async def start_run(
+    agent_id: str,
+    body: CreateRunRequest,
+    *,
+    trigger: RunTrigger,
+    api_key_id: UUID | None = None,
+    mcp_key_id: UUID | None = None,
+) -> tuple[Run, AgentVersion]:
+    """建一筆 Run 並派工。**呼叫端斷線也會做完。** REST 與 MCP 都走這裡。
+
+    寫入 DB 和送 Celery 任務是兩步。呼叫端在中間斷線時請求會被取消，
+    沒送出去的 Run 就永遠停在 QUEUED —— 沒有任務會來認領它（壓測停掉 Locust 時實際留下過）。
+    所以兩步包在 `shield` 裡：呼叫端拿到 CancelledError，這一段照樣跑完。
+    app 剛好在中間掛掉的那種，由 worker 的排程補派（specs/dispatch.md §派工主流程）。
+
+    版本被存活檢查放棄時 Run 建出來就是終態，不派工；呼叫端用 `creation_rejection` 決定怎麼回。
+    """
+    task = asyncio.ensure_future(_create_and_dispatch(
+        agent_id, body, trigger=trigger, api_key_id=api_key_id, mcp_key_id=mcp_key_id))
+    _starting.add(task)
+    task.add_done_callback(_forget)
+    return await asyncio.shield(task)
+
+
+async def _create_and_dispatch(
+    agent_id: str, body: CreateRunRequest, *, trigger: RunTrigger,
+    api_key_id: UUID | None, mcp_key_id: UUID | None,
+) -> tuple[Run, AgentVersion]:
+    async with db.transaction() as conn:
+        run, version = await create_run(
+            conn, agent_id, body, trigger=trigger, api_key_id=api_key_id, mcp_key_id=mcp_key_id)
+    if not RunStatus(run.status).is_terminal:
+        # Broker I/O 是同步的，不要跑在事件迴圈上
+        await asyncio.to_thread(dispatch_run, str(run.id))
+    return run, version
+
+
+def _forget(task: asyncio.Task) -> None:
+    _starting.discard(task)
+    # 呼叫端已經走了的話沒人會讀這個例外（例如 input 驗證失敗），
+    # 不讀 asyncio 會在回收時印「exception was never retrieved」。
+    if not task.cancelled():
+        task.exception()
 
 
 def creation_rejection(run: Run) -> ZentraError | None:
