@@ -22,7 +22,7 @@ scrape_configs:
   # 主機：CPU、記憶體、磁碟、網路（node-exporter，port 9100）
   - job_name: node
     static_configs:
-      - targets: ["host.docker.internal:9100"]   # 正式：<AP 主機 IP>:9100
+      - targets: ["host.docker.internal:9112"]   # 正式：<AP 主機 IP>:9100
         labels: { server: ap }
       # DB 拆到獨立主機後，取消註解：
       # - targets: ["<DB 主機 IP>:9100"]
