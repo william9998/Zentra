@@ -14,12 +14,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncpg
 
 from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError
-from apps.api.models import AgentSettings
+from apps.api.rows import AgentSettings
 
 #: 契約 §2.6 第 3 點。長得像識別字，因為它最終會是 agent 程式碼裡的 `cfg["..."]`。
 KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -58,36 +57,36 @@ def validate_config(config: dict) -> dict:
     return config
 
 
-async def describe(session: AsyncSession, agent_id: uuid.UUID) -> SettingsView:
-    row = await session.get(AgentSettings, agent_id)
+async def describe(conn: asyncpg.Connection, agent_id: uuid.UUID) -> SettingsView:
+    row = await conn.fetchrow(
+        f"SELECT {AgentSettings.returning()} FROM agent_settings WHERE agent_id = $1",
+        agent_id,
+    )
     if row is None:
         return SettingsView(config={}, updated_at=None)
-    return SettingsView(config=dict(row.config or {}), updated_at=row.updated_at)
+    return SettingsView(config=dict(row["config"] or {}), updated_at=row["updated_at"])
 
 
-async def replace(session: AsyncSession, agent_id: uuid.UUID, config: dict) -> SettingsView:
+async def replace(conn: asyncpg.Connection, agent_id: uuid.UUID, config: dict) -> SettingsView:
     """整份取代。**立刻對所有版本生效，下一筆 Run 就是新值。**
 
     已經在跑的 Run 不受影響 —— 它的 `ctx.config` 在派工那一刻就定稿了。
     """
     validate_config(config)
     now = datetime.now(UTC)
-    row = await session.get(AgentSettings, agent_id)
-    if row is None:
-        row = AgentSettings(agent_id=agent_id, created_at=now)
-        session.add(row)
-    row.config = config
-    row.updated_at = now
-    await session.commit()
+    await conn.execute(
+        """
+        INSERT INTO agent_settings (agent_id, config, created_at, updated_at)
+        VALUES ($1, $2, $3, $3)
+        ON CONFLICT (agent_id) DO UPDATE SET config = EXCLUDED.config, updated_at = EXCLUDED.updated_at
+        """,
+        agent_id, config, now,
+    )
     return SettingsView(config=dict(config), updated_at=now)
 
 
-async def config_for(session: AsyncSession, agent_id: uuid.UUID) -> dict:
-    """給派工用（bootstrap／工作項／validation）。沒設定過就是 `{}`。
-
-    **每筆 Run 重算**，跟 `default_model` 同一條規則：中途改設定，下一筆就生效。
-    """
-    row = (await session.execute(
-        select(AgentSettings.config).where(AgentSettings.agent_id == agent_id)
-    )).scalar_one_or_none()
-    return dict(row or {})
+async def config_for(conn: asyncpg.Connection, agent_id: uuid.UUID) -> dict:
+    """給派工用（bootstrap／工作項／validation）。沒設定過就是 `{}`。"""
+    value = await conn.fetchval(
+        "SELECT config FROM agent_settings WHERE agent_id = $1", agent_id)
+    return dict(value or {})

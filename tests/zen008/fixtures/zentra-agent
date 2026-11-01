@@ -1,5 +1,0 @@
-#!/usr/bin/env python3
-"""`zentra.image/v1` 固定可執行檔。平台只會用 `validate` / `run` 兩個參數叫它。"""
-from zentra_sdk.image_runtime import main
-
-main()

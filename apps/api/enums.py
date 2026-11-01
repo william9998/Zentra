@@ -41,10 +41,13 @@ class AgentVersionStatus(StrEnum):
     BUILDING = "BUILDING"
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
+    #: 同版號重新註冊後被取代的舊紀錄（ADR-0016）。不出現在任何版本端點，
+    #: 只留給綁著它的舊 Run 查當時跑的是哪個 digest。
+    SUPERSEDED = "SUPERSEDED"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.PUBLISHED, self.FAILED}
+        return self in {self.PUBLISHED, self.FAILED, self.SUPERSEDED}
 
 
 class AgentSourceType(StrEnum):
@@ -130,11 +133,3 @@ class EventType(StrEnum):
     LOG = "log"
     CUSTOM = "custom"
     ERROR = "error"
-
-
-#: ZEN-000 的 agent 寫死在沙盒映像裡，還沒有 Agent Registry（ZEN-001 才做）。
-#: 這個固定 id 讓 `POST /v1/agents/{agent_id}/runs` 有東西可以打，
-#: 其他 agent_id 一律回 NOT_FOUND —— 順便給 QA 一條真的 404 路徑可以測。
-BUILTIN_AGENT_ID = "01930000-0000-7000-8000-000000000001"
-BUILTIN_AGENT_VERSION_ID = "01930000-0000-7000-8000-000000000002"
-BUILTIN_AGENT_SEMVER = "0.0.0-builtin"

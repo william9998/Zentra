@@ -216,7 +216,6 @@ function viewEndpointSet(raw) {
   const safe = raw && typeof raw === 'object' ? raw : {};
   return {
     rest: typeof safe.rest === 'string' ? safe.rest : '',
-    mcp: typeof safe.mcp === 'string' ? safe.mcp : '',
     openapi: typeof safe.openapi === 'string' ? safe.openapi : '',
   };
 }
@@ -481,6 +480,48 @@ export async function issueAgentApiKey(agentId, name) {
 export async function revokeAgentApiKey(agentId, keyId) {
   return viewAgentKey(await req('/agents/' + encodeURIComponent(agentId)
     + '/api-keys/' + encodeURIComponent(keyId), { method: 'DELETE' }));
+}
+
+/**
+ * MCP key 的 metadata（api.md §MCP key）。**沒有 key 本身** —— 明文只在
+ * `issueMcpKey()` 的回傳裡出現一次。
+ */
+function viewMcpKey(raw) {
+  return {
+    keyId: raw.key_id,
+    name: raw.name,
+    keyPrefix: raw.key_prefix,
+    agentIds: Array.isArray(raw.agent_ids) ? raw.agent_ids : [],
+    createdAt: toDate(raw.created_at),
+    lastUsedAt: toDate(raw.last_used_at),
+    revokedAt: toDate(raw.revoked_at),
+  };
+}
+
+/** GET /v1/mcp-keys —— `endpoint` 是對端要連的網址；items 含已撤銷的。 */
+export async function listMcpKeys() {
+  const raw = await req('/mcp-keys');
+  return {
+    endpoint: typeof raw.endpoint === 'string' ? raw.endpoint : '',
+    items: (raw.items || []).map(viewMcpKey),
+  };
+}
+
+/** POST /v1/mcp-keys —— `plaintext` 只有這一次拿得到。 */
+export async function issueMcpKey(name, agentIds) {
+  const raw = await req('/mcp-keys', jsonPost({ name, agent_ids: agentIds }));
+  return Object.assign(viewMcpKey(raw), { plaintext: raw.key });
+}
+
+/** PUT /v1/mcp-keys/{id}/agents —— 整份取代勾選。 */
+export async function setMcpKeyAgents(keyId, agentIds) {
+  return viewMcpKey(await req('/mcp-keys/' + encodeURIComponent(keyId) + '/agents',
+    jsonPut({ agent_ids: agentIds })));
+}
+
+/** DELETE /v1/mcp-keys/{id} —— 軟撤銷，回 200 帶 revoked_at。 */
+export async function revokeMcpKey(keyId) {
+  return viewMcpKey(await req('/mcp-keys/' + encodeURIComponent(keyId), { method: 'DELETE' }));
 }
 
 /** §3.3 的篩選條件。空值一律不送，免得 `?model=` 被當成「model 是空字串」。 */

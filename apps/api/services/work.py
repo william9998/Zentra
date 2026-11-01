@@ -74,6 +74,19 @@ async def pop(
         return None
 
 
+async def push_front(
+    redis: AsyncRedis,
+    agent_id: uuid.UUID | str,
+    version_id: uuid.UUID | str,
+    item: dict[str, Any],
+) -> None:
+    """把取出來卻交不出去的工作放回**最前面**（BRPOP 從右邊取，所以 RPUSH）。
+
+    放回尾巴會讓它重新排隊 —— 它本來就是最早來的，不該被後到的插隊。
+    """
+    await redis.rpush(queue_key(agent_id, version_id), json.dumps(item))
+
+
 async def depth(
     redis: AsyncRedis, agent_id: uuid.UUID | str, version_id: uuid.UUID | str,
 ) -> int:

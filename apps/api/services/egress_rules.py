@@ -13,13 +13,13 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncpg
+from asyncpg.exceptions import UniqueViolationError
 
 from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
-from apps.api.models import AgentEgressRule, AgentEmailSender
+from apps.api.rows import AgentEgressRule, AgentEmailSender
 from apps.api.services import agent_secrets
 
 #: 只接受小寫 DNS 名稱。刻意不接受結尾的點 —— `api.binance.com.` 與
@@ -105,7 +105,7 @@ def validate_path_prefix(path_prefix: str | None) -> str | None:
 
 
 async def _validate_auth(
-    session: AsyncSession, agent_id: uuid.UUID,
+    conn: asyncpg.Connection, agent_id: uuid.UUID,
     auth_secret_name: str | None, auth_header: str | None,
 ) -> None:
     """成對出現，而且 header 不能是平台自己要送的那幾個（ADR-0014 E3）。"""
@@ -120,120 +120,147 @@ async def _validate_auth(
         raise _invalid(
             f"auth_header cannot be {auth_header!r}: the platform sets that header itself",
             "auth_header")
-    if not await agent_secrets.exists(session, agent_id, auth_secret_name):
+    if not await agent_secrets.exists(conn, agent_id, auth_secret_name):
         raise _invalid(
             f"there is no secret named {auth_secret_name!r} for this agent -- "
             "store it first (PUT /v1/agents/{id}/secrets/{name})", "auth_secret_name")
 
 
-async def list_rules(session: AsyncSession, agent_id: uuid.UUID) -> list[AgentEgressRule]:
-    return list((await session.execute(
-        select(AgentEgressRule).where(AgentEgressRule.agent_id == agent_id)
-        .order_by(AgentEgressRule.host)
-    )).scalars().all())
+async def list_rules(conn: asyncpg.Connection, agent_id: uuid.UUID) -> list[AgentEgressRule]:
+    rows = await conn.fetch(
+        f"SELECT {AgentEgressRule.returning()} FROM agent_egress_rules "
+        "WHERE agent_id = $1 ORDER BY host",
+        agent_id,
+    )
+    return [AgentEgressRule.from_row(row) for row in rows]
 
 
 async def load_rule(
-    session: AsyncSession, agent_id: uuid.UUID, rule_id: str,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, rule_id: str,
 ) -> AgentEgressRule:
     try:
         parsed = uuid.UUID(rule_id)
     except ValueError:
         raise not_found("egress rule") from None
-    row = await session.get(AgentEgressRule, parsed)
-    if row is None or row.agent_id != agent_id:
+    rec = await conn.fetchrow(
+        f"SELECT {AgentEgressRule.returning()} FROM agent_egress_rules "
+        "WHERE rule_id = $1 AND agent_id = $2",
+        parsed, agent_id,
+    )
+    if rec is None:
         raise not_found("egress rule")
-    return row
+    return AgentEgressRule.from_row(rec)
+
+
+def _host_conflict(host: str) -> ZentraError:
+    return ZentraError(
+        ErrorCode.VERSION_CONFLICT,
+        f"this agent already has a rule for {host}: which rule applies has to be "
+        "obvious at a glance, so hosts are unique per agent",
+        409, details={"field": "host"},
+    )
 
 
 async def create_rule(
-    session: AsyncSession, agent_id: uuid.UUID, body,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, body,
 ) -> AgentEgressRule:
     host = validate_host(body.host)
     methods = validate_methods(body.methods)
     path_prefix = validate_path_prefix(body.path_prefix)
-    await _validate_auth(session, agent_id, body.auth_secret_name, body.auth_header)
+    await _validate_auth(conn, agent_id, body.auth_secret_name, body.auth_header)
 
-    existing = await list_rules(session, agent_id)
+    existing = await list_rules(conn, agent_id)
     if any(rule.host == host for rule in existing):
-        raise ZentraError(
-            ErrorCode.VERSION_CONFLICT,
-            f"this agent already has a rule for {host}: which rule applies has to be "
-            "obvious at a glance, so hosts are unique per agent",
-            409, details={"field": "host"},
-        )
+        raise _host_conflict(host)
     if len(existing) >= MAX_RULES:
         raise _invalid(
             f"this agent already has {len(existing)} rules, the limit is {MAX_RULES}",
             "host")
 
     now = datetime.now(UTC)
-    row = AgentEgressRule(
-        rule_id=uuid7(), agent_id=agent_id, host=host, methods=methods,
-        path_prefix=path_prefix, auth_secret_name=body.auth_secret_name,
-        auth_header=body.auth_header, description=body.description,
-        created_at=now, updated_at=now,
-    )
-    session.add(row)
-    await session.commit()
-    return row
+    try:
+        rec = await conn.fetchrow(
+            f"""
+            INSERT INTO agent_egress_rules
+                (rule_id, agent_id, host, methods, path_prefix,
+                 auth_secret_name, auth_header, description, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+            RETURNING {AgentEgressRule.returning()}
+            """,
+            uuid7(), agent_id, host, methods, path_prefix,
+            body.auth_secret_name, body.auth_header, body.description, now,
+        )
+    except UniqueViolationError as exc:
+        raise _host_conflict(host) from exc
+    return AgentEgressRule.from_row(rec)
 
 
 async def update_rule(
-    session: AsyncSession, agent_id: uuid.UUID, row: AgentEgressRule, body,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, row: AgentEgressRule, body,
 ) -> AgentEgressRule:
     """整條取代（`PUT`）。**改規則立刻生效**，包括對已經在跑的 Run 的下一次呼叫。"""
     host = validate_host(body.host)
     methods = validate_methods(body.methods)
     path_prefix = validate_path_prefix(body.path_prefix)
-    await _validate_auth(session, agent_id, body.auth_secret_name, body.auth_header)
+    await _validate_auth(conn, agent_id, body.auth_secret_name, body.auth_header)
 
-    clash = (await session.execute(
-        select(AgentEgressRule).where(
-            AgentEgressRule.agent_id == agent_id,
-            AgentEgressRule.host == host,
-            AgentEgressRule.rule_id != row.rule_id,
-        )
-    )).scalar_one_or_none()
-    if clash is not None:
+    clash_id = await conn.fetchval(
+        "SELECT rule_id FROM agent_egress_rules "
+        "WHERE agent_id = $1 AND host = $2 AND rule_id <> $3",
+        agent_id, host, row.rule_id,
+    )
+    if clash_id is not None:
         raise ZentraError(
             ErrorCode.VERSION_CONFLICT,
             f"this agent already has another rule for {host}", 409,
             details={"field": "host"},
         )
 
-    row.host = host
-    row.methods = methods
-    row.path_prefix = path_prefix
-    row.auth_secret_name = body.auth_secret_name
-    row.auth_header = body.auth_header
-    row.description = body.description
-    row.updated_at = datetime.now(UTC)
-    await session.commit()
-    return row
+    now = datetime.now(UTC)
+    try:
+        rec = await conn.fetchrow(
+            f"""
+            UPDATE agent_egress_rules SET
+                host = $2, methods = $3, path_prefix = $4,
+                auth_secret_name = $5, auth_header = $6, description = $7,
+                updated_at = $8
+            WHERE rule_id = $1
+            RETURNING {AgentEgressRule.returning()}
+            """,
+            row.rule_id, host, methods, path_prefix,
+            body.auth_secret_name, body.auth_header, body.description, now,
+        )
+    except UniqueViolationError as exc:
+        raise ZentraError(
+            ErrorCode.VERSION_CONFLICT,
+            f"this agent already has another rule for {host}", 409,
+            details={"field": "host"},
+        ) from exc
+    return AgentEgressRule.from_row(rec)
 
 
-async def delete_rule(session: AsyncSession, row: AgentEgressRule) -> None:
+async def delete_rule(conn: asyncpg.Connection, row: AgentEgressRule) -> None:
     """刪規則**不會**抹掉它的稽核紀錄 —— `egress_calls.rule_id` 是 SET NULL。"""
-    await session.delete(row)
-    await session.commit()
+    await conn.execute(
+        "DELETE FROM agent_egress_rules WHERE rule_id = $1", row.rule_id)
 
 
 async def match_rule(
-    session: AsyncSession, agent_id: uuid.UUID, host: str,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, host: str,
 ) -> AgentEgressRule | None:
     """host 精確比對。**沒有後綴比對、沒有萬用字元**（E1）。"""
-    return (await session.execute(
-        select(AgentEgressRule).where(
-            AgentEgressRule.agent_id == agent_id, AgentEgressRule.host == host)
-    )).scalar_one_or_none()
+    rec = await conn.fetchrow(
+        f"SELECT {AgentEgressRule.returning()} FROM agent_egress_rules "
+        "WHERE agent_id = $1 AND host = $2",
+        agent_id, host,
+    )
+    return AgentEgressRule.from_row(rec) if rec is not None else None
 
 
-async def has_rules(session: AsyncSession, agent_id: uuid.UUID) -> bool:
-    row = (await session.execute(
-        select(AgentEgressRule.rule_id).where(AgentEgressRule.agent_id == agent_id).limit(1)
-    )).scalar_one_or_none()
-    return row is not None
+async def has_rules(conn: asyncpg.Connection, agent_id: uuid.UUID) -> bool:
+    value = await conn.fetchval(
+        "SELECT 1 FROM agent_egress_rules WHERE agent_id = $1 LIMIT 1", agent_id)
+    return value is not None
 
 
 # ── 寄件者（§2.9）──────────────────────────────────────────────────────
@@ -264,12 +291,16 @@ def validate_recipients(recipients: list[str]) -> list[str]:
     return cleaned
 
 
-async def get_sender(session: AsyncSession, agent_id: uuid.UUID) -> AgentEmailSender | None:
-    return await session.get(AgentEmailSender, agent_id)
+async def get_sender(conn: asyncpg.Connection, agent_id: uuid.UUID) -> AgentEmailSender | None:
+    rec = await conn.fetchrow(
+        f"SELECT {AgentEmailSender.returning()} FROM agent_email_sender WHERE agent_id = $1",
+        agent_id,
+    )
+    return AgentEmailSender.from_row(rec) if rec is not None else None
 
 
 async def set_sender(
-    session: AsyncSession, agent_id: uuid.UUID, body,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, body,
 ) -> AgentEmailSender:
     if body.smtp_port not in ALLOWED_SMTP_PORTS:
         raise _invalid(
@@ -278,7 +309,7 @@ async def set_sender(
     validate_host(body.smtp_host)
     recipients = validate_recipients(body.allowed_recipients)
     agent_secrets.validate_name(body.password_secret_name)
-    if not await agent_secrets.exists(session, agent_id, body.password_secret_name):
+    if not await agent_secrets.exists(conn, agent_id, body.password_secret_name):
         raise _invalid(
             f"there is no secret named {body.password_secret_name!r} for this agent -- "
             "store the SMTP password there first (PUT /v1/agents/{id}/secrets/{name}); "
@@ -286,25 +317,30 @@ async def set_sender(
             "password_secret_name")
 
     now = datetime.now(UTC)
-    row = await session.get(AgentEmailSender, agent_id)
-    if row is None:
-        row = AgentEmailSender(agent_id=agent_id, created_at=now)
-        session.add(row)
-    row.smtp_host = body.smtp_host
-    row.smtp_port = body.smtp_port
-    row.username = body.username
-    row.from_address = body.from_address
-    row.password_secret_name = body.password_secret_name
-    row.allowed_recipients = recipients
-    row.updated_at = now
-    await session.commit()
-    return row
+    rec = await conn.fetchrow(
+        f"""
+        INSERT INTO agent_email_sender
+            (agent_id, smtp_host, smtp_port, username, from_address,
+             password_secret_name, allowed_recipients, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+        ON CONFLICT (agent_id) DO UPDATE SET
+            smtp_host = EXCLUDED.smtp_host,
+            smtp_port = EXCLUDED.smtp_port,
+            username = EXCLUDED.username,
+            from_address = EXCLUDED.from_address,
+            password_secret_name = EXCLUDED.password_secret_name,
+            allowed_recipients = EXCLUDED.allowed_recipients,
+            updated_at = EXCLUDED.updated_at
+        RETURNING {AgentEmailSender.returning()}
+        """,
+        agent_id, body.smtp_host, body.smtp_port, body.username, body.from_address,
+        body.password_secret_name, recipients, now,
+    )
+    return AgentEmailSender.from_row(rec)
 
 
-async def delete_sender(session: AsyncSession, agent_id: uuid.UUID) -> None:
+async def delete_sender(conn: asyncpg.Connection, agent_id: uuid.UUID) -> None:
     """刪掉之後 §4.4 一律 `EGRESS_BLOCKED`（`SENDER_NOT_CONFIGURED`），
     **不是靜默不寄** —— agent 要知道信沒寄出去。"""
-    row = await session.get(AgentEmailSender, agent_id)
-    if row is not None:
-        await session.delete(row)
-        await session.commit()
+    await conn.execute(
+        "DELETE FROM agent_email_sender WHERE agent_id = $1", agent_id)

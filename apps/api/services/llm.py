@@ -24,14 +24,13 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+import asyncpg
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api import db
 from apps.api.config import get_settings
 from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError
-from apps.api.models import LlmCall
 from apps.api.services import agent_credentials
 
 #: 絕不轉發給供應商的 header。`authorization` 是最重要的一條 ——
@@ -96,7 +95,7 @@ def _usage_from(payload: dict[str, Any]) -> tuple[int, int]:
 
 
 async def _record(
-    session: AsyncSession,
+    conn: asyncpg.Connection,
     run_id: uuid.UUID,
     *,
     model: str,
@@ -108,36 +107,35 @@ async def _record(
     credential_source: str = "PLATFORM",
 ) -> None:
     """寫一列 `llm_calls`。**失敗的呼叫也要寫** —— 稽核要看得到試過但失敗。"""
-    session.add(LlmCall(
-        id=uuid.uuid4(),
-        run_id=run_id,
-        model=model[:128],
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cost_usd=_cost(model, input_tokens, output_tokens),
-        latency_ms=latency_ms,
-        status_code=status_code,
-        error=None if error is None else error[:2000],
-        credential_source=credential_source,
-    ))
-    await session.commit()
+    await conn.execute(
+        f"""
+        INSERT INTO llm_calls
+            (id, run_id, model, input_tokens, output_tokens, cost_usd,
+             latency_ms, status_code, error, credential_source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """,
+        uuid.uuid4(), run_id, model[:128], input_tokens, output_tokens,
+        _cost(model, input_tokens, output_tokens),
+        latency_ms, status_code,
+        None if error is None else error[:2000],
+        credential_source,
+    )
 
 
-async def aggregate_usage(session: AsyncSession, run_id: uuid.UUID) -> dict[str, Any]:
+async def aggregate_usage(conn: asyncpg.Connection, run_id: uuid.UUID) -> dict[str, Any]:
     """從 `llm_calls` 聚合出 Run 的 `usage`（契約 §1 的形狀）。
 
     **這是唯一的來源。** 沙盒也會在 `/result` 回報 usage，但那是使用者程式碼算的，
     沒有理由被當成帳。沒有任何呼叫的 Run 得到全 0 與 `cost_usd: "0"`，
     正是契約要求的。
     """
-    rows = (await session.execute(
-        select(LlmCall.input_tokens, LlmCall.output_tokens, LlmCall.cost_usd)
-        .where(LlmCall.run_id == run_id)
-    )).all()
-
-    input_tokens = sum(r[0] for r in rows)
-    output_tokens = sum(r[1] for r in rows)
-    cost = sum((r[2] for r in rows), Decimal(0))
+    rows = await conn.fetch(
+        "SELECT input_tokens, output_tokens, cost_usd FROM llm_calls WHERE run_id = $1",
+        run_id,
+    )
+    input_tokens = sum(r["input_tokens"] for r in rows)
+    output_tokens = sum(r["output_tokens"] for r in rows)
+    cost = sum((r["cost_usd"] for r in rows), Decimal(0))
     return {
         "llm_calls": len(rows),
         "input_tokens": input_tokens,
@@ -155,7 +153,6 @@ def _forwardable(headers: Any) -> dict[str, str]:
 
 
 async def proxy(
-    session: AsyncSession,
     run_id: uuid.UUID,
     agent_id: uuid.UUID,
     upstream_path: str,
@@ -176,7 +173,8 @@ async def proxy(
     settings = get_settings()
 
     # 明文在這裡取得，只往下游走一步（換 header），不進 log、不進回應。
-    owned = await agent_credentials.resolve(session, agent_id)
+    async with db.connection() as conn:
+        owned = await agent_credentials.resolve(conn, agent_id)
     api_key = owned.api_key if owned else settings.llm_api_key
     base_url = (owned.base_url if owned and owned.base_url else settings.llm_base_url)
     # 與 bootstrap／工作項同一條規則，不要在這裡重寫一次
@@ -195,8 +193,9 @@ async def proxy(
 
     if not api_key:
         # 沒設金鑰不是「沙盒做錯事」，但沙盒需要一個能看懂的錯誤。
-        await _record(session, run_id, model=model, credential_source=source,
-                      error="no LLM credential is configured")
+        async with db.transaction() as conn:
+            await _record(conn, run_id, model=model, credential_source=source,
+                          error="no LLM credential is configured")
         raise ZentraError(
             ErrorCode.LLM_ERROR,
             "no LLM credential is configured: register one for this agent "
@@ -218,6 +217,7 @@ async def proxy(
         "content-type": "application/json",
     }
 
+    # 上游回應最久要 llm_timeout_seconds。手上沒有連線。
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
@@ -225,8 +225,9 @@ async def proxy(
             raw = response.content
     except httpx.HTTPError as exc:
         elapsed = int((time.monotonic() - started) * 1000)
-        await _record(session, run_id, model=model, latency_ms=elapsed,
-                      credential_source=source, error=f"{type(exc).__name__}: {exc}")
+        async with db.transaction() as conn:
+            await _record(conn, run_id, model=model, latency_ms=elapsed,
+                          credential_source=source, error=f"{type(exc).__name__}: {exc}")
         raise ZentraError(
             ErrorCode.LLM_ERROR, f"LLM provider unreachable: {type(exc).__name__}",
             502, run_id=str(run_id), details={"retryable": True},
@@ -245,9 +246,11 @@ async def proxy(
         except (ValueError, TypeError):
             error = "provider response was not JSON; usage not metered"
 
-    await _record(session, run_id, model=model, input_tokens=input_tokens,
-                  output_tokens=output_tokens, latency_ms=elapsed,
-                  status_code=response.status_code, error=error, credential_source=source)
+    async with db.transaction() as conn:
+        await _record(conn, run_id, model=model, input_tokens=input_tokens,
+                      output_tokens=output_tokens, latency_ms=elapsed,
+                      status_code=response.status_code, error=error,
+                      credential_source=source)
 
     safe_headers = {
         key: value for key, value in response.headers.items()

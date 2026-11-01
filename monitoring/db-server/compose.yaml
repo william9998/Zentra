@@ -1,0 +1,38 @@
+# 裝在「獨立的 DB 主機」上的 exporter —— DB 從 AP 主機拆出去之後才用這份。
+# DB 還跟平台在同一台時，用 monitoring/app-server 的 `--profile db`。
+#
+#   node-exporter      :9100  主機 CPU、記憶體、磁碟、網路
+#   postgres-exporter  :9187  PostgreSQL 連線數、交易、鎖
+#
+# 兩者都用主機網路：看到的是 DB 主機本身，連 PostgreSQL 也是連這台的 localhost。
+# 防火牆只開給監控主機的 IP（見 monitoring/README.md）。
+#
+# 啟動：cp env.example .env（填監控帳號）→ docker compose up -d
+
+name: zentra-monitoring-db
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    command:
+      - --path.rootfs=/host
+      # 9100 被占用時可改（Prometheus 那邊的目標要一起改）
+      - --web.listen-address=:${NODE_EXPORTER_PORT:-9100}
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_URI: ${PG_HOST:-localhost}:${PG_PORT:-5432}/${PG_DATABASE:-zentra}?sslmode=${PG_SSLMODE:-disable}
+      DATA_SOURCE_USER: ${PG_MONITOR_USER:?請在 monitoring/db-server/.env 設定 PG_MONITOR_USER}
+      DATA_SOURCE_PASS: ${PG_MONITOR_PASSWORD:?請在 monitoring/db-server/.env 設定 PG_MONITOR_PASSWORD}
+      # Zentra 自訂查詢（被放棄的常駐容器等），見 monitoring/postgres-queries.yaml
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yaml
+    volumes:
+      - ../postgres-queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    network_mode: host           # 直接監聽主機的 9187，也直接連主機的 localhost:5432
+    restart: unless-stopped

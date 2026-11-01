@@ -1,0 +1,82 @@
+# 裝在「AP 主機」上的 exporter —— 把這台主機的狀態吐成數字，給監控主機的 Prometheus 來抓。
+#
+#   node-exporter      :9100  主機 CPU、記憶體、磁碟、網路
+#   cadvisor           :8081  每個容器的 CPU、記憶體、重啟、OOM（含 agent 常駐容器）
+#   redis-exporter     :9121  Redis 狀態與派工佇列長度
+#   postgres-exporter  :9187  PostgreSQL（只在 DB 還跟平台同一台時起，見下方）
+#
+# 這幾個 port 沒有登入機制：防火牆只開給監控主機的 IP（見 monitoring/README.md）。
+# 它們不接 zentra-sandbox-net —— 沙盒的唯一對端仍然只有 app（P4）。
+#
+# 前提：平台已經 `make up`（redis / postgres exporter 要加入平台的 zentra-net）。
+#
+# 啟動：
+#   DB 還在這台（現在）：  cp env.example .env（填監控帳號）→ docker compose --profile db up -d
+#   DB 拆出去之後：        docker compose up -d   （postgres-exporter 改由 monitoring/db-server 負責）
+
+name: zentra-monitoring-ap
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    command:
+      - --path.rootfs=/host
+      # 9100 被占用時可改（Prometheus 那邊的目標要一起改）
+      - --web.listen-address=:${NODE_EXPORTER_PORT:-9100}
+    # 用主機的網路與程序空間，看到的才是「主機」而不是這個容器自己
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      # 關掉用不到、又會產生大量資料的指標
+      - --disable_metrics=percpu,sched,tcp,udp,advtcp,hugetlb,referenced_memory,cpu_topology,resctrl,process
+    # cAdvisor 要讀 Docker 與 cgroup 的狀態才知道每個容器用多少資源。
+    # ⚠️ 掛 /var/run 會連帶看到 docker.sock，能操作它等同主機 root —— 跟 worker 同一級風險。
+    privileged: true
+    devices: ["/dev/kmsg"]       # 讀核心訊息才抓得到 OOM 事件
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports: ["8081:8080"]         # 主機端 8081：8080 太常被別的東西占
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.74.0
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      # 只回報這些 key 的「長度」（LLEN），不讀內容 —— 佇列項目裡有使用者的輸入資料
+      REDIS_EXPORTER_CHECK_SINGLE_KEYS: db0=q.run,db0=q.build
+      REDIS_EXPORTER_CHECK_KEYS: db0=agent_work:*
+    ports: ["9121:9121"]
+    networks: [zentra-net]
+    restart: unless-stopped
+
+  # DB 還跟平台在同一台時用。走 zentra-net 直接連 `postgres`，不經過主機的 5432。
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    profiles: [db]
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${PG_DATABASE:-zentra}?sslmode=disable
+      DATA_SOURCE_USER: ${PG_MONITOR_USER:?請在 monitoring/app-server/.env 設定 PG_MONITOR_USER}
+      DATA_SOURCE_PASS: ${PG_MONITOR_PASSWORD:?請在 monitoring/app-server/.env 設定 PG_MONITOR_PASSWORD}
+      # Zentra 自訂查詢（被放棄的常駐容器等），見 monitoring/postgres-queries.yaml
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yaml
+    volumes:
+      - ../postgres-queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    ports: ["9187:9187"]
+    networks: [zentra-net]
+    restart: unless-stopped
+
+networks:
+  zentra-net:
+    external: true               # 平台 compose.yaml 建的網段

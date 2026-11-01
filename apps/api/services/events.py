@@ -5,14 +5,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import asyncpg
 from redis.asyncio import Redis
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.enums import ErrorCode, EventType, RunStatus
-from apps.api.errors import ZentraError
+from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
-from apps.api.models import Run, RunEvent
+from apps.api.rows import Run, RunEvent
 from apps.api.schemas import SandboxEvent
 
 STREAM_TTL_SECONDS = 3600
@@ -22,13 +21,19 @@ def stream_key(run_id: uuid.UUID | str) -> str:
     return f"run:{run_id}"
 
 
-async def lock_run(session: AsyncSession, run_id: uuid.UUID) -> Run:
-    # populate_existing matters: token authentication may already have loaded
-    # this row before the worker committed its terminal transition.
-    return (await session.execute(
-        select(Run).where(Run.id == run_id).with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalar_one()
+def _require_txn(conn: asyncpg.Connection) -> None:
+    if not conn.is_in_transaction():
+        raise RuntimeError("lock functions must be called inside db.transaction()")
+
+
+async def lock_run(conn: asyncpg.Connection, run_id: uuid.UUID) -> Run:
+    """鎖住這一列 Run。**需在交易內呼叫。**"""
+    _require_txn(conn)
+    rec = await conn.fetchrow(
+        f"SELECT {Run.returning()} FROM runs WHERE id = $1 FOR UPDATE", run_id)
+    if rec is None:
+        raise not_found("run")
+    return Run.from_row(rec)
 
 
 def require_active(run: Run) -> None:
@@ -36,26 +41,53 @@ def require_active(run: Run) -> None:
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token revoked", 401)
 
 
-def status_event(session: AsyncSession, run: Run, *, terminal: bool = False) -> RunEvent:
-    """Caller holds the Run row lock and commits state + event together."""
-    row = RunEvent(
-        run_id=run.id, event_id=uuid7(), type=EventType.RUN_STATUS,
-        payload={"status": str(run.status)}, terminal=terminal,
+async def status_event(
+    conn: asyncpg.Connection, run: Run, *, terminal: bool = False,
+) -> RunEvent:
+    """Caller holds the Run row lock and writes state + event together."""
+    rec = await conn.fetchrow(
+        f"""
+        INSERT INTO run_events (run_id, event_id, type, payload, terminal)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING {RunEvent.returning()}
+        """,
+        run.id, uuid7(), str(EventType.RUN_STATUS),
+        {"status": str(run.status)}, terminal,
     )
-    session.add(row)
-    return row
+    return RunEvent.from_row(rec)
 
 
-async def publish_pending(session: AsyncSession, redis: Redis, run_id: uuid.UUID) -> None:
-    """Retry persisted events without allocating another event_id or seq.
+async def _unpublished(conn: asyncpg.Connection, run_id: uuid.UUID) -> list[RunEvent]:
+    rows = await conn.fetch(
+        f"SELECT {RunEvent.returning()} FROM run_events "
+        "WHERE run_id = $1 AND published_at IS NULL ORDER BY seq",
+        run_id,
+    )
+    return [RunEvent.from_row(row) for row in rows]
 
-    XADD may succeed just before a crash or failed DB commit. A duplicate Redis
-    notification is safe: consumers fetch ordered DB rows after their last seq.
+
+async def _mark_published(conn: asyncpg.Connection, seqs: list[int]) -> None:
+    if not seqs:
+        return
+    await conn.execute(
+        "UPDATE run_events SET published_at = $1 WHERE seq = ANY($2::bigint[])",
+        datetime.now(UTC), seqs,
+    )
+
+
+async def publish_pending(redis: Redis, run_id: uuid.UUID) -> None:
+    """把尚未通知 SSE 的事件推上 Redis，再標記 published_at。
+
+    Redis 是喚醒，不是真相。XADD 失敗時 `published_at` 保持 NULL，下次補發；
+    XADD 成功但標記失敗時，重複通知是安全的（消費者用 DB seq 去重）。
+    **不在交易內等 Redis。**
     """
-    rows = (await session.execute(
-        select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.published_at.is_(None))
-        .order_by(RunEvent.seq).with_for_update()
-    )).scalars().all()
+    from apps.api import db
+
+    async with db.connection() as conn:
+        rows = await _unpublished(conn, run_id)
+    if not rows:
+        return
     try:
         for row in rows:
             key = stream_key(run_id)
@@ -64,38 +96,47 @@ async def publish_pending(session: AsyncSession, redis: Redis, run_id: uuid.UUID
                 "data": json.dumps(row.payload, ensure_ascii=False),
             })
             await redis.expire(key, STREAM_TTL_SECONDS)
-            row.published_at = datetime.now(UTC)
-        await session.commit()
     except BaseException:
-        await session.rollback()
         raise
+    async with db.transaction() as conn:
+        await _mark_published(conn, [row.seq for row in rows])
 
 
 async def ingest_batch(
-    session: AsyncSession, redis: Redis, run_id: uuid.UUID, batch: list[SandboxEvent],
+    redis: Redis, run_id: uuid.UUID, batch: list[SandboxEvent],
 ) -> dict[str, Any]:
-    run = await lock_run(session, run_id)
-    require_active(run)
-    accepted = 0
-    last_seq = None
-    for event in batch:
-        row = (await session.execute(select(RunEvent).where(
-            RunEvent.run_id == run_id, RunEvent.event_id == event.event_id,
-        ))).scalar_one_or_none()
-        if row is None:
-            row = RunEvent(
-                run_id=run_id, event_id=event.event_id,
-                type=event.type, payload=event.payload,
+    from apps.api import db
+
+    async with db.transaction() as conn:
+        run = await lock_run(conn, run_id)
+        require_active(run)
+        accepted = 0
+        last_seq = None
+        for event in batch:
+            existing = await conn.fetchrow(
+                f"SELECT {RunEvent.returning()} FROM run_events "
+                "WHERE run_id = $1 AND event_id = $2",
+                run_id, event.event_id,
             )
-            session.add(row)
-            await session.flush()
-            accepted += 1
-        elif row.type != event.type or row.payload != event.payload:
-            raise ZentraError(
-                ErrorCode.VALIDATION_ERROR, "event_id already belongs to a different event", 422,
-                run_id=str(run_id), details={"field": "event_id"},
-            )
-        last_seq = row.seq
-    await session.commit()
-    await publish_pending(session, redis, run_id)
+            if existing is None:
+                rec = await conn.fetchrow(
+                    f"""
+                    INSERT INTO run_events (run_id, event_id, type, payload)
+                    VALUES ($1, $2, $3, $4)
+                    RETURNING {RunEvent.returning()}
+                    """,
+                    run_id, event.event_id, event.type, event.payload,
+                )
+                accepted += 1
+                last_seq = rec["seq"]
+            else:
+                row = RunEvent.from_row(existing)
+                if row.type != event.type or row.payload != event.payload:
+                    raise ZentraError(
+                        ErrorCode.VALIDATION_ERROR,
+                        "event_id already belongs to a different event", 422,
+                        run_id=str(run_id), details={"field": "event_id"},
+                    )
+                last_seq = row.seq
+    await publish_pending(redis, run_id)
     return {"accepted": accepted, "last_seq": last_seq}

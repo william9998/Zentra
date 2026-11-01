@@ -1,0 +1,11 @@
+apiVersion: 1
+
+# 開機時把 /var/lib/grafana/dashboards 底下的 JSON 載入成儀表板。
+# 在網頁上改了想保留 → 匯出 JSON 蓋回 monitoring/server/grafana/dashboards/。
+providers:
+  - name: zentra
+    folder: Zentra
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

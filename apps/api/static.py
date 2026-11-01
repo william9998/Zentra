@@ -89,6 +89,11 @@ async def console_agent(agent_id: str) -> FileResponse:
     return await _page("agent.html")
 
 
+@router.get("/console/mcp")
+async def console_mcp() -> FileResponse:
+    return await _page("mcp.html")
+
+
 # 先註冊字面路徑，再註冊帶參數的 —— 讓 /console/runs 不會被 /console/runs/{run_id} 吃掉。
 @router.get("/console/runs")
 async def console_runs() -> FileResponse:

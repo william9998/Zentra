@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_process_init
 
 from apps.api.config import get_settings
 
@@ -23,6 +24,8 @@ celery_app.conf.update(
         # 容器生命週期走 q.build：它跟發布一樣會拉 image、會慢，
         # 塞進 q.run 會卡住真正的 Run 派工。
         "zentra.container.apply": {"queue": "q.build"},
+        "zentra.version.retire": {"queue": "q.build"},
+        "zentra.container.drain_other_versions": {"queue": "q.build"},
     },
     timezone="UTC",
     enable_utc=True,
@@ -40,3 +43,10 @@ celery_app.conf.update(
         },
     },
 )
+
+
+@worker_process_init.connect
+def _discard_inherited_db_connection(**_kwargs: object) -> None:
+    from apps.worker.db import reset_connection
+
+    reset_connection()

@@ -25,6 +25,10 @@ const FRAME = `
         <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-box"/></svg>
         <span>Agents</span>
       </a>
+      <a class="nav-item" href="/console/mcp" data-nav="/console/mcp">
+        <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-plug"/></svg>
+        <span>MCP</span>
+      </a>
       <a class="nav-item" href="/console/runs" data-nav="/console/runs">
         <svg class="icon icon-lg" aria-hidden="true"><use href="/console/static/icons.svg#i-activity"/></svg>
         <span>Runs</span>

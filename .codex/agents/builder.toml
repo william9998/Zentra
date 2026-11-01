@@ -1,8 +1,0 @@
-name = "builder"
-description = "實作工程師。一個人包後端（FastAPI / Celery / SQLAlchemy / SDK）、前端（原生 HTML/CSS/ES modules Console）與平台（沙盒隔離、Docker、compose、發布流程）。需要寫產品程式碼時用它。跨區域的改動也由它一次做完，不用切成三棒。"
-developer_instructions = '''
-角色定義的唯一版本在 `.claude/agents/builder.md` —— Claude Code 與 Codex 共用同一份，
-這裡不再複製一遍（複製就會有兩份各自漂移的設定）。
-
-**開工第一件事：讀完 `.claude/agents/builder.md`**，再看 `AGENTS.md`（兩套工具共用的協作規則）。
-'''

@@ -4,10 +4,9 @@ import asyncio
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Query, Request, Response
 
-from apps.api.db import get_session
+from apps.api import db
 from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError
 from apps.api.schemas import (
@@ -63,11 +62,9 @@ router = APIRouter(prefix="/v1/agents", tags=["agents"])
 
 
 @router.post("", status_code=201, response_model=CreateAgentResponse)
-async def create_agent(
-    body: CreateAgentRequest,
-    session: AsyncSession = Depends(get_session),
-) -> CreateAgentResponse:
-    row = await service.create_agent(session, body)
+async def create_agent(body: CreateAgentRequest) -> CreateAgentResponse:
+    async with db.transaction() as conn:
+        row = await service.create_agent(conn, body)
     return CreateAgentResponse(
         agent_id=str(row.id), name=row.name, description=row.description,
         latest_published_version=None, created_at=row.created_at,
@@ -78,9 +75,9 @@ async def create_agent(
 async def list_agents(
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentListResponse:
-    rows, next_cursor = await service.list_agents(session, limit=limit, cursor=cursor)
+    async with db.connection() as conn:
+        rows, next_cursor = await service.list_agents(conn, limit=limit, cursor=cursor)
     return AgentListResponse(
         items=[service.agent_summary(row, latest) for row, latest in rows],
         next_cursor=next_cursor,
@@ -88,13 +85,10 @@ async def list_agents(
 
 
 @router.get("/{agent_id}", response_model=AgentDetail, response_model_exclude_none=True)
-async def get_agent(
-    agent_id: str,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> AgentDetail:
-    row = await service.load_agent(session, agent_id)
-    latest = await service.latest_published(session, row.id)
+async def get_agent(agent_id: str, request: Request) -> AgentDetail:
+    async with db.connection() as conn:
+        row = await service.load_agent(conn, agent_id)
+        latest = await service.latest_published(conn, row.id)
     return service.agent_detail(row, latest.semver if latest else None, str(request.base_url))
 
 
@@ -103,18 +97,15 @@ async def patch_agent(
     agent_id: str,
     body: UpdateAgentRequest,
     request: Request,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentDetail:
-    row = await service.update_agent(session, await service.load_agent(session, agent_id), body)
-    latest = await service.latest_published(session, row.id)
+    async with db.transaction() as conn:
+        row = await service.update_agent(conn, await service.load_agent(conn, agent_id), body)
+        latest = await service.latest_published(conn, row.id)
     return service.agent_detail(row, latest.semver if latest else None, str(request.base_url))
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(
-    agent_id: str,
-    session: AsyncSession = Depends(get_session),
-) -> Response:
+async def delete_agent(agent_id: str) -> Response:
     """**硬刪**這個 Agent 與它的一切（ADR-0013）。不可復原。
 
     DB 的部分（版本、容器紀錄、Run、事件、LLM 呼叫、憑證、API key）在這裡
@@ -124,8 +115,9 @@ async def delete_agent(
     而 `app` 兩個都不該碰。**清理失敗不會讓刪除失敗** —— Agent 已經不在了，
     再把錯誤丟回來只會讓使用者以為刪除沒成功，然後再按一次。
     """
-    agent = await service.load_agent(session, agent_id)
-    payload = await service.delete_agent(session, agent)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        payload = await service.delete_agent(conn, agent)
     await asyncio.to_thread(dispatch_agent_purge, payload)
     return Response(status_code=204)
 
@@ -151,42 +143,39 @@ def _container_view(row, semver: str) -> AgentContainerResponse:
     )
 
 
-async def _semver_of(session: AsyncSession, row) -> str:
-    from apps.api.models import AgentVersion
-    version = await session.get(AgentVersion, row.agent_version_id)
-    return version.semver if version else "?"
-
-
 @router.get("/{agent_id}/containers", response_model=AgentContainerListResponse)
-async def list_agent_containers(
-    agent_id: str,
-    session: AsyncSession = Depends(get_session),
-) -> AgentContainerListResponse:
-    agent = await service.load_agent(session, agent_id)
-    rows = await container_service.list_containers(session, agent.id)
-    return AgentContainerListResponse(items=[
-        _container_view(row, await _semver_of(session, row)) for row in rows
-    ])
+async def list_agent_containers(agent_id: str) -> AgentContainerListResponse:
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        rows = await container_service.list_containers(conn, agent.id)
+        items = [
+            _container_view(row, await container_service.semver_of(conn, row.agent_version_id))
+            for row in rows
+        ]
+    return AgentContainerListResponse(items=items)
 
 
 @router.post("/{agent_id}/containers", status_code=202, response_model=AgentContainerResponse)
 async def start_agent_container(
     agent_id: str,
     body: StartAgentContainerRequest | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentContainerResponse:
     """啟動這個 Agent 的常駐容器。
 
     回 `202`：這裡只登記 `STARTING`，**實際建容器由 worker 做** ——
     api 不掛 docker.sock，而且 image pull 可能很慢，不該卡住請求。
     """
-    agent = await service.load_agent(session, agent_id)
-    version = None
-    if body and body.version:
-        version = await service.load_version_by_semver(session, agent.id, body.version)
-    row = await container_service.request_start(session, agent.id, version)
-    dispatch_container_start(str(row.id))
-    return _container_view(row, await _semver_of(session, row))
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        version = None
+        if body and body.version:
+            version = await service.load_version_by_semver(conn, agent.id, body.version)
+        row, created = await container_service.request_start(conn, agent.id, version)
+        semver = await container_service.semver_of(conn, row.agent_version_id)
+    if created:
+        # 已經有同版本的容器在服務（或正在啟動）就什麼都不做 —— 再派一次會把它砍掉重建。
+        dispatch_container_start(str(row.id))
+    return _container_view(row, semver)
 
 
 @router.post("/{agent_id}/containers/{container_uuid}/restart",
@@ -194,14 +183,15 @@ async def start_agent_container(
 async def restart_agent_container(
     agent_id: str,
     container_uuid: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentContainerResponse:
     """重啟。容器掛掉時使用者唯一能做的事，所以它必須存在且好按。"""
-    await service.load_agent(session, agent_id)
-    row = await container_service.load_container(session, container_uuid)
-    row = await container_service.request_restart(session, row)
+    async with db.transaction() as conn:
+        await service.load_agent(conn, agent_id)
+        row = await container_service.load_container(conn, container_uuid)
+        row = await container_service.request_restart(conn, row)
+        semver = await container_service.semver_of(conn, row.agent_version_id)
     dispatch_container_restart(str(row.id))
-    return _container_view(row, await _semver_of(session, row))
+    return _container_view(row, semver)
 
 
 @router.delete("/{agent_id}/containers/{container_uuid}", status_code=202,
@@ -209,13 +199,14 @@ async def restart_agent_container(
 async def stop_agent_container(
     agent_id: str,
     container_uuid: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentContainerResponse:
-    await service.load_agent(session, agent_id)
-    row = await container_service.load_container(session, container_uuid)
-    row = await container_service.request_stop(session, row)
+    async with db.transaction() as conn:
+        await service.load_agent(conn, agent_id)
+        row = await container_service.load_container(conn, container_uuid)
+        row = await container_service.request_stop(conn, row)
+        semver = await container_service.semver_of(conn, row.agent_version_id)
     dispatch_container_stop(str(row.id))
-    return _container_view(row, await _semver_of(session, row))
+    return _container_view(row, semver)
 
 
 # ── LLM 憑證（ZEN-012）────────────────────────────────────────────────
@@ -228,40 +219,40 @@ async def stop_agent_container(
 async def set_llm_credential(
     agent_id: str,
     body: SetAgentLlmCredentialRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentLlmCredentialResponse:
     """註冊或覆寫這個 Agent 的 LLM 憑證。
 
     **覆寫立刻對所有版本生效。** 這是刻意的：版本不可變（P5）指的是程式碼與 image，
     憑證是維運設定。代價見 [ADR-0011]。
     """
-    agent = await service.load_agent(session, agent_id)
-    meta = await agent_credentials.set_credential(
-        session, agent.id,
-        api_key=body.api_key, base_url=body.base_url, default_model=body.default_model,
-    )
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        meta = await agent_credentials.set_credential(
+            conn, agent.id,
+            api_key=body.api_key, base_url=body.base_url, default_model=body.default_model,
+        )
     return AgentLlmCredentialResponse(**meta.__dict__)
 
 
 @router.get("/{agent_id}/llm-credential", response_model=AgentLlmCredentialResponse)
 async def get_llm_credential(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentLlmCredentialResponse:
     """回這個 Agent 有沒有設憑證。**不回金鑰**，只有尾四碼。"""
-    agent = await service.load_agent(session, agent_id)
-    meta = await agent_credentials.describe(session, agent.id)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        meta = await agent_credentials.describe(conn, agent.id)
     return AgentLlmCredentialResponse(**meta.__dict__)
 
 
 @router.delete("/{agent_id}/llm-credential", status_code=204)
 async def delete_llm_credential(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> Response:
     """移除憑證。之後這個 Agent 退回用平台預設金鑰。"""
-    agent = await service.load_agent(session, agent_id)
-    await agent_credentials.delete_credential(session, agent.id)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        await agent_credentials.delete_credential(conn, agent.id)
     return Response(status_code=204)
 
 
@@ -278,15 +269,15 @@ async def delete_llm_credential(
 @router.get("/{agent_id}/config", response_model=AgentConfigResponse)
 async def get_agent_config(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentConfigResponse:
     """這個 Agent 的可變設定。未設定過時 `config: {}`、`updated_at: null`。
 
     **回的是明文** —— 設定不是機密（§2.6 第 1 點）。平台不掃描內容、
     不猜哪個值像 secret：一個猜得不準的警告比沒有警告更糟。
     """
-    agent = await service.load_agent(session, agent_id)
-    view = await settings_service.describe(session, agent.id)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        view = await settings_service.describe(conn, agent.id)
     return AgentConfigResponse(config=view.config, updated_at=view.updated_at)
 
 
@@ -294,7 +285,6 @@ async def get_agent_config(
 async def put_agent_config(
     agent_id: str,
     body: AgentConfigRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentConfigResponse:
     """**整份取代**，沒有 `PATCH`（§2.6 第 2 點）。
 
@@ -302,8 +292,9 @@ async def put_agent_config(
     更新**立刻對所有版本、所有進行中的容器生效**，下一筆 Run 就是新值；
     已經在跑的 Run 不受影響 —— 它的 `ctx.config` 在派工那一刻就定稿了。
     """
-    agent = await service.load_agent(session, agent_id)
-    view = await settings_service.replace(session, agent.id, body.config)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        view = await settings_service.replace(conn, agent.id, body.config)
     return AgentConfigResponse(config=view.config, updated_at=view.updated_at)
 
 
@@ -317,12 +308,12 @@ def _secret_view(meta) -> AgentSecretResponse:
 @router.get("/{agent_id}/secrets", response_model=AgentSecretListResponse)
 async def list_agent_secrets(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentSecretListResponse:
     """機密的 metadata。**沒有任何端點回傳明文或密文** —— 這是契約禁止，
     不是「目前沒做」。`last_four` 是唯一看得到的線索。"""
-    agent = await service.load_agent(session, agent_id)
-    rows = await secrets_service.list_secrets(session, agent.id)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        rows = await secrets_service.list_secrets(conn, agent.id)
     return AgentSecretListResponse(items=[_secret_view(row) for row in rows])
 
 
@@ -331,7 +322,6 @@ async def put_agent_secret(
     agent_id: str,
     name: str,
     body: SetAgentSecretRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentSecretResponse:
     """存一個機密。重複 `PUT` 同名是覆寫，`created_at` 保留。
 
@@ -341,8 +331,9 @@ async def put_agent_secret(
     平台未設定 `ZENTRA_SECRET_KEY` 時回 `422`，**不接受機密**，
     而不是退回明文儲存。
     """
-    agent = await service.load_agent(session, agent_id)
-    meta = await secrets_service.set_secret(session, agent.id, name, body.value)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        meta = await secrets_service.set_secret(conn, agent.id, name, body.value)
     return _secret_view(meta)
 
 
@@ -350,15 +341,15 @@ async def put_agent_secret(
 async def delete_agent_secret(
     agent_id: str,
     name: str,
-    session: AsyncSession = Depends(get_session),
 ) -> Response:
     """硬刪，重複刪除冪等（不存在也回 204）。
 
     **還被引用時回 409**，`details.referenced_by` 列出引用者 ——
     直接刪掉會讓那條能力在下一次 Run 才無聲失敗。
     """
-    agent = await service.load_agent(session, agent_id)
-    await secrets_service.delete_secret(session, agent.id, name)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        await secrets_service.delete_secret(conn, agent.id, name)
     return Response(status_code=204)
 
 
@@ -375,11 +366,11 @@ def _rule_view(row) -> EgressRuleResponse:
 @router.get("/{agent_id}/egress-rules", response_model=EgressRuleListResponse)
 async def list_egress_rules(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> EgressRuleListResponse:
     """這個 Agent 能連到哪些主機。**空清單表示一個都連不到**（預設拒絕）。"""
-    agent = await service.load_agent(session, agent_id)
-    rows = await egress_rules_service.list_rules(session, agent.id)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        rows = await egress_rules_service.list_rules(conn, agent.id)
     return EgressRuleListResponse(items=[_rule_view(row) for row in rows])
 
 
@@ -388,14 +379,14 @@ async def list_egress_rules(
 async def create_egress_rule(
     agent_id: str,
     body: EgressRuleRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> EgressRuleResponse:
     """加一條白名單。`host` 在同一個 Agent 內唯一，撞名回 `409`。
 
     **改規則立刻生效**，包括對已經在跑的 Run 的下一次呼叫。
     """
-    agent = await service.load_agent(session, agent_id)
-    row = await egress_rules_service.create_rule(session, agent.id, body)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        row = await egress_rules_service.create_rule(conn, agent.id, body)
     return _rule_view(row)
 
 
@@ -404,24 +395,25 @@ async def update_egress_rule(
     agent_id: str,
     rule_id: str,
     body: EgressRuleRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> EgressRuleResponse:
-    agent = await service.load_agent(session, agent_id)
-    row = await egress_rules_service.load_rule(session, agent.id, rule_id)
-    return _rule_view(await egress_rules_service.update_rule(session, agent.id, row, body))
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        row = await egress_rules_service.load_rule(conn, agent.id, rule_id)
+        row = await egress_rules_service.update_rule(conn, agent.id, row, body)
+    return _rule_view(row)
 
 
 @router.delete("/{agent_id}/egress-rules/{rule_id}", status_code=204)
 async def delete_egress_rule(
     agent_id: str,
     rule_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> Response:
     """刪一條白名單。**它過去的稽核紀錄留著**（`egress_calls.rule_id` 是 SET NULL）——
     那正是「我改了什麼、然後發生了什麼」最需要對照的時候。"""
-    agent = await service.load_agent(session, agent_id)
-    row = await egress_rules_service.load_rule(session, agent.id, rule_id)
-    await egress_rules_service.delete_rule(session, row)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        row = await egress_rules_service.load_rule(conn, agent.id, rule_id)
+        await egress_rules_service.delete_rule(conn, row)
     return Response(status_code=204)
 
 
@@ -440,18 +432,18 @@ def _sender_view(row) -> EmailSenderResponse:
 @router.get("/{agent_id}/email-sender", response_model=EmailSenderResponse)
 async def get_email_sender(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> EmailSenderResponse:
     """未設定時 `configured: false`，其餘欄位 `null`。"""
-    agent = await service.load_agent(session, agent_id)
-    return _sender_view(await egress_rules_service.get_sender(session, agent.id))
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        sender = await egress_rules_service.get_sender(conn, agent.id)
+    return _sender_view(sender)
 
 
 @router.put("/{agent_id}/email-sender", response_model=EmailSenderResponse)
 async def put_email_sender(
     agent_id: str,
     body: EmailSenderRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> EmailSenderResponse:
     """設定寄件者。**這裡沒有密碼欄位** —— 密碼只能以 `password_secret_name`
     指名一個 §2.7 的機密。
@@ -459,19 +451,21 @@ async def put_email_sender(
     `allowed_recipients` 必填非空：少了它，一支迴圈寫錯的 agent 會用使用者的
     Gmail 帳號變成垃圾信來源，而 Google 封的是**那個帳號**。
     """
-    agent = await service.load_agent(session, agent_id)
-    return _sender_view(await egress_rules_service.set_sender(session, agent.id, body))
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        sender = await egress_rules_service.set_sender(conn, agent.id, body)
+    return _sender_view(sender)
 
 
 @router.delete("/{agent_id}/email-sender", status_code=204)
 async def delete_email_sender(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> Response:
     """移除寄件者。之後寄信一律 `EGRESS_BLOCKED`（`SENDER_NOT_CONFIGURED`），
     **不是靜默不寄** —— agent 要知道信沒寄出去。"""
-    agent = await service.load_agent(session, agent_id)
-    await egress_rules_service.delete_sender(session, agent.id)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        await egress_rules_service.delete_sender(conn, agent.id)
     return Response(status_code=204)
 
 
@@ -487,14 +481,12 @@ async def list_egress_calls(
     errors_only: bool = False,
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> EgressCallListResponse:
     """這個 Agent 實際往外送了什麼（§2.10）。
 
     **HTTP 與寄信在同一張表**，用 `kind` 分。**被擋下的呼叫也在裡面** ——
     只記成功的話，「為什麼我的 agent 連不出去」在畫面上完全沒有線索。
     """
-    agent = await service.load_agent(session, agent_id)
     if kind is not None and kind not in ("HTTP", "EMAIL"):
         raise ZentraError(ErrorCode.VALIDATION_ERROR, "kind must be HTTP or EMAIL", 422,
                           details={"field": "kind"})
@@ -509,8 +501,10 @@ async def list_egress_calls(
         kind=kind, run_id=run_uuid, since=since, until=until, host=host,
         status_code=status_code, errors_only=errors_only,
     )
-    items, next_cursor = await egress_audit.list_calls(
-        session, agent.id, filters, limit=limit, cursor=cursor)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        items, next_cursor = await egress_audit.list_calls(
+            conn, agent.id, filters, limit=limit, cursor=cursor)
     return EgressCallListResponse(items=items, next_cursor=next_cursor)
 
 
@@ -532,11 +526,11 @@ def _key_view(row) -> AgentApiKeyResponse:
 async def issue_agent_api_key(
     agent_id: str,
     body: IssueAgentApiKeyRequest,
-    session: AsyncSession = Depends(get_session),
 ) -> IssuedAgentApiKeyResponse:
     """發一把 key 給下游應用。**`key` 只在這次回應出現，之後讀不回來。**"""
-    agent = await service.load_agent(session, agent_id)
-    issued = await agent_api_keys.issue(session, agent.id, body.name)
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        issued = await agent_api_keys.issue(conn, agent.id, body.name)
     return IssuedAgentApiKeyResponse(
         **_key_view(issued.row).model_dump(), key=issued.plaintext,
     )
@@ -545,15 +539,15 @@ async def issue_agent_api_key(
 @router.get("/{agent_id}/api-keys", response_model=AgentApiKeyListResponse)
 async def list_agent_api_keys(
     agent_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentApiKeyListResponse:
     """列出這個 Agent 的所有 key，**含已撤銷的**。
 
     已撤銷的留在列表裡是因為歷史 Run 還掛在它們身上；藏起來的話，
     用量查詢會出現一把查不到名字的 key。
     """
-    agent = await service.load_agent(session, agent_id)
-    rows = await agent_api_keys.list_keys(session, agent.id)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        rows = await agent_api_keys.list_keys(conn, agent.id)
     return AgentApiKeyListResponse(items=[_key_view(row) for row in rows])
 
 
@@ -561,16 +555,17 @@ async def list_agent_api_keys(
 async def revoke_agent_api_key(
     agent_id: str,
     key_id: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentApiKeyResponse:
     """撤銷一把 key。**軟撤銷**，所以回 200 帶 `revoked_at`，不是 204。
 
     撤銷後立刻失效，但那把 key 的列仍在，過去的 Run 也還查得到是誰打的。
     重複撤銷是冪等的。
     """
-    agent = await service.load_agent(session, agent_id)
-    row = await agent_api_keys.load_key(session, agent.id, key_id)
-    return _key_view(await agent_api_keys.revoke(session, row))
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        row = await agent_api_keys.load_key(conn, agent.id, key_id)
+        row = await agent_api_keys.revoke(conn, row)
+    return _key_view(row)
 
 
 # ── 用量與除錯查詢（ZEN-015 §3.3）──────────────────────────────────────
@@ -607,15 +602,16 @@ async def agent_usage(
     until: datetime | None = None,
     model: str | None = None,
     credential_source: str | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentUsageResponse:
     """這個 Agent 的 LLM 用量：總計、依 key、依 model。
 
     回答的是「這把 key 這個月花了多少、花在哪個模型上」（spec §3.3 的第一條查詢）。
     """
-    agent = await service.load_agent(session, agent_id)
     filters = _filters(api_key_id, since, until, model, credential_source, None, False)
-    return AgentUsageResponse(**await usage_service.aggregate(session, agent.id, filters))
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        payload = await usage_service.aggregate(conn, agent.id, filters)
+    return AgentUsageResponse(**payload)
 
 
 @router.get("/{agent_id}/llm-calls", response_model=LlmCallListResponse)
@@ -630,7 +626,6 @@ async def agent_llm_calls(
     errors_only: bool = False,
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> LlmCallListResponse:
     """逐筆列出 LLM 呼叫，最新的在前。
 
@@ -638,11 +633,12 @@ async def agent_llm_calls(
     `errors_only=true` 是除錯的第一個動作，所以給它一個開關，
     不要求呼叫端自己組 `status_code >= 400 OR error IS NOT NULL`。
     """
-    agent = await service.load_agent(session, agent_id)
     filters = _filters(
         api_key_id, since, until, model, credential_source, status_code, errors_only)
-    items, next_cursor = await usage_service.list_calls(
-        session, agent.id, filters, limit=limit, cursor=cursor)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        items, next_cursor = await usage_service.list_calls(
+            conn, agent.id, filters, limit=limit, cursor=cursor)
     return LlmCallListResponse(items=items, next_cursor=next_cursor)
 
 
@@ -652,11 +648,12 @@ async def create_version(
     agent_id: str,
     body: CreateAgentVersionRequest,
     response: Response,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentVersionResponse:
-    agent = await service.load_agent(session, agent_id)
-    row = await service.create_version(session, agent, body)
-    await asyncio.to_thread(dispatch_build, str(row.id))
+    async with db.transaction() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        row, needs_build = await service.create_version(conn, agent, body)
+    if needs_build:
+        await asyncio.to_thread(dispatch_build, str(row.id))
     response.headers["Location"] = f"/v1/agents/{agent_id}/versions/{row.semver}"
     return service.version_response(row)
 
@@ -666,12 +663,12 @@ async def list_versions(
     agent_id: str,
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentVersionListResponse:
-    agent = await service.load_agent(session, agent_id)
-    rows, next_cursor = await service.list_versions(
-        session, agent.id, limit=limit, cursor=cursor
-    )
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        rows, next_cursor = await service.list_versions(
+            conn, agent.id, limit=limit, cursor=cursor
+        )
     return AgentVersionListResponse(
         items=[service.version_response(row, detail=True) for row in rows],
         next_cursor=next_cursor,
@@ -682,20 +679,19 @@ async def list_versions(
 async def get_version(
     agent_id: str,
     semver: str,
-    session: AsyncSession = Depends(get_session),
 ) -> AgentVersionResponse:
-    agent = await service.load_agent(session, agent_id)
-    return service.version_response(
-        await service.load_version_by_semver(session, agent.id, semver), detail=True
-    )
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        row = await service.load_version_by_semver(conn, agent.id, semver)
+    return service.version_response(row, detail=True)
 
 
 @router.get("/{agent_id}/openapi.json")
 async def agent_openapi(
     agent_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    agent = await service.load_agent(session, agent_id)
-    version = await service.resolve_published_version(session, agent.id, None)
+    async with db.connection() as conn:
+        agent = await service.load_agent(conn, agent_id)
+        version = await service.resolve_published_version(conn, agent.id, None)
     return service.generate_agent_openapi(agent, version, str(request.base_url).rstrip("/"))

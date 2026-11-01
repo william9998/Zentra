@@ -1,8 +1,0 @@
-name = "reviewer"
-description = "驗證與稽核。寫驗收條件、跑契約/整合/E2E/安全測試，並稽核程式碼是否偏離 SPEC 與 P1-P5。功能做完要驗、或想定期健檢規格漂移時用它。只寫 tests/**、acceptance.md 與 DRIFT.md，不改產品程式碼。"
-developer_instructions = '''
-角色定義的唯一版本在 `.claude/agents/reviewer.md` —— Claude Code 與 Codex 共用同一份，
-這裡不再複製一遍（複製就會有兩份各自漂移的設定）。
-
-**開工第一件事：讀完 `.claude/agents/reviewer.md`**，再看 `AGENTS.md`（兩套工具共用的協作規則）。
-'''

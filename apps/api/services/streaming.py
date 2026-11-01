@@ -7,23 +7,24 @@ from uuid import UUID
 from fastapi import Request
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.models import RunEvent
+from apps.api.rows import RunEvent
 from apps.api.services.events import stream_key
 
 
-async def event_stream(session: AsyncSession, redis: Redis, run_id: UUID, request: Request):
+async def event_stream(redis: Redis, run_id: UUID, request: Request):
+    from apps.api import db
+
     last_seq = 0
     redis_id = "0-0"
     while not await request.is_disconnected():
-        rows = (await session.execute(
-            select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq > last_seq)
-            .order_by(RunEvent.seq).limit(200)
-        )).scalars().all()
-        # Do not hold a DB connection/transaction across the blocking XREAD.
-        await session.commit()
+        async with db.connection() as conn:
+            recs = await conn.fetch(
+                f"SELECT {RunEvent.returning()} FROM run_events "
+                "WHERE run_id = $1 AND seq > $2 ORDER BY seq LIMIT 200",
+                run_id, last_seq,
+            )
+        rows = [RunEvent.from_row(rec) for rec in recs]
         for row in rows:
             last_seq = row.seq
             yield (f"id: {row.seq}\nevent: {row.type}\n"

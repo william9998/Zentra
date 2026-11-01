@@ -7,7 +7,6 @@ ENV UV_PROJECT_ENVIRONMENT=/usr/local PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE
 COPY pyproject.toml ./
 RUN uv pip install --system -r pyproject.toml
 
-COPY alembic.ini ./
 COPY apps/__init__.py ./apps/__init__.py
 COPY apps/api ./apps/api
 COPY apps/console ./apps/console

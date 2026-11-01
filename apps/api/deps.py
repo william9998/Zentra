@@ -2,15 +2,13 @@ import uuid
 
 from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.db import get_session
+from apps.api import db
 from apps.api.enums import ErrorCode, RunStatus
 from apps.api.errors import ZentraError, not_found
-from apps.api.models import Run
+from apps.api.rows import AgentVersion, Run
 from apps.api.services import runtoken
 from apps.api.services import validationtoken
-from apps.api.models import AgentVersion
 
 
 def get_redis(request: Request) -> Redis:
@@ -21,22 +19,22 @@ def _text(value: str | bytes) -> str:
     return value.decode() if isinstance(value, bytes) else value
 
 
-async def load_run(run_id: str, session: AsyncSession) -> Run:
+async def load_run(run_id: str, conn) -> Run:
     try:
         rid = uuid.UUID(run_id)
     except ValueError:
         raise not_found("run") from None
-    run = await session.get(Run, rid)
-    if run is None:
+    rec = await conn.fetchrow(
+        f"SELECT {Run.returning()} FROM runs WHERE id = $1", rid)
+    if rec is None:
         raise not_found("run")
-    return run
+    return Run.from_row(rec)
 
 
 async def require_run_token(
     run_id: str,
     authorization: str = Header(default=""),
     redis: Redis = Depends(get_redis),
-    session: AsyncSession = Depends(get_session),
 ) -> Run:
     """P4：沙盒只拿綁定單一 run_id 的 run token。
 
@@ -56,7 +54,8 @@ async def require_run_token(
         raise ZentraError(
             ErrorCode.PERMISSION_DENIED, "run token does not belong to this run", 403, run_id=run_id
         )
-    run = await load_run(run_id, session)
+    async with db.connection() as conn:
+        run = await load_run(run_id, conn)
     if RunStatus(run.status).is_terminal:
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token revoked", 401)
     return run
@@ -65,7 +64,6 @@ async def require_run_token(
 async def require_run_token_only(
     authorization: str = Header(default=""),
     redis: Redis = Depends(get_redis),
-    session: AsyncSession = Depends(get_session),
 ) -> Run:
     """像 `require_run_token`，但 Run 是**單靠 token** 解出來的。
 
@@ -99,7 +97,8 @@ async def require_run_token_only(
             )
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token invalid or expired", 401)
 
-    run = await load_run(_text(run_id), session)
+    async with db.connection() as conn:
+        run = await load_run(_text(run_id), conn)
     if RunStatus(run.status).is_terminal:
         raise ZentraError(ErrorCode.UNAUTHENTICATED, "run token revoked", 401)
     return run
@@ -108,7 +107,6 @@ async def require_run_token_only(
 async def optional_agent_api_key(
     agent_id: str,
     authorization: str = Header(default=""),
-    session: AsyncSession = Depends(get_session),
 ):
     """解析呼叫端帶的 Agent API key（ZEN-015）。回傳 `AgentApiKey` 或 `None`。
 
@@ -136,19 +134,20 @@ async def optional_agent_api_key(
             )
         return None
 
-    row = await agent_api_keys.resolve(session, presented)
-    if row is None:
-        raise ZentraError(
-            ErrorCode.UNAUTHENTICATED, "the agent API key is invalid or revoked", 401
-        )
-    if str(row.agent_id) != agent_id:
-        # 跨 Agent 使用是這把 key 唯一有意義的濫用方式，所以這條是重點。
-        raise ZentraError(
-            ErrorCode.PERMISSION_DENIED,
-            "this API key belongs to a different agent", 403,
-        )
-    await agent_api_keys.touch(session, row)
-    return row
+    async with db.transaction() as conn:
+        row = await agent_api_keys.resolve(conn, presented)
+        if row is None:
+            raise ZentraError(
+                ErrorCode.UNAUTHENTICATED, "the agent API key is invalid or revoked", 401
+            )
+        if str(row.agent_id) != agent_id:
+            # 跨 Agent 使用是這把 key 唯一有意義的濫用方式，所以這條是重點。
+            raise ZentraError(
+                ErrorCode.PERMISSION_DENIED,
+                "this API key belongs to a different agent", 403,
+            )
+        await agent_api_keys.touch(conn, row)
+        return row
 
 
 async def require_container_token(
@@ -187,7 +186,6 @@ async def require_validation_token(
     version_id: str,
     authorization: str = Header(default=""),
     redis: Redis = Depends(get_redis),
-    session: AsyncSession = Depends(get_session),
 ) -> AgentVersion:
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -206,7 +204,11 @@ async def require_validation_token(
         parsed = uuid.UUID(version_id)
     except ValueError:
         raise not_found("agent version") from None
-    version = await session.get(AgentVersion, parsed)
-    if version is None:
+    async with db.connection() as conn:
+        rec = await conn.fetchrow(
+            f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE id = $1",
+            parsed,
+        )
+    if rec is None:
         raise not_found("agent version")
-    return version
+    return AgentVersion.from_row(rec)

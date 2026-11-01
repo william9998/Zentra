@@ -31,27 +31,22 @@ services:
       retries: 20
     networks: [zentra-net]                 # 絕對不要接 zentra-sandbox-net
 
-  # 內部 OCI Registry（ADR-0009 / ZEN-009）。使用者在**這台主機上**
-  #   docker tag <img> localhost:6000/<repo>:<semver> && docker push …
-  # 再用既有的 JSON 端點以 digest 註冊版本。平台不接收 image 檔案上傳。
+  # 內部 OCI Registry。在**這台主機上** `docker push localhost:6000/<agent 名>:<版號>`
+  # 就等於註冊那個版本：registry push 完會通知 app（docker/registry-config.yml），
+  # app 向 registry 確認之後註冊。平台不接收 image 檔案上傳。
   #
-  # 沒有任何平台服務會連它：它的 client 只有主機上的 Docker daemon（pull）
-  # 與使用者的 CLI（push），兩者都走 loopback。所以 app / worker 都不 depends_on 它。
+  # 主要 client 是主機上的 Docker daemon（pull）與使用者的 CLI（push），都走 loopback；
+  # app 收通知時會回頭查 tag，worker 刪版本時會刪 manifest。app / worker 不 depends_on 它。
   registry:
     image: registry:2                      # 上游原版，不要自己 build 或換基底
-    environment:
-      # true（ADR-0013 改的，原本是 false）：刪 Agent 時要能一併刪掉它的 image，
-      # 否則「刪掉了」只是畫面上的字，磁碟繼續被佔著。
-      #
-      # ⚠️ 換來的風險是真的：manifest 刪掉就回不來了，而舊 Run 的 `image_ref`
-      #    會變成指向不存在的 image。**只有「刪整個 Agent」這條路徑會呼叫它** ——
-      #    沒有任何端點可以單獨刪一個版本的 manifest（那仍然違反 P5）。
-      #
-      # 刪 manifest 只是標記可回收，blob 要 `registry garbage-collect` 才真的消失，
-      # 而那要停機做。程序見 ADR-0009。
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
+      - ./docker/registry-config.yml:/etc/docker/registry/config.yml:ro
       - registrydata:/var/lib/registry
+    environment:
+      # true：刪 Agent、同版號取代時要能刪掉不再用的 manifest，否則磁碟只增不減。
+      # 刪 manifest 只是標記可回收，blob 要停機跑 `registry garbage-collect` 才真的消失
+      # （程序見 specs/dispatcher-resources.md）。
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
     # 只綁 loopback。這不是文件規定，是「只限同機」的執行手段本身 ——
     # 這個 registry 沒有 TLS、沒有認證，綁 0.0.0.0 等於把它放上網。
     # 要遠端 push → 新 ADR，且必須先解決 TLS 與認證，順序不可顛倒。
@@ -84,18 +79,17 @@ services:
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       # ⚠️ 本機若有 .env 且設了這一行，它會蓋掉這裡的預設值。服務改名時要一起改，
       #    否則沙盒會拿到指向舊名字的 gateway，Run 會 FAILED 且沒有任何事件。
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
-      # 常駐容器（ZEN-015 / ADR-0012）。N × 容器 mem_limit 就是單一 Agent 的
-      # 記憶體天花板 —— 調 SANDBOX_MAX_CONTAINERS_PER_AGENT 前先看主機有多少記憶體。
-      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-30}
-      SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
+      # 常駐容器：一個版本一個，同時最多 N 個 Run，多的在 Redis 排隊。
+      # N 個 Run 共用容器的 2 GB —— 調大 N 前先想每個 Run 吃多少記憶體。
+      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-50}
+      RUN_QUEUE_TIMEOUT_SECONDS: ${RUN_QUEUE_TIMEOUT_SECONDS:-3600}
       CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
       CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
       # ── LLM（ZEN-002 / P4）──────────────────────────────────────────
@@ -134,16 +128,15 @@ services:
     command: ["celery", "-A", "apps.worker.celery_app", "worker", "-Q", "q.run,q.build", "-l", "info", "--concurrency", "10", "-B", "--schedule", "/tmp/celerybeat-schedule"]
     environment:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://zentra:zentra@postgres:5432/zentra}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}
-      # 常駐容器（ZEN-015 / ADR-0012）。N × 容器 mem_limit 就是單一 Agent 的
-      # 記憶體天花板 —— 調 SANDBOX_MAX_CONTAINERS_PER_AGENT 前先看主機有多少記憶體。
-      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-30}
-      SANDBOX_MAX_CONTAINERS_PER_AGENT: ${SANDBOX_MAX_CONTAINERS_PER_AGENT:-3}
+      # 常駐容器：一個版本一個，同時最多 N 個 Run，多的在 Redis 排隊。
+      # N 個 Run 共用容器的 2 GB —— 調大 N 前先想每個 Run 吃多少記憶體。
+      SANDBOX_RUNS_PER_CONTAINER: ${SANDBOX_RUNS_PER_CONTAINER:-50}
+      RUN_QUEUE_TIMEOUT_SECONDS: ${RUN_QUEUE_TIMEOUT_SECONDS:-3600}
       CONTAINER_IDLE_TIMEOUT_SECONDS: ${CONTAINER_IDLE_TIMEOUT_SECONDS:-1800}
       CONTAINER_START_TIMEOUT_SECONDS: ${CONTAINER_START_TIMEOUT_SECONDS:-180}
       # 內部 Registry 的兩個視角：image_ref 寫的是主機看到的位址，

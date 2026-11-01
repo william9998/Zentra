@@ -4,15 +4,6 @@
 **不提供任何把明文回傳給 API 層的函式**。`describe()` / `list_secrets()` 回
 metadata，`resolve()` 只給 Internal Gateway 的 egress／email 兩條路徑用。
 這是靠「沒有那個函式」保證的，不是靠紀律。
-
-與另外兩張機密表的差別**是刻意的，不要統一**：
-
-  · `agent_secrets`（這裡）  Fernet 密文 —— 要解回來登入 SMTP、打外部 API
-  · `agent_llm_credentials`  Fernet 密文（ZEN-012）—— 要轉發給供應商
-  · `agent_api_keys`         SHA-256 雜湊（ZEN-015）—— 只需驗證身分
-
-沙盒拿得到的只有**名字清單**（`secret_names`）。給名字是為了讓 agent 能 fail
-fast 說出「缺 SMTP_PASSWORD」，而不是跑完整段分析才在最後一步失敗。
 """
 
 import re
@@ -20,12 +11,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncpg
 
 from apps.api.enums import ErrorCode
 from apps.api.errors import ZentraError
-from apps.api.models import AgentEgressRule, AgentEmailSender, AgentSecret
+from apps.api.rows import AgentSecret
 from apps.api.services import secrets as cipher
 
 #: 契約 §2.7 第 3 點。名字**長得像環境變數，但它永遠不會變成環境變數** ——
@@ -62,36 +52,34 @@ def validate_name(name: str) -> str:
     return name
 
 
-async def list_secrets(session: AsyncSession, agent_id: uuid.UUID) -> list[SecretMetadata]:
-    rows = (await session.execute(
-        select(AgentSecret).where(AgentSecret.agent_id == agent_id)
-        .order_by(AgentSecret.name)
-    )).scalars().all()
-    return [_view(row) for row in rows]
+async def list_secrets(conn: asyncpg.Connection, agent_id: uuid.UUID) -> list[SecretMetadata]:
+    rows = await conn.fetch(
+        f"SELECT {AgentSecret.returning()} FROM agent_secrets "
+        "WHERE agent_id = $1 ORDER BY name",
+        agent_id,
+    )
+    return [_view(AgentSecret.from_row(row)) for row in rows]
 
 
-async def names_for(session: AsyncSession, agent_id: uuid.UUID) -> list[str]:
+async def names_for(conn: asyncpg.Connection, agent_id: uuid.UUID) -> list[str]:
     """給派工用：**排序後的名字，沒有值、沒有長度、沒有尾四碼**（契約 §4.1 第 5 點）。"""
-    rows = (await session.execute(
-        select(AgentSecret.name).where(AgentSecret.agent_id == agent_id)
-        .order_by(AgentSecret.name)
-    )).scalars().all()
-    return list(rows)
+    rows = await conn.fetch(
+        "SELECT name FROM agent_secrets WHERE agent_id = $1 ORDER BY name", agent_id)
+    return [row["name"] for row in rows]
 
 
-async def exists(session: AsyncSession, agent_id: uuid.UUID, name: str) -> bool:
-    row = await session.get(AgentSecret, (agent_id, name))
-    return row is not None
+async def exists(conn: asyncpg.Connection, agent_id: uuid.UUID, name: str) -> bool:
+    value = await conn.fetchval(
+        "SELECT 1 FROM agent_secrets WHERE agent_id = $1 AND name = $2",
+        agent_id, name,
+    )
+    return value is not None
 
 
 async def set_secret(
-    session: AsyncSession, agent_id: uuid.UUID, name: str, value: str,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, name: str, value: str,
 ) -> SecretMetadata:
-    """寫入或覆寫。重複 `PUT` 同名是覆寫，`created_at` 保留。
-
-    平台未設定 `ZENTRA_SECRET_KEY` 時在 `cipher.encrypt()` 就擋下 ——
-    **不接受機密，而不是退回明文儲存**。
-    """
+    """寫入或覆寫。重複 `PUT` 同名是覆寫，`created_at` 保留。"""
     validate_name(name)
     if not isinstance(value, str) or not 1 <= len(value) <= MAX_VALUE_LENGTH:
         raise ZentraError(
@@ -100,9 +88,14 @@ async def set_secret(
             422, details={"field": "value"},
         )
 
-    existing = await session.get(AgentSecret, (agent_id, name))
+    existing = await conn.fetchrow(
+        f"SELECT {AgentSecret.returning()} FROM agent_secrets "
+        "WHERE agent_id = $1 AND name = $2",
+        agent_id, name,
+    )
     if existing is None:
-        count = len(await names_for(session, agent_id))
+        count = await conn.fetchval(
+            "SELECT count(*) FROM agent_secrets WHERE agent_id = $1", agent_id)
         if count >= MAX_SECRETS:
             raise ZentraError(
                 ErrorCode.VALIDATION_ERROR,
@@ -110,66 +103,74 @@ async def set_secret(
                 422, details={"field": "name"},
             )
 
-    ciphertext = cipher.encrypt(value)      # 沒設 ZENTRA_SECRET_KEY 會在這裡擋下
+    ciphertext = cipher.encrypt(value)
     now = datetime.now(UTC)
+    last_four = cipher.last_four(value)
     if existing is None:
-        existing = AgentSecret(agent_id=agent_id, name=name, created_at=now)
-        session.add(existing)
-    existing.ciphertext = ciphertext
-    existing.last_four = cipher.last_four(value)
-    existing.updated_at = now
-    await session.commit()
-    return _view(existing)
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO agent_secrets
+                (agent_id, name, ciphertext, last_four, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $5)
+            RETURNING {AgentSecret.returning()}
+            """,
+            agent_id, name, ciphertext, last_four, now,
+        )
+    else:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE agent_secrets
+            SET ciphertext = $3, last_four = $4, updated_at = $5
+            WHERE agent_id = $1 AND name = $2
+            RETURNING {AgentSecret.returning()}
+            """,
+            agent_id, name, ciphertext, last_four, now,
+        )
+    return _view(AgentSecret.from_row(row))
 
 
 async def referenced_by(
-    session: AsyncSession, agent_id: uuid.UUID, name: str,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, name: str,
 ) -> list[dict[str, str]]:
-    """誰以名字引用了這個機密（§2.8 的 `auth_secret_name`、§2.9 的 `password_secret_name`）。
-
-    **引用檢查在服務層做，不是 DB constraint。** FK 到 `(agent_id, name)` 會讓
-    刪除在 DB 層爆 constraint error，而契約要的是一個能說出「被誰引用」的 `409`。
-    """
+    """誰以名字引用了這個機密。引用檢查在服務層做，不是 DB constraint。"""
     users: list[dict[str, str]] = []
-    rules = (await session.execute(
-        select(AgentEgressRule)
-        .where(AgentEgressRule.agent_id == agent_id,
-               AgentEgressRule.auth_secret_name == name)
-    )).scalars().all()
+    rules = await conn.fetch(
+        "SELECT rule_id, host FROM agent_egress_rules "
+        "WHERE agent_id = $1 AND auth_secret_name = $2",
+        agent_id, name,
+    )
     for rule in rules:
-        users.append({"kind": "egress_rule", "rule_id": str(rule.rule_id), "host": rule.host})
-    sender = await session.get(AgentEmailSender, agent_id)
-    if sender is not None and sender.password_secret_name == name:
-        users.append({"kind": "email_sender", "smtp_host": sender.smtp_host})
+        users.append({"kind": "egress_rule", "rule_id": str(rule["rule_id"]), "host": rule["host"]})
+    sender = await conn.fetchrow(
+        "SELECT smtp_host, password_secret_name FROM agent_email_sender WHERE agent_id = $1",
+        agent_id,
+    )
+    if sender is not None and sender["password_secret_name"] == name:
+        users.append({"kind": "email_sender", "smtp_host": sender["smtp_host"]})
     return users
 
 
-async def delete_secret(session: AsyncSession, agent_id: uuid.UUID, name: str) -> None:
-    """硬刪，重複刪除冪等（不存在也成功）。
-
-    **還被引用時回 409** —— 直接刪掉會讓那條能力在下一次 Run 才無聲失敗。
-    """
-    users = await referenced_by(session, agent_id, name)
+async def delete_secret(conn: asyncpg.Connection, agent_id: uuid.UUID, name: str) -> None:
+    """硬刪，重複刪除冪等（不存在也成功）。還被引用時回 409。"""
+    users = await referenced_by(conn, agent_id, name)
     if users:
         raise ZentraError(
             ErrorCode.VERSION_CONFLICT,
             f"secret {name!r} is still referenced; remove the reference first",
             409, details={"referenced_by": users},
         )
-    await session.execute(
-        delete(AgentSecret).where(
-            AgentSecret.agent_id == agent_id, AgentSecret.name == name)
+    await conn.execute(
+        "DELETE FROM agent_secrets WHERE agent_id = $1 AND name = $2",
+        agent_id, name,
     )
-    await session.commit()
 
 
-async def resolve(session: AsyncSession, agent_id: uuid.UUID, name: str) -> str | None:
-    """**給 Internal Gateway 用。這是明文唯一離開這個模組的路徑。**
-
-    只有兩個呼叫端：§4.2 的出口代打（注入 auth header）與 §4.4 的寄信
-    （登入 SMTP）。沒有第三個，也沒有任何 API 層的呼叫端。
-    """
-    row = await session.get(AgentSecret, (agent_id, name))
-    if row is None:
+async def resolve(conn: asyncpg.Connection, agent_id: uuid.UUID, name: str) -> str | None:
+    """**給 Internal Gateway 用。這是明文唯一離開這個模組的路徑。**"""
+    ciphertext = await conn.fetchval(
+        "SELECT ciphertext FROM agent_secrets WHERE agent_id = $1 AND name = $2",
+        agent_id, name,
+    )
+    if ciphertext is None:
         return None
-    return cipher.decrypt(row.ciphertext)
+    return cipher.decrypt(ciphertext)

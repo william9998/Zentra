@@ -108,7 +108,6 @@ class CreateAgentResponse(BaseModel):
 
 class AgentEndpoints(BaseModel):
     rest: str
-    mcp: str
     openapi: str
 
 
@@ -326,6 +325,45 @@ class AgentApiKeyListResponse(BaseModel):
     """含已撤銷的 key —— 歷史用量還掛在它們身上。"""
 
     items: list[AgentApiKeyResponse]
+
+
+class CreateMcpKeyRequest(StrictRequest):
+    """發一把 MCP key，並勾選它看得到的 Agent。"""
+
+    name: str = Field(min_length=1, max_length=128,
+                      description="給人看的名字，例如對端 AI 平台名。")
+    agent_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class SetMcpKeyAgentsRequest(StrictRequest):
+    """整份取代這把 key 的勾選。"""
+
+    agent_ids: list[str] = Field(max_length=200)
+
+
+class McpKeyResponse(BaseModel):
+    """**不含 key 本身**。`agent_ids` 只含仍存在的 Agent。"""
+
+    key_id: str
+    name: str
+    key_prefix: str
+    agent_ids: list[str]
+    created_at: datetime
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class IssuedMcpKeyResponse(McpKeyResponse):
+    """建立時的回應，**唯一一次**看得到明文。"""
+
+    key: str
+
+
+class McpKeyListResponse(BaseModel):
+    """含已撤銷的 key —— 歷史 Run 還掛在它們身上。"""
+
+    endpoint: str
+    items: list[McpKeyResponse]
 
 
 class UsageTotals(BaseModel):

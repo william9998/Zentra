@@ -10,10 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, select
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncpg
 
-from apps.api.models import EgressCall
+from apps.api.rows import EgressCall
 from apps.api.services import pagination
 
 
@@ -32,24 +31,38 @@ class CallFilters:
     errors_only: bool = False
 
 
-def _apply(statement: Select, agent_id: uuid.UUID, filters: CallFilters) -> Select:
-    statement = statement.where(EgressCall.agent_id == agent_id)
+def _filters_sql(agent_id: uuid.UUID, filters: CallFilters) -> tuple[str, list[Any]]:
+    """動態片段只從程式碼常數挑；值一律走參數。"""
+    clauses = ["agent_id = $1"]
+    args: list[Any] = [agent_id]
+    n = 2
     if filters.kind:
-        statement = statement.where(EgressCall.kind == filters.kind)
+        clauses.append(f"kind = ${n}")
+        args.append(filters.kind)
+        n += 1
     if filters.run_id is not None:
-        statement = statement.where(EgressCall.run_id == filters.run_id)
+        clauses.append(f"run_id = ${n}")
+        args.append(filters.run_id)
+        n += 1
     if filters.since is not None:
-        statement = statement.where(EgressCall.created_at >= filters.since)
+        clauses.append(f"created_at >= ${n}")
+        args.append(filters.since)
+        n += 1
     if filters.until is not None:
-        statement = statement.where(EgressCall.created_at <= filters.until)
+        clauses.append(f"created_at <= ${n}")
+        args.append(filters.until)
+        n += 1
     if filters.host:
-        statement = statement.where(EgressCall.host == filters.host)
+        clauses.append(f"host = ${n}")
+        args.append(filters.host)
+        n += 1
     if filters.status_code is not None:
-        statement = statement.where(EgressCall.status_code == filters.status_code)
+        clauses.append(f"status_code = ${n}")
+        args.append(filters.status_code)
+        n += 1
     if filters.errors_only:
-        statement = statement.where(
-            (EgressCall.error.is_not(None)) | (EgressCall.status_code >= 400))
-    return statement
+        clauses.append("(error IS NOT NULL OR status_code >= 400)")
+    return " AND ".join(clauses), args
 
 
 def view(row: EgressCall) -> dict[str, Any]:
@@ -72,7 +85,7 @@ def view(row: EgressCall) -> dict[str, Any]:
 
 
 async def list_calls(
-    session: AsyncSession,
+    conn: asyncpg.Connection,
     agent_id: uuid.UUID,
     filters: CallFilters,
     *,
@@ -80,23 +93,25 @@ async def list_calls(
     cursor: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """逐筆列出，最新的在前。回 `(items, next_cursor)`。"""
-    statement = _apply(select(EgressCall), agent_id, filters)
+    where, args = _filters_sql(agent_id, filters)
     if cursor:
         cursor_created_at, cursor_id = pagination.decode(cursor)
-        statement = statement.where(
-            (EgressCall.created_at < cursor_created_at)
-            | ((EgressCall.created_at == cursor_created_at)
-               & (EgressCall.call_id < cursor_id))
+        n = len(args) + 1
+        where += (
+            f" AND (created_at < ${n} OR (created_at = ${n} AND call_id < ${n + 1}))"
         )
-    rows = (await session.execute(
-        statement.order_by(EgressCall.created_at.desc(), EgressCall.call_id.desc())
-        .limit(limit + 1)
-    )).scalars().all()
-
-    has_more = len(rows) > limit
-    rows = list(rows[:limit])
-    next_cursor = (
-        pagination.encode(rows[-1].created_at, rows[-1].call_id) if has_more and rows
-        else None
+        args.extend([cursor_created_at, cursor_id])
+    rows = await conn.fetch(
+        f"SELECT {EgressCall.returning()} FROM egress_calls "
+        f"WHERE {where} ORDER BY created_at DESC, call_id DESC "
+        f"LIMIT ${len(args) + 1}",
+        *args, limit + 1,
     )
-    return [view(row) for row in rows], next_cursor
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = [view(EgressCall.from_row(row)) for row in rows]
+    next_cursor = (
+        pagination.encode(rows[-1]["created_at"], rows[-1]["call_id"])
+        if has_more and rows else None
+    )
+    return items, next_cursor

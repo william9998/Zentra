@@ -1,8 +1,26 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_database_url(url: str) -> str:
+    """剝掉 +driver，一律變成 postgresql://。asyncpg 與 psycopg 都只接受這個。
+
+    接受 postgresql://、postgres://、postgresql+asyncpg://、postgresql+psycopg://、
+    postgresql+psycopg2://。其他 scheme 在啟動時報錯。
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.split("+", 1)[0]
+    if scheme not in ("postgresql", "postgres"):
+        raise ValueError(
+            f"unsupported DATABASE_URL scheme {parsed.scheme!r}; "
+            "expected postgresql://, postgres://, postgresql+asyncpg://, "
+            "or postgresql+psycopg://"
+        )
+    return urlunparse(parsed._replace(scheme="postgresql"))
 
 # apps/api/config.py → apps/ → apps/console。容器內是 /srv/apps/console（api.Dockerfile
 # 的 WORKDIR /srv），本機 uvicorn 則不管從哪個 cwd 啟動都解析得到。
@@ -14,14 +32,19 @@ class Settings(BaseSettings):
 
     zentra_env: str = "dev"
 
-    database_url: str = "postgresql+asyncpg://zentra:zentra@postgres:5432/zentra"
+    database_url: str = "postgresql://zentra:zentra@postgres:5432/zentra"
     redis_url: str = "redis://redis:6379/0"
+
+    # app 的連線池（只有一個 uvicorn 行程，所以這就是整個 HTTP 端的上限）。
+    # 等外部回應的路徑都會先結束交易，所以連線只在真的查詢時被占用。
+    # ⚠️ 加總要低於 Postgres 的 max_connections（預設 100），worker 的 10 個子行程也要連。
+    db_pool_size: int = Field(default=10, validation_alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=20, validation_alias="DB_MAX_OVERFLOW")
 
     # Console 靜態檔（ADR-0006）：api 同時是 Console 的 web server，沒有 console 容器。
     console_dir: Path = _CONSOLE_DIR
 
     # 沙盒（P4：這裡不放任何長期憑證）
-    sandbox_image: str = "zentra/agent-runtime:dev"
     sandbox_network: str = "zentra-sandbox-net"
     sandbox_gateway_url: str = "http://app:8000/internal"
     sandbox_max_concurrent: int = 10
@@ -41,22 +64,18 @@ class Settings(BaseSettings):
         default=False, validation_alias="ZENTRA_REQUIRE_AGENT_API_KEY")
 
     # ── 常駐容器（ZEN-015 / ADR-0012）────────────────────────────────
-    # 一個容器同時能跑幾個 Run。滿了就溢出開新容器，讓容器掛掉的爆炸半徑有界。
+    # 一個版本**只開一個**常駐容器，它同時最多跑這麼多個 Run。
+    # 滿了不開第二個容器：多的工作留在 Redis 佇列，容器空出位子才會來拿。
     #
-    # ⚠️ 這個數字與容器的 mem_limit 是**一組的**：N=30 表示 30 個 Run 共用該容器的
-    #    2 GB，平均每 Run 約 68 MB。agent 若把大 payload 整份讀進記憶體，
-    #    幾個並行就會吃掉額度，然後同容器的 30 個一起被 OOM killer 帶走。
-    #    調 N 的時候要一起看記憶體，不能只調一個。
+    # ⚠️ 這個數字與容器的 mem_limit（2 GB）是**一組的**：N=50 表示平均每 Run 約 40 MB。
+    #    agent 若把大 payload 整份讀進記憶體，幾個並行就會吃掉額度，
+    #    然後同容器的 N 個一起被 OOM killer 帶走。調 N 時要一起看記憶體。
     sandbox_runs_per_container: int = Field(
-        default=30, validation_alias="SANDBOX_RUNS_PER_CONTAINER")
-    # 一個 Agent 最多開幾個常駐容器（ADR-0012 選項 C 的溢出上限）。
-    #
-    # ⚠️ 這個數字乘上容器的 mem_limit 就是單一 Agent 的記憶體天花板：
-    #    3 × 2 GB = 6 GB。**開發機通常沒有那麼多** —— 這台實測 Docker 只有不到 2 GB，
-    #    所以真正跑得起來的是 1 個。調高之前先確認主機記憶體，不然多開的容器
-    #    會在啟動時就被 OOM killer 帶走，而畫面上只會看到 FAILED。
-    sandbox_max_containers_per_agent: int = Field(
-        default=3, validation_alias="SANDBOX_MAX_CONTAINERS_PER_AGENT")
+        default=50, validation_alias="SANDBOX_RUNS_PER_CONTAINER")
+    # 一筆 Run 在常駐容器佇列裡最多等多久（秒）。排隊時間**不算**進 Run 的 timeout_seconds
+    # （容器取走才開始計時），但不能無限等 —— 容器死掉時佇列裡的工作永遠不會被取走。
+    run_queue_timeout_seconds: int = Field(
+        default=3600, validation_alias="RUN_QUEUE_TIMEOUT_SECONDS")
 
     # 容器閒置多久回收（秒）。0 = 不自動回收，只能手動停止。
     #
@@ -131,10 +150,15 @@ class Settings(BaseSettings):
     # 這裡只做計量；留空不影響 token 數的正確性。
     llm_prices: dict[str, dict[str, str]] = {}
 
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url(cls, value: str) -> str:
+        return normalize_database_url(value)
+
     @property
-    def sync_database_url(self) -> str:
-        """Alembic 用同步 driver。"""
-        return self.database_url.replace("+asyncpg", "+psycopg")
+    def dsn(self) -> str:
+        """正規化後的 postgresql://…，給 asyncpg / psycopg / runner 用。"""
+        return self.database_url
 
 
 @lru_cache

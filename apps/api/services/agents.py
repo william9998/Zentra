@@ -8,19 +8,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import asyncpg
+from asyncpg.exceptions import UniqueViolationError
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
-from sqlalchemy import and_, delete, desc, or_, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.enums import AgentSourceType, AgentVersionStatus, ErrorCode
 from apps.api.errors import ZentraError, not_found
 from apps.api.ids import uuid7
-from apps.api.models import (
-    Agent, AgentContainer, AgentEgressRule, AgentEmailSender, AgentSecret,
-    AgentSettings, AgentVersion, EgressCall, Run,
-)
+from apps.api.rows import Agent, AgentVersion
 from apps.api.schemas import (
     AgentDetail,
     AgentEndpoints,
@@ -58,60 +54,79 @@ def _semver_key(value: str) -> tuple[int, int, int, int, str]:
     return major, minor, patch, int(not separator), prerelease
 
 
-async def load_agent(session: AsyncSession, agent_id: str, *, include_deleted: bool = False) -> Agent:
+async def load_agent(
+    conn: asyncpg.Connection, agent_id: str, *, include_deleted: bool = False,
+) -> Agent:
     try:
         parsed = uuid.UUID(agent_id)
     except ValueError:
         raise not_found("agent") from None
-    statement = select(Agent).where(Agent.id == parsed)
-    if not include_deleted:
-        statement = statement.where(Agent.deleted_at.is_(None))
-    agent = (await session.execute(statement)).scalar_one_or_none()
-    if agent is None:
+    if include_deleted:
+        rec = await conn.fetchrow(
+            f"SELECT {Agent.returning()} FROM agents WHERE id = $1", parsed)
+    else:
+        rec = await conn.fetchrow(
+            f"SELECT {Agent.returning()} FROM agents WHERE id = $1 AND deleted_at IS NULL",
+            parsed)
+    if rec is None:
         raise not_found("agent")
-    return agent
+    return Agent.from_row(rec)
 
 
-async def latest_published(session: AsyncSession, agent_id: uuid.UUID) -> AgentVersion | None:
-    rows = (await session.execute(select(AgentVersion).where(
-        AgentVersion.agent_id == agent_id,
-        AgentVersion.status == AgentVersionStatus.PUBLISHED,
-    ))).scalars().all()
-    return max(rows, key=lambda row: _semver_key(row.semver), default=None)
+async def latest_published(conn: asyncpg.Connection, agent_id: uuid.UUID) -> AgentVersion | None:
+    rows = await conn.fetch(
+        f"SELECT {AgentVersion.returning()} FROM agent_versions "
+        "WHERE agent_id = $1 AND status = $2",
+        agent_id, str(AgentVersionStatus.PUBLISHED),
+    )
+    if not rows:
+        return None
+    return max((AgentVersion.from_row(row) for row in rows), key=lambda row: _semver_key(row.semver))
 
 
-async def create_agent(session: AsyncSession, body: CreateAgentRequest) -> Agent:
-    row = Agent(id=uuid7(), name=body.name, description=body.description)
-    session.add(row)
+async def create_agent(conn: asyncpg.Connection, body: CreateAgentRequest) -> Agent:
+    now = datetime.now(UTC)
     try:
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
+        rec = await conn.fetchrow(
+            f"""
+            INSERT INTO agents (id, name, description, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $4)
+            RETURNING {Agent.returning()}
+            """,
+            uuid7(), body.name, body.description, now,
+        )
+    except UniqueViolationError as exc:
         raise ZentraError(
             ErrorCode.VALIDATION_ERROR, "agent name already exists", 422,
             details={"field": "name"},
         ) from exc
-    await session.refresh(row)
-    return row
+    return Agent.from_row(rec)
 
 
-async def update_agent(session: AsyncSession, agent: Agent, body: UpdateAgentRequest) -> Agent:
-    for field in body.model_fields_set:
-        setattr(agent, field, getattr(body, field))
-    agent.updated_at = datetime.now(UTC)
+async def update_agent(
+    conn: asyncpg.Connection, agent: Agent, body: UpdateAgentRequest,
+) -> Agent:
+    name = body.name if "name" in body.model_fields_set else agent.name
+    description = body.description if "description" in body.model_fields_set else agent.description
+    now = datetime.now(UTC)
     try:
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
+        rec = await conn.fetchrow(
+            f"""
+            UPDATE agents SET name = $2, description = $3, updated_at = $4
+            WHERE id = $1
+            RETURNING {Agent.returning()}
+            """,
+            agent.id, name, description, now,
+        )
+    except UniqueViolationError as exc:
         raise ZentraError(
             ErrorCode.VALIDATION_ERROR, "agent name already exists", 422,
             details={"field": "name"},
         ) from exc
-    await session.refresh(agent)
-    return agent
+    return Agent.from_row(rec)
 
 
-async def delete_agent(session: AsyncSession, agent: Agent) -> dict:
+async def delete_agent(conn: asyncpg.Connection, agent: Agent) -> dict:
     """**硬刪** Agent 與它的一切，並回傳還需要在平台外清理的東西。
 
     ## 為什麼是硬刪（ADR-0013 改的）
@@ -129,60 +144,64 @@ async def delete_agent(session: AsyncSession, agent: Agent) -> dict:
     回傳的 dict 給 worker 用：容器要停、image 要刪，那兩件事都碰不到 DB，
     而且**必須在 DB 刪掉之前先收集**——刪完就沒有人記得該清哪些東西了。
     """
+    container_ids = [
+        str(row["id"]) for row in await conn.fetch(
+            "SELECT id FROM agent_containers WHERE agent_id = $1", agent.id)
+    ]
+    image_refs = [
+        row["image_ref"] for row in await conn.fetch(
+            "SELECT image_ref FROM agent_versions WHERE agent_id = $1", agent.id)
+        if row["image_ref"]
+    ]
     payload = {
         "agent_id": str(agent.id),
-        "container_ids": [
-            str(row) for row in (await session.execute(
-                select(AgentContainer.id).where(AgentContainer.agent_id == agent.id)
-            )).scalars()
-        ],
-        "image_refs": [
-            ref for ref in (await session.execute(
-                select(AgentVersion.image_ref).where(AgentVersion.agent_id == agent.id)
-            )).scalars() if ref
-        ],
+        "container_ids": container_ids,
+        "image_refs": image_refs,
     }
 
+    # ZEN-019 的五張表。**明著刪，不只靠 CASCADE**：這串就是 §2.5 那份
+    # 「刪 Agent 會一起消失什麼」的清單，寫在這裡才不會有人加了新表卻
+    # 忘了它，而漏掉的那張表裡放的可能是機密。
+    # egress_calls 要排在 runs 與 egress_rules 之前：它同時指向兩者。
     for statement in (
-        # ZEN-019 的五張表。**明著刪，不只靠 CASCADE**：這串就是 §2.5 那份
-        # 「刪 Agent 會一起消失什麼」的清單，寫在這裡才不會有人加了新表卻
-        # 忘了它，而漏掉的那張表裡放的可能是機密。
-        # egress_calls 要排在 runs 與 egress_rules 之前：它同時指向兩者。
-        delete(EgressCall).where(EgressCall.agent_id == agent.id),
-        delete(AgentEgressRule).where(AgentEgressRule.agent_id == agent.id),
-        delete(AgentEmailSender).where(AgentEmailSender.agent_id == agent.id),
-        delete(AgentSecret).where(AgentSecret.agent_id == agent.id),
-        delete(AgentSettings).where(AgentSettings.agent_id == agent.id),
-        delete(Run).where(Run.agent_id == agent.id),
-        delete(AgentContainer).where(AgentContainer.agent_id == agent.id),
-        delete(AgentVersion).where(AgentVersion.agent_id == agent.id),
+        "DELETE FROM egress_calls WHERE agent_id = $1",
+        "DELETE FROM agent_egress_rules WHERE agent_id = $1",
+        "DELETE FROM agent_email_sender WHERE agent_id = $1",
+        "DELETE FROM agent_secrets WHERE agent_id = $1",
+        "DELETE FROM agent_settings WHERE agent_id = $1",
+        "DELETE FROM runs WHERE agent_id = $1",
+        "DELETE FROM agent_containers WHERE agent_id = $1",
+        "DELETE FROM agent_versions WHERE agent_id = $1",
+        "DELETE FROM agents WHERE id = $1",
     ):
-        await session.execute(statement)
-    await session.delete(agent)          # 憑證與 api key 靠 CASCADE 跟著走
-    await session.commit()
+        await conn.execute(statement, agent.id)
     return payload
 
 
 async def list_agents(
-    session: AsyncSession, *, limit: int, cursor: str | None,
+    conn: asyncpg.Connection, *, limit: int, cursor: str | None,
 ) -> tuple[list[tuple[Agent, str | None]], str | None]:
-    statement = select(Agent).where(Agent.deleted_at.is_(None))
+    where = "deleted_at IS NULL"
+    args: list[Any] = []
     if cursor:
         created_at, row_id = _cursor_decode(cursor)
-        statement = statement.where(or_(
-            Agent.created_at < created_at,
-            and_(Agent.created_at == created_at, Agent.id < row_id),
-        ))
-    rows = (await session.execute(
-        statement.order_by(desc(Agent.created_at), desc(Agent.id)).limit(limit + 1)
-    )).scalars().all()
+        where += " AND (created_at < $1 OR (created_at = $1 AND id < $2))"
+        args.extend([created_at, row_id])
+    rows = await conn.fetch(
+        f"SELECT {Agent.returning()} FROM agents WHERE {where} "
+        f"ORDER BY created_at DESC, id DESC LIMIT ${len(args) + 1}",
+        *args, limit + 1,
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
     result: list[tuple[Agent, str | None]] = []
-    for row in rows:
-        latest = await latest_published(session, row.id)
+    for rec in rows:
+        row = Agent.from_row(rec)
+        latest = await latest_published(conn, row.id)
         result.append((row, latest.semver if latest else None))
-    next_cursor = _cursor_encode(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+    next_cursor = (
+        _cursor_encode(rows[-1]["created_at"], rows[-1]["id"]) if has_more and rows else None
+    )
     return result, next_cursor
 
 
@@ -202,7 +221,6 @@ def agent_detail(row: Agent, latest: str | None, base_url: str) -> AgentDetail:
         latest_published_version=latest, created_at=row.created_at, updated_at=row.updated_at,
         endpoints=AgentEndpoints(
             rest=f"{root}/v1/agents/{row.id}/runs",
-            mcp=f"{root}/mcp/agents/{row.id}",
             openapi=f"{root}/v1/agents/{row.id}/openapi.json",
         ),
     )
@@ -224,68 +242,102 @@ def version_response(row: AgentVersion, *, detail: bool = False) -> AgentVersion
 
 
 async def create_version(
-    session: AsyncSession, agent: Agent, body: CreateAgentVersionRequest,
-) -> AgentVersion:
+    conn: asyncpg.Connection, agent: Agent, body: CreateAgentVersionRequest,
+) -> tuple[AgentVersion, bool]:
+    """登記一個版本，回傳 `(那一列, 要不要派 build)`。
+
+    同一個版號再送一次 = **取代**（ADR-0016）。這裡只建新的 `BUILDING`；
+    舊的 `PUBLISHED` 要等新的驗證通過，才在 worker 那側同一個交易裡改成 `SUPERSEDED`。
+    驗證失敗的話舊的照常服務。
+
+    - 已經有一筆同版號在 build → `409`：兩個取代者同時驗證，誰贏都說不清楚。
+    - 送來的 digest 跟現役那筆一樣 → 什麼都不做，回現役那筆。
+    """
     _, digest = parse_image_ref(body.image_ref)
-    row = AgentVersion(
-        id=uuid7(), agent_id=agent.id, semver=body.semver,
-        source_type=AgentSourceType.OCI_IMAGE, image_ref=body.image_ref,
-        image_digest=digest, version_id=digest.removeprefix("sha256:")[:12],
-        status=AgentVersionStatus.BUILDING,
+    current = await conn.fetchrow(
+        f"SELECT {AgentVersion.returning()} FROM agent_versions "
+        "WHERE agent_id = $1 AND semver = $2 AND status = $3",
+        agent.id, body.semver, str(AgentVersionStatus.PUBLISHED),
     )
-    session.add(row)
+    if current is not None and current["image_ref"] == body.image_ref:
+        return AgentVersion.from_row(current), False
     try:
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
+        rec = await conn.fetchrow(
+            f"""
+            INSERT INTO agent_versions
+                (id, agent_id, semver, source_type, image_ref, image_digest,
+                 version_id, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING {AgentVersion.returning()}
+            """,
+            uuid7(), agent.id, body.semver, str(AgentSourceType.OCI_IMAGE),
+            body.image_ref, digest, digest.removeprefix("sha256:")[:12],
+            str(AgentVersionStatus.BUILDING),
+        )
+    except UniqueViolationError as exc:
         raise ZentraError(
-            ErrorCode.VERSION_CONFLICT, "agent version already exists", 409,
+            ErrorCode.VERSION_CONFLICT,
+            "this version is already being built; wait for it to finish", 409,
             details={"field": "semver"},
         ) from exc
-    await session.refresh(row)
-    return row
+    return AgentVersion.from_row(rec), True
 
 
 async def load_version_by_semver(
-    session: AsyncSession, agent_id: uuid.UUID, semver: str,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, semver: str,
 ) -> AgentVersion:
-    row = (await session.execute(select(AgentVersion).where(
-        AgentVersion.agent_id == agent_id, AgentVersion.semver == semver,
-    ))).scalar_one_or_none()
-    if row is None:
+    """這個版號**最近一次註冊**的那一列（被取代的不算）。
+
+    註冊後輪詢狀態靠的就是它，所以取代進行中回的是 `BUILDING` 那筆、
+    驗證失敗回 `FAILED` 那筆 —— 即使舊的 `PUBLISHED` 還在服務。
+    """
+    rec = await conn.fetchrow(
+        f"SELECT {AgentVersion.returning()} FROM agent_versions "
+        "WHERE agent_id = $1 AND semver = $2 AND status <> $3 "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        agent_id, semver, str(AgentVersionStatus.SUPERSEDED),
+    )
+    if rec is None:
         raise not_found("agent version")
-    return row
+    return AgentVersion.from_row(rec)
 
 
 async def list_versions(
-    session: AsyncSession, agent_id: uuid.UUID, *, limit: int, cursor: str | None,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, *, limit: int, cursor: str | None,
 ) -> tuple[list[AgentVersion], str | None]:
-    statement = select(AgentVersion).where(AgentVersion.agent_id == agent_id)
+    where = "agent_id = $1 AND status <> $2"
+    args: list[Any] = [agent_id, str(AgentVersionStatus.SUPERSEDED)]
     if cursor:
         created_at, row_id = _cursor_decode(cursor)
-        statement = statement.where(or_(
-            AgentVersion.created_at < created_at,
-            and_(AgentVersion.created_at == created_at, AgentVersion.id < row_id),
-        ))
-    rows = (await session.execute(statement.order_by(
-        desc(AgentVersion.created_at), desc(AgentVersion.id),
-    ).limit(limit + 1))).scalars().all()
+        where += " AND (created_at < $3 OR (created_at = $3 AND id < $4))"
+        args.extend([created_at, row_id])
+    rows = await conn.fetch(
+        f"SELECT {AgentVersion.returning()} FROM agent_versions WHERE {where} "
+        f"ORDER BY created_at DESC, id DESC LIMIT ${len(args) + 1}",
+        *args, limit + 1,
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
-    next_cursor = _cursor_encode(rows[-1].created_at, rows[-1].id) if has_more and rows else None
-    return rows, next_cursor
+    next_cursor = (
+        _cursor_encode(rows[-1]["created_at"], rows[-1]["id"]) if has_more and rows else None
+    )
+    return [AgentVersion.from_row(row) for row in rows], next_cursor
 
 
 async def resolve_published_version(
-    session: AsyncSession, agent_id: uuid.UUID, requested: str | None,
+    conn: asyncpg.Connection, agent_id: uuid.UUID, requested: str | None,
 ) -> AgentVersion:
     if requested is None:
-        row = await latest_published(session, agent_id)
+        row = await latest_published(conn, agent_id)
     else:
-        row = (await session.execute(select(AgentVersion).where(
-            AgentVersion.agent_id == agent_id, AgentVersion.semver == requested,
-        ))).scalar_one_or_none()
-    if row is None or row.status != AgentVersionStatus.PUBLISHED:
+        # 同版號可能同時有現役、取代中、失敗的紀錄，Run 只能用現役那筆。
+        rec = await conn.fetchrow(
+            f"SELECT {AgentVersion.returning()} FROM agent_versions "
+            "WHERE agent_id = $1 AND semver = $2 AND status = $3",
+            agent_id, requested, str(AgentVersionStatus.PUBLISHED),
+        )
+        row = AgentVersion.from_row(rec) if rec is not None else None
+    if row is None or row.status != str(AgentVersionStatus.PUBLISHED):
         raise ZentraError(
             ErrorCode.AGENT_NOT_PUBLISHED, "agent version is not published", 409
         )
