@@ -21,8 +21,6 @@
       "Bash(sed -n:*)"
     ],
     "deny": [
-      "Read(./**/.env)",
-      "Read(./**/.env.*)",
       "Read(./**/secrets/**)",
       "Bash(terraform apply:*)",
       "Bash(terraform destroy:*)"
