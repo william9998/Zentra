@@ -20,7 +20,6 @@
 | ZEN-011 | 測試 fixture 自己清理（teardown 或可辨識前綴 + session 結束批次清） | 做完就不用每次收工手動 `make clean-test-data` |
 | ZEN-016 | `response_model_exclude_none` 吃掉契約規定的 `null` 欄位（`next_cursor`、`description`、`latest_published_version`） | 先確認 Console 有沒有依賴現行行為 |
 | ZEN-017 | serve 模式的驗收補一個會打 `ctx.llm()` 的 agent | bug 已修，缺測試 |
-| ZEN-010 | 退休 `builtin-echo` 與 `agent-runtime` 特例路徑 | 退休後 `make smoke` 要改寫 |
 | — | 刪除單一版本（`DELETE /v1/agents/{id}/versions/{semver}`，連 image 一起清） | 做同版號取代時使用者決定先不做；同版號取代已解決大部分 image 堆積 |
 | ZEN-003 / 004 / 005 / 006 / 007 | 隔離硬化 · Run API 完整版 · Interface Generator · Console 五畫面 · 收尾 demo | 原八週路線圖剩下的；部分已被後續任務做掉，動工前先對 `specs/` 確認 |
 
@@ -30,7 +29,8 @@
 |---|---|
 | ZEN008-ISO-01 🔴 | 使用者 image 的 Dockerfile 宣告 `VOLUME` → Docker 建出可寫匿名 volume，`read_only` 擋不住，沙盒銷毀後仍留在宿主機。重現：build 一個含 `VOLUME /escape` 的 image，跑一筆 Run 寫入 `/escape` 後看 `docker volume ls` |
 | AGENT-D1 | `agents.name` 無條件 `UNIQUE` + 軟刪除 → 刪掉的名稱永久被佔。ZEN-018 改硬刪後可能已不成立 |
-| DEV-DB-ECHO | 開發庫沒有 `builtin-echo`（空庫跑 runner 會 seed，舊庫曾被清掉）→ `make smoke` 404。不是產品缺陷；要嘛手動補回，要嘛等 ZEN-010 退休它 |
+| REDIS-GROWTH | Redis 用量隨流量線性成長、跑完不會降。每筆 Run 留下 `celery-task-meta-*`（每個任務約 376 B，保留 1 天，**平台不讀**；一筆 Run 至少兩個任務）與 `run:*` Stream（約 4.8 KB，保留 1 小時）。壓測 2026-11-01：約 2,900 筆 Run 讓 Redis 從 16 MB 漲到 30 MB。持續每秒 50 筆時估計穩定在約 4 GB，而 `maxmemory` 是 0（沒上限），會吃到主機記憶體。修法方向：`task_ignore_result=True`（或縮短 `result_expires`）、檢討 Stream 的保留時間、設 `maxmemory`。要先改 specs/redis.md §4 |
+| SDK-ROUTER-EVENTS | SDK（`image_runtime.py` 的 `astream_events` 迴圈）把**條件分支的判斷函式**也回報成 `node.start` / `node.end`，Run 觀測頁會多出不是節點的「節點」。重現：跑 `probe-agent`，事件裡有 `pick_mode`、`pick_reply`。修法方向：只回報 `metadata.langgraph_node == name` 的事件。冒煙測試目前改成「真節點都在」而不數總數 |
 | CANCEL-404 | `POST /v1/runs/{id}/cancel` 沒有後端路由，Console 的「停止」按了會 404（整理規格時發現） |
 | MANUAL-STOP-RUNS | 手動停止／重啟常駐容器（`POST …/restart`、`DELETE …/containers/{id}`）時，裡面跑到一半的 Run 不會立即 FAILED，要等逾時清掃收成 `SANDBOX_TIMEOUT`。存活檢查那條路已經會立即收（`SANDBOX_ERROR`），可共用 `_fail_runs` |
 | CONTAINER-API-FIELDS | `last_death_reason` / `last_died_at` / `restarts_in_window` 只在 DB，容器 API 和 Console 看不到，排查要下 SQL。要露出得先改 api.md 的容器回應 |

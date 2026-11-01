@@ -88,7 +88,6 @@ class SandboxManager:
         driver: SandboxDriver,
         redis: Redis,
         *,
-        image: str | None = None,
         network: str,
         gateway_url: str,
         max_concurrent: int,
@@ -96,7 +95,6 @@ class SandboxManager:
         self._driver = driver
         self._blocking_driver = _BlockingDriverAdapter(driver)
         self._redis = redis
-        self._image = image
         self._network = network
         self._gateway_url = gateway_url
         self._max_concurrent = max_concurrent
@@ -118,22 +116,6 @@ class SandboxManager:
     def inflight(self) -> int:
         self._redis.zremrangebyscore(INFLIGHT_KEY, "-inf", time.time() - LEASE_SECONDS)
         return int(self._redis.zcard(INFLIGHT_KEY))
-
-    def create(self, run_id: str, run_token: str) -> SandboxHandle:
-        """ZEN-000 compatibility for its built-in tagged runtime image."""
-        if self._image is None:
-            raise ValueError("legacy sandbox image is not configured")
-        spec = SandboxSpec(
-            run_id=run_id,
-            image=self._image,
-            network=self._network,
-            env={
-                "ZENTRA_RUN_ID": run_id,
-                "ZENTRA_RUN_TOKEN": run_token,
-                "ZENTRA_GATEWAY": self._gateway_url,
-            },
-        )
-        return self._blocking_driver.create(spec)
 
     def prepare_image(self, image_ref: str) -> ImageMetadata:
         """Ensure the exact digest is cached and return verified OCI metadata."""

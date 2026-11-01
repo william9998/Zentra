@@ -133,11 +133,3 @@ class EventType(StrEnum):
     LOG = "log"
     CUSTOM = "custom"
     ERROR = "error"
-
-
-#: ZEN-000 的 agent 寫死在沙盒映像裡，還沒有 Agent Registry（ZEN-001 才做）。
-#: 這個固定 id 讓 `POST /v1/agents/{agent_id}/runs` 有東西可以打，
-#: 其他 agent_id 一律回 NOT_FOUND —— 順便給 QA 一條真的 404 路徑可以測。
-BUILTIN_AGENT_ID = "01930000-0000-7000-8000-000000000001"
-BUILTIN_AGENT_VERSION_ID = "01930000-0000-7000-8000-000000000002"
-BUILTIN_AGENT_SEMVER = "0.0.0-builtin"

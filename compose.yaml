@@ -81,7 +81,6 @@ services:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
       DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       # ⚠️ 本機若有 .env 且設了這一行，它會蓋掉這裡的預設值。服務改名時要一起改，
       #    否則沙盒會拿到指向舊名字的 gateway，Run 會 FAILED 且沒有任何事件。
@@ -131,7 +130,6 @@ services:
       ZENTRA_ENV: ${ZENTRA_ENV:-dev}
       DATABASE_URL: ${DATABASE_URL:-postgresql://zentra:zentra@postgres:5432/zentra}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-zentra/agent-runtime:dev}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-zentra-sandbox-net}
       SANDBOX_GATEWAY_URL: ${SANDBOX_GATEWAY_URL:-http://app:8000/internal}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-10}

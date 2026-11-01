@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     console_dir: Path = _CONSOLE_DIR
 
     # 沙盒（P4：這裡不放任何長期憑證）
-    sandbox_image: str = "zentra/agent-runtime:dev"
     sandbox_network: str = "zentra-sandbox-net"
     sandbox_gateway_url: str = "http://app:8000/internal"
     sandbox_max_concurrent: int = 10

@@ -2,7 +2,7 @@
 
 > **資料表結構的唯一事實來源是 `apps/api/migrations/NNNN_*.sql`**，不是這份文件，也不是任何 Python 檔。
 > 這份文件說明每張表「為什麼長這樣」。落後於 migration 就是 bug，改 schema 時要一起改。
-> 目前對齊 migration `0011`。
+> 目前對齊 migration `0012`（0012 只刪資料：退休 builtin-echo）。
 
 ## 放什麼
 
@@ -325,5 +325,5 @@ Console 改勾選 = 刪掉 K1 的所有列，再重新插入新的勾選（整�
 | 備份 | **`pgdata` 和 `registrydata` 必須一起備份**；`ZENTRA_SECRET_KEY` 另外保管 |
 | 成長 | `run_events` > `runs` ≈ `llm_calls`、`egress_calls`。沒有保留期限、沒有分區 |
 | 連線數 | app 最多 30 + worker 10 + migration 1，要低於 `max_connections`（100） |
-| 測試資料 | `make clean-test-data` 依名稱前綴清掉測試 Agent 與 Run，保留 `builtin-echo` |
+| 測試資料 | `make clean-test-data` 依名稱前綴清掉測試 Agent 與 Run；測試 Agent `probe-agent` 本身保留，它的 Run 與 API key 清掉 |
 | ⚠️ 從主機連 | 主機上如果也有 Postgres 佔著 5432，會連錯庫。請在容器內跑：`docker compose exec postgres psql -U zentra -d zentra` |

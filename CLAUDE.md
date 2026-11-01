@@ -49,9 +49,10 @@ apps/
   sandbox/   SandboxDriver + DockerSandboxDriver + SandboxManager
   console/   原生 HTML/CSS/JS，由 api 服務，無建置
 packages/sdk/        使用者在容器內寫 agent 時用的 zentra_sdk
-examples/            範例 agent（my-agent 是起點）
+examples/            範例 agent（my-agent 是起點；probe-agent 是冒煙測試與壓測打的測試 Agent）
 monitoring/          維運監控（Prometheus + Grafana + exporter），獨立部署，不屬於五個服務
-scripts/             verify-zen000.sh（冒煙）· clean-test-data.sh · adopt-legacy-schema.sh
+scripts/             verify-zen000.sh（冒煙）· fixture.sh（註冊 probe-agent）· clean-test-data.sh · adopt-legacy-schema.sh
+test/performance/    Locust 壓測（自己的 venv）
 coordination/BOARD.md 任務看板
 ```
 
@@ -75,7 +76,7 @@ repo 裡**沒有自動化測試套件**。驗證靠實際跑起來看：
 
 - 程式要在映像裡跑才算數：改了 `apps/` 就要重建 `app` / `worker`，不然測到的是舊程式碼。
 - 呼叫的 `manager.X` / 屬性名要確認真的存在 —— 曾經有改名改到不存在的方法，例外被吞掉，Run 照樣成功，完全看不出來。
-- **這次有在平台上建 Agent / Run** → 收工前 `make clean-test-data`。沒建就不用。內建 fixture `builtin-echo` 會自動留著。
+- **這次有在平台上建 Agent / Run** → 收工前 `make clean-test-data`。沒建就不用。測試 Agent `probe-agent` 本身會留著（它的 Run 會清掉）。
 
 ## 什麼時候叫 subagent
 
@@ -95,8 +96,8 @@ make clean-test-data            # 有在平台上建測試 Agent / Run 才需要
 # Console → http://localhost:8000/console/agents
 # Agent base image（使用者的 agent image 以此為基底）
 docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
-# 內建 fixture builtin-echo 的映像（只有冒煙測試用，tag 必須是 :dev）
-docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+# 測試 Agent probe-agent（冒煙測試與壓測打它）：build → push（= 註冊）→ 等發布
+make fixture
 ```
 
 主機上可能沒有 uv；在容器裡跑 Python：`docker compose exec -T app python -c '…'`。

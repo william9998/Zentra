@@ -19,7 +19,7 @@ import docker
 from redis import Redis
 from apps.api.config import get_settings
 from apps.api.ids import uuid7
-from apps.api.enums import BUILTIN_AGENT_VERSION_ID, AgentVersionStatus, ErrorCode, RunStatus
+from apps.api.enums import AgentVersionStatus, ErrorCode, RunStatus
 from apps.api.rows import AgentContainer, AgentVersion
 from apps.api.rows import Run as RunRow
 from apps.api.services import agent_credentials, runtoken, work
@@ -39,7 +39,6 @@ def _manager(redis: Redis) -> SandboxManager:
     return SandboxManager(
         DockerSandboxDriver(docker.from_env()),
         redis,
-        image=settings.sandbox_image,
         network=settings.sandbox_network,
         gateway_url=settings.sandbox_gateway_url,
         max_concurrent=settings.sandbox_max_concurrent,
@@ -733,9 +732,7 @@ def execute_run(self, run_id: str) -> dict:
         container_slot = container is not None
         #: True = 全部容器都滿了，這筆只是排進佇列，還沒有歸屬到任何容器。
         queued_only = False
-        if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
-            # ZEN-000 的內建 fixture 沒有 serve 模式，跳過它（ZEN-010 會退休它）。
-            #
+        if container is None:
             # 「沒有可用容器」有兩種，處理方式相反：
             #   滿了      → 工作排進 Redis 佇列就好，容器空出位子會自己來拿。
             #               **不開第二個容器** —— 一個版本就是一個容器，多的排隊。
@@ -748,7 +745,7 @@ def execute_run(self, run_id: str) -> dict:
                 container = serving[0]
             else:
                 container = _ensure_container(redis, run.agent_id, version.id)
-                if container is None and str(version.id) != BUILTIN_AGENT_VERSION_ID:
+                if container is None:
                     # 等容器的期間它被放棄了（UNHEALTHY → FAILED）：不退回一次性沙盒。
                     with worker_db.connection() as conn:
                         given_up = _given_up(conn, version.id)
@@ -810,12 +807,8 @@ def execute_run(self, run_id: str) -> dict:
             dispatched_to_container = True
             return {"run_id": run_id, "status": str(RunStatus.SCHEDULING), "dispatched": True}
 
-        # Keep the ZEN-000 fixture runnable during the migration. Every user
-        # registered version uses the exact DB-resolved digest path.
-        if str(version.id) == BUILTIN_AGENT_VERSION_ID:
-            handle = manager.create(run_id, token)
-        else:
-            handle = manager.create_run(run_id, token, version.image_ref)
+        # 路徑 B：一次性沙盒（冷啟動失敗時的退路）。一樣只用 DB 裡的精確 digest。
+        handle = manager.create_run(run_id, token, version.image_ref)
         with worker_db.transaction() as conn:
             run = _transition(
                 conn, rid, RunStatus.RUNNING,

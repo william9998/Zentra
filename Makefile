@@ -9,7 +9,7 @@
 # 那正是 ZEN-009 的 Z9-A6 在防的事。長駐服務就是五個，不多不少。
 
 .DEFAULT_GOAL := help
-.PHONY: help up down ps logs images base runtime migrate smoke clean-test-data console rebuild-app
+.PHONY: help up down ps logs images base fixture migrate smoke clean-test-data console rebuild-app
 
 API      := http://localhost:8000
 REGISTRY := 127.0.0.1:6000
@@ -39,13 +39,13 @@ logs:  ## 追 log，例：make logs S=worker
 
 # ── 映像 ──────────────────────────────────────────────────────────────
 
-images: base runtime  ## build 兩個平台映像
+images: base  ## build 平台映像（只有 agent-base；Agent 的映像是使用者自己 build 的）
 
 base:  ## build agent-base:1.0（你的 agent image 的 FROM）
 	docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
 
-runtime:  ## build agent-runtime:dev（只有冒煙測試的內建 fixture 需要，見 ZEN-010）
-	docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
+fixture:  ## 準備測試 Agent probe-agent：build → push（= 註冊）→ 等發布
+	bash scripts/fixture.sh
 
 # ── 資料庫 ────────────────────────────────────────────────────────────
 
@@ -54,10 +54,10 @@ migrate:  ## 升 schema。既有庫先：bash scripts/adopt-legacy-schema.sh --d
 
 # ── 驗證 ──────────────────────────────────────────────────────────────
 
-smoke: runtime  ## 冒煙測試：一次貫穿 + 隔離探測（預期 27 通過 / 0 失敗 / 2 跳過）
+smoke:  ## 冒煙測試：準備 probe-agent + 一次貫穿 + 隔離探測（預期 38 通過 / 0 失敗 / 2 跳過）
 	bash scripts/verify-zen000.sh
 
-clean-test-data:  ## 有在平台上建測試 Agent / Run 才需要（留 builtin fixture）
+clean-test-data:  ## 有在平台上建測試 Agent / Run 才需要（留 probe-agent 本身）
 	bash scripts/clean-test-data.sh
 
 # ── 其他 ──────────────────────────────────────────────────────────────

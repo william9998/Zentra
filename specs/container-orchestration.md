@@ -12,8 +12,7 @@
 | `VALIDATE`（驗證容器） | 發布版本時，import 使用者模組、抽出 entrypoints | 驗證完就刪 | 一個版本 |
 
 三種用**同一個 image**（使用者的 Agent image）、同一組隔離與配額。差別只在啟動指令（`zentra-agent serve|run|validate`）和環境變數。
-
-例外：內建測試 Agent `builtin-echo` 不是 OCI 版本，跑 `zentra/agent-runtime:dev`（BOARD ZEN-010 要退休它）。
+沒有例外：平台沒有自己的 Agent 映像，冒煙測試與壓測用的 `probe-agent`（`examples/probe-agent`）也是一般的使用者 Agent。
 
 ## SandboxDriver：唯一碰 Docker 的介面
 

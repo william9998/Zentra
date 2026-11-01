@@ -311,20 +311,17 @@ class DockerSandboxDriver:
         )
 
     async def create(self, spec: SandboxSpec) -> SandboxHandle:
-        if spec.is_oci:
-            await self.prepare_image(spec.effective_image_ref)
+        await self.prepare_image(spec.image_ref)
         try:
             return await asyncio.to_thread(self._create, spec)
         except ImageNotFound:
             # Cache may be pruned between inspect and create. Re-pull only the
             # same immutable digest, verify it again, then retry once.
-            if not spec.is_oci:
-                raise
-            repository, digest = parse_digest_reference(spec.effective_image_ref)
+            repository, digest = parse_digest_reference(spec.image_ref)
             await asyncio.to_thread(
-                self._pull_exact, repository, digest, spec.effective_image_ref
+                self._pull_exact, repository, digest, spec.image_ref
             )
-            await self.inspect_image(spec.effective_image_ref)
+            await self.inspect_image(spec.image_ref)
             return await asyncio.to_thread(self._create, spec)
 
     def _create(self, spec: SandboxSpec) -> SandboxHandle:
@@ -333,12 +330,8 @@ class DockerSandboxDriver:
         if network.attrs.get("Internal") is not True:
             raise ValueError(f"sandbox network {spec.network!r} is not internal")
 
-        resource_id = spec.effective_resource_id
-        name = (
-            f"zentra-run-{resource_id}"
-            if not spec.is_oci
-            else f"zentra-{spec.role}-{resource_id}"
-        )
+        resource_id = spec.resource_id
+        name = f"zentra-{spec.role}-{resource_id}"
         labels = {
             "zentra.managed": "true",
             "zentra.role": spec.role,
@@ -352,7 +345,7 @@ class DockerSandboxDriver:
             labels["zentra.run_id"] = resource_id
 
         kwargs: dict[str, Any] = {
-            "image": spec.effective_image_ref,
+            "image": spec.image_ref,
             "name": name,
             "detach": True,
             "network": spec.network,
@@ -386,18 +379,14 @@ class DockerSandboxDriver:
                 type="json-file", config={"max-size": "10m", "max-file": "1"}
             ),
         }
-        if spec.is_oci:
-            kwargs.update(
-                entrypoint=[OCI_RUNTIME_EXECUTABLE], command=[spec.mode.value]
-            )
-            if spec.mode is SandboxMode.SERVE:
-                # 常駐容器：Docker 自己不重啟它。重啟是平台的決定，因為要記
-                # restart_count —— 一直重啟的容器是壞掉了，不是需要再重啟一次。
-                # 交給 Docker 的 restart_policy 會讓那個訊號消失。
-                kwargs["restart_policy"] = {"Name": "no"}
-        else:
-            # ZEN-000 的內建 fixture 走這條（非 OCI），它的 image 裡沒有 zentra-agent。
-            kwargs["command"] = ["python", "-m", "zentra_runtime"]
+        kwargs.update(
+            entrypoint=[OCI_RUNTIME_EXECUTABLE], command=[spec.mode.value]
+        )
+        if spec.mode is SandboxMode.SERVE:
+            # 常駐容器：Docker 自己不重啟它。重啟是平台的決定，因為要記
+            # restart_count —— 一直重啟的容器是壞掉了，不是需要再重啟一次。
+            # 交給 Docker 的 restart_policy 會讓那個訊號消失。
+            kwargs["restart_policy"] = {"Name": "no"}
 
         try:
             container = self._client.containers.create(**kwargs)

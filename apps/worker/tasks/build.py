@@ -28,7 +28,6 @@ _CLAIM_LEASE = timedelta(minutes=10)
 def _manager(redis: Redis) -> SandboxManager:
     return SandboxManager(
         DockerSandboxDriver(docker.from_env()), redis,
-        image=settings.sandbox_image,
         network=settings.sandbox_network,
         gateway_url=settings.sandbox_gateway_url,
         max_concurrent=settings.sandbox_max_concurrent,

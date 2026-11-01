@@ -189,16 +189,10 @@ The base image `zentra/agent-base:1.0` is not a volume, so it survives. Agents y
 so push them again.
 
 A **Run uses the agent's own image**, pulled by the digest registered for that version. There is no
-shared runtime container in that path. The one exception is the built-in `builtin-echo` fixture left over
-from ZEN-000, which still runs from `zentra/agent-runtime:dev` (`SANDBOX_IMAGE`) and is what the smoke
-test below exercises. Build it only if you intend to run that script:
-
-```bash
-docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
-```
-
-Retiring that fixture is [tracked on the board](coordination/BOARD.md); it is load-bearing for the smoke
-test and nine test files, so it is a task of its own rather than a deletion.
+shared runtime container and no platform-owned agent image. The smoke test and the load tests run against
+`probe-agent` ([`examples/probe-agent`](examples/probe-agent)), an ordinary agent registered the same way
+yours is. `make fixture` builds, pushes (= registers) and waits for it to publish; `make smoke` does that
+for you.
 
 The registry publishes on **host port 6000**, not the 5000 registries usually take: macOS runs AirPlay
 Receiver on `*:5000`, which shadows it. Inside the container it is still 5000 — only the host side moved
@@ -584,16 +578,10 @@ docker compose exec -T app python -m apps.api.migrations     # 等同 make migra
 
 base image `zentra/agent-base:1.0` 不是 volume，會留著。但你註冊過的 Agent 都沒了，要重新 push。
 
-**每個 Run 用的是 agent 自己的 image**，依該版本註冊的 digest 拉下來，這條路徑上沒有共用的 runtime 容器。
-唯一的例外是 ZEN-000 留下的內建 fixture `builtin-echo`，它仍然跑 `zentra/agent-runtime:dev`
-（`SANDBOX_IMAGE`），也就是下面那支冒煙測試跑的對象。**只有要跑那支腳本才需要 build 它**：
-
-```bash
-docker build -t zentra/agent-runtime:dev -f docker/agent-runtime.Dockerfile .
-```
-
-退休這個 fixture 已[記在 BOARD](coordination/BOARD.md)：它是冒煙測試與 9 個測試檔的承重結構，
-是一個獨立任務，不是刪幾行就好。
+**每個 Run 用的是 agent 自己的 image**，依該版本註冊的 digest 拉下來，沒有共用的 runtime 容器，
+平台也沒有自己的 Agent 映像。冒煙測試與壓測打的是 `probe-agent`（[`examples/probe-agent`](examples/probe-agent)），
+它和你的 Agent 一樣是 push 註冊的一般 Agent。`make fixture` 會 build、push（= 註冊）並等它發布；
+`make smoke` 會自動先做這一步。
 
 Registry 發布在**主機 port 6000**，不是 registry 慣用的 5000：macOS 的 AirPlay Receiver
 在 `*:5000` 聽，會蓋掉它。容器內仍是 5000，換的只有主機端

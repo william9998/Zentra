@@ -194,4 +194,4 @@ SSE 端怎麼讀：從 `run_events` 依 `seq` 讀（去重和排序靠資料庫�
 
 - `POST /v1/runs/{id}/cancel` 沒實作。
 - Redis 弄丟 `q.run` / `q.build` 的任務時：排隊中的 Run 會停在 `QUEUED`、`BUILDING` 的版本會卡住，**沒有自動恢復**（逾時清掃只處理 RUNNING）。
-- ZEN-000 的內建測試 Agent `builtin-echo`（`01930000-…-0001`）走非 OCI 的特例路徑（`zentra/agent-runtime:dev`），不走常駐容器。要退休它是 BOARD ZEN-010。
+- 路徑 B（一次性沙盒）只在冷啟動失敗時才走，`make smoke` 不會觸發它，沒有自動化驗證。
