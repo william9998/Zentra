@@ -128,7 +128,7 @@ passes. Load tests: [`test/performance/`](test/performance/).
 | [`docker/`](docker/) | Image build files (`app`, `worker`, agent base image) and the registry config |
 | [`examples/`](examples/) | Sample agents: `my-agent` (start here), `llm-agent` (calls an LLM), `stock-agent` (search loop), `probe-agent` (the platform's test agent) |
 | [`scripts/`](scripts/) | Smoke test, test-agent setup, test-data cleanup, one-off legacy DB adoption |
-| [`test/performance/`](test/performance/) | Locust load tests, a fake LLM, and a memory sampler |
+| [`test/performance/`](test/performance/) | Locust load tests (which agents to hit: `targets.toml`), a fake LLM, and a memory sampler |
 | [`monitoring/`](monitoring/) | Prometheus + Grafana, deployed separately from the platform |
 | `.claude/` | Claude Code settings, the `builder` agent and the `/verify` command |
 
@@ -322,7 +322,7 @@ make clean-test-data   # 有建測試 Agent 或 Run 的話，收尾時跑
 | [`examples/stock-agent/`](examples/stock-agent/) | 搜尋 → 判斷夠不夠 → 再搜尋的循環 |
 | [`examples/probe-agent/`](examples/probe-agent/) | 平台自己的測試 Agent，冒煙測試和壓測都打它 |
 | [`scripts/`](scripts/) | `verify-zen000.sh` 冒煙測試 · `fixture.sh` 註冊測試 Agent · `clean-test-data.sh` 清測試資料 · `adopt-legacy-schema.sh` 舊資料庫一次性轉換 |
-| [`test/performance/`](test/performance/) | Locust 壓力測試、假 LLM（`mock_llm.py`）、記憶體取樣（`memwatch.sh`） |
+| [`test/performance/`](test/performance/) | Locust 壓力測試。**要壓哪些 Agent 寫在 `targets.toml`**；另有假 LLM（`mock_llm.py`）、記憶體取樣（`memwatch.sh`） |
 | [`monitoring/`](monitoring/) | Prometheus + Grafana 監控，跟平台分開部署 |
 | [`coordination/BOARD.md`](coordination/BOARD.md) | 任務看板：進行中、已知問題、刻意不做的事 |
 | `.claude/` | Claude Code 的設定、`builder` 代理、`/verify` 驗收指令 |
