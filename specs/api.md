@@ -389,7 +389,7 @@ Agent 在程式裡用 `ctx.config["MAX_ROUNDS"]` 讀。
 ```
 
 違反以下任何一條都是 `422`：
-- `host` 只能是小寫 DNS 名稱：不能有 `*`、scheme（`https://`）、port、路徑，也不能是 IP。
+- `host` 是小寫主機名（可以沒有點，例如 `localhost`）或 IP（IPv4 / IPv6，存成標準寫法）。不能有 `*`、scheme（`https://`）、port、路徑。一條規則放行那個主機的所有 port。
 - `methods` 只能是 `GET` / `POST`，且不能是空的。
 - `auth_secret_name` 和 `auth_header` 要**成對**出現，而且那個機密要存在（平台會替容器把機密塞進這個 header，容器自己看不到機密）。
 - `auth_header` 不能是 `Accept` / `Content-Type` / `Host` / `Content-Length`。

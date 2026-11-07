@@ -97,7 +97,6 @@ class EgressReason(StrEnum):
     #: **這裡沒有 HEADER_NOT_ALLOWED**（v0.12.1，U1）：沙盒自帶 header 是
     #: 「這個請求本身寫錯了」→ `422 VALIDATION_ERROR` + `details.header`，
     #: 不是「一個格式正確的請求被政策擋下」。這張表只服務 EGRESS_BLOCKED/403。
-    PRIVATE_ADDRESS = "PRIVATE_ADDRESS"
     REDIRECT = "REDIRECT"
     REQUEST_TOO_LARGE = "REQUEST_TOO_LARGE"
     RESPONSE_TOO_LARGE = "RESPONSE_TOO_LARGE"

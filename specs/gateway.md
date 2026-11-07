@@ -128,10 +128,12 @@
    要認證的話，在規則上設 `auth_secret_name` + `auth_header`，由平台解密後加上去。
    平台固定送 `User-Agent: Zentra-Egress/1`（**改之前要重新驗證各交易所**：OKX 會擋 `Python-urllib/*`，改壞的症狀是備援來源全掛）。
 3. **不跟隨 redirect**：回 3xx → `EGRESS_BLOCKED`（`REDIRECT`，`details.location`）。跟隨的話，對方一行 302 就能繞過白名單。
-4. **只准 `https`**。
-5. **解析出來是 private / loopback / link-local / metadata 位址的一律擋**（包含 `169.254.169.254`）。因為對外代打是從 `app` 發出的，而 `app` 也在 `zentra-net` 上。
-   **而且只會連到「檢查過的那個 IP」**（擋 DNS rebinding：檢查時解析一個、連線時解析成另一個）。
-6. **沒有任何旗標或環境變數可以關掉第 3、4、5 點**，連「預設關閉」的也不准存在——存在的旁路遲早會被打開，而且打開的時候沒有任何症狀。
+4. **`http` 和 `https` 都可以**，其他 scheme → `SCHEME_NOT_ALLOWED`。port 不限（沒寫就是 80 / 443）。
+5. **不檢查目的位址是不是內網**：IP、`localhost`、內網位址都能連，只要白名單上有那個主機。
+   ⚠️ 代打是從 `app` 容器發出的，所以：
+   - `localhost` / `127.0.0.1` 指的是 **`app` 容器自己**，不是跑 Docker 的那台電腦。要連主機上的服務，用 `host.docker.internal`。
+   - `app` 也在 `zentra-net` 上，白名單加了 `postgres`、`redis`、`registry` 就連得到它們。**白名單是唯一的防線**，加規則前想清楚。
+6. **沒有任何旗標或環境變數可以關掉第 3 點**，連「預設關閉」的也不准存在——存在的旁路遲早會被打開，而且打開的時候沒有任何症狀。
 7. **上限**（環境變數可調）：request body ≤ 64 KiB、response ≤ 1 MiB、`timeout_seconds` 預設 10 上限 15、每筆 Run 最多 `EGRESS_MAX_CALLS_PER_RUN`（100）次。
    **超量一律當錯誤，不截斷、不夾值**：例如 `timeout_seconds > 15` 是 `422`。
    次數計的是「通過認證的嘗試」，**被擋的也算**（失控的迴圈通常就是一直失敗的那種）。計數來源就是 `egress_calls` 這張表，不另外設計數器。
@@ -162,8 +164,7 @@
 |---|---|---|
 | `NO_RULES` | HTTP | 這個 Agent 一條白名單都沒有 |
 | `HOST_NOT_ALLOWED` / `METHOD_NOT_ALLOWED` / `PATH_NOT_ALLOWED` | HTTP | 不符合規則 |
-| `SCHEME_NOT_ALLOWED` | HTTP | 不是 https |
-| `PRIVATE_ADDRESS` | HTTP | 解析到內網位址 |
+| `SCHEME_NOT_ALLOWED` | HTTP | 不是 http / https |
 | `REDIRECT` | HTTP | 上游回 3xx |
 | `REQUEST_TOO_LARGE` / `RESPONSE_TOO_LARGE` | HTTP | 超過大小上限 |
 | `RUN_CALL_LIMIT` | HTTP | 超過每 Run 次數上限 |

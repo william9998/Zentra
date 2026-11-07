@@ -4,7 +4,7 @@
 
 白名單的價值全部來自「預設拒絕」（ADR-0014 E1）：一條規則都沒有，
 一個外部主機都連不到。所以這裡的驗證是**故意嚴格**的 ——
-`*`、scheme、port、路徑、大寫、IP 字面值一律 `422`，
+`*`、scheme、port、路徑、大寫一律 `422`，
 有一個逃生門就等於沒有白名單。
 """
 
@@ -22,10 +22,11 @@ from apps.api.ids import uuid7
 from apps.api.rows import AgentEgressRule, AgentEmailSender
 from apps.api.services import agent_secrets
 
-#: 只接受小寫 DNS 名稱。刻意不接受結尾的點 —— `api.binance.com.` 與
-#: `api.binance.com` 是同一台主機，但字串比對不同，會讓同一主機出現兩條規則。
+#: 小寫主機名，可以沒有點（`localhost`、compose 的服務名）。IP 另外處理。
+#: 刻意不接受結尾的點 —— `api.binance.com.` 與 `api.binance.com` 是同一台主機，
+#: 但字串比對不同，會讓同一主機出現兩條規則。
 _HOST_LABEL = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
-_HOST_PATTERN = re.compile(rf"^{_HOST_LABEL}(\.{_HOST_LABEL})+$")
+_HOST_PATTERN = re.compile(rf"^{_HOST_LABEL}(\.{_HOST_LABEL})*$")
 
 ALLOWED_METHODS = ("GET", "POST")
 MAX_RULES = 20
@@ -39,6 +40,17 @@ _EMAIL_PATTERN = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
 
 def _invalid(message: str, field: str) -> ZentraError:
     return ZentraError(ErrorCode.VALIDATION_ERROR, message, 422, details={"field": field})
+
+
+def normalize_ip(host: str) -> str | None:
+    """IP 字面值 → 標準寫法；不是 IP 回 `None`。
+
+    規則存標準寫法、代打時也用標準寫法比對，`0:0::1` 和 `::1` 才會命中同一條。
+    """
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
 
 
 def validate_host(host: str) -> str:
@@ -56,20 +68,16 @@ def validate_host(host: str) -> str:
         raise _invalid("host must not include a path -- use path_prefix for that", "host")
     # IP 字面值要在 port 檢查**之前**判：IPv6 字面值本身就有冒號，
     # 先判 port 的話 `2606:4700::1111` 會得到一句關於 port 的錯誤訊息。
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    else:
-        raise _invalid(
-            "host must be a DNS name, not an IP literal: IP literals skip the name "
-            "that the whitelist is written in terms of", "host")
+    ip = normalize_ip(host)
+    if ip is not None:
+        return ip
     if ":" in host:
-        raise _invalid("host must not include a port -- only https/443 is proxied", "host")
+        raise _invalid("host must not include a port -- a rule allows every port "
+                       "on its host", "host")
     if host != host.lower():
         raise _invalid("host must be lowercase", "host")
     if len(host) > 253 or not _HOST_PATTERN.match(host):
-        raise _invalid(f"host {host!r} is not a valid DNS name", "host")
+        raise _invalid(f"host {host!r} is not a valid host name or IP", "host")
     return host
 
 

@@ -55,7 +55,7 @@ class EgressBlocked(EgressError):
 
     常見的 `reason`：`NO_RULES`（這個 Agent 一條白名單都沒有）、
     `HOST_NOT_ALLOWED`、`METHOD_NOT_ALLOWED`、`PATH_NOT_ALLOWED`、
-    `SCHEME_NOT_ALLOWED`、`PRIVATE_ADDRESS`、`REDIRECT`、`RUN_CALL_LIMIT`。
+    `SCHEME_NOT_ALLOWED`、`REDIRECT`、`RUN_CALL_LIMIT`。
     去 Console 的「對外出口」加規則，不要在程式碼裡重試。
     """
 
@@ -132,7 +132,7 @@ class EgressClient:
         rows = ctx.http.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT"
                             "&interval=1h&limit=200").raise_for_status().json()
 
-    只支援 `GET` 與 `POST`，只支援 `https`，不跟隨 redirect ——
+    只支援 `GET` 與 `POST`，只支援 `http` / `https`，不跟隨 redirect ——
     這些都不是這個 client 的限制，是平台的政策（ADR-0014 §3）。
     """
 
