@@ -129,10 +129,12 @@
    平台固定送 `User-Agent: Zentra-Egress/1`（**改之前要重新驗證各交易所**：OKX 會擋 `Python-urllib/*`，改壞的症狀是備援來源全掛）。
 3. **不跟隨 redirect**：回 3xx → `EGRESS_BLOCKED`（`REDIRECT`，`details.location`）。跟隨的話，對方一行 302 就能繞過白名單。
 4. **`http` 和 `https` 都可以**，其他 scheme → `SCHEME_NOT_ALLOWED`。port 不限（沒寫就是 80 / 443）。
-5. **不檢查目的位址是不是內網**：IP、`localhost`、內網位址都能連，只要白名單上有那個主機。
-   ⚠️ 代打是從 `app` 容器發出的，所以：
-   - `localhost` / `127.0.0.1` 指的是 **`app` 容器自己**，不是跑 Docker 的那台電腦。要連主機上的服務，用 `host.docker.internal`。
-   - `app` 也在 `zentra-net` 上，白名單加了 `postgres`、`redis`、`registry` 就連得到它們。**白名單是唯一的防線**，加規則前想清楚。
+5. **送出時不檢查目的位址是不是內網**：IP、內網位址都能連，只要白名單上有那個主機。
+   白名單**不准加平台自己**：`postgres`、`redis`、`registry`、`app`、`worker`、`localhost`、`127.0.0.0/8`、`::1` → `422`（見 [api.md](api.md)）。
+   ⚠️ 這只擋**名字**，擋不住換個寫法連回平台：
+   - 平台服務在 `zentra-net` 上的 IP（例如 `172.26.0.x`）。
+   - `host.docker.internal` 加上平台開在主機上的 port：`8000`（管理 API）、`6000`（registry）、`5432`、`6379`。已實測連得到。
+   要連主機上的其他服務，用 `host.docker.internal`。**白名單是唯一的防線**，加規則前想清楚。
 6. **沒有任何旗標或環境變數可以關掉第 3 點**，連「預設關閉」的也不准存在——存在的旁路遲早會被打開，而且打開的時候沒有任何症狀。
 7. **上限**（環境變數可調）：request body ≤ 64 KiB、response ≤ 1 MiB、`timeout_seconds` 預設 10 上限 15、每筆 Run 最多 `EGRESS_MAX_CALLS_PER_RUN`（100）次。
    **超量一律當錯誤，不截斷、不夾值**：例如 `timeout_seconds > 15` 是 `422`。
