@@ -1,0 +1,32 @@
+# 壓測要打哪些 Agent。每個 [[agent]] 一個，想加幾個就加幾個。
+# 每次呼叫前依 weight 隨機挑一個；結果表會按 Agent 分開列。
+#
+#   name        Agent 名稱（Console 上看到的）。必填，要已經發布
+#   weight      被挑中的比重，預設 1。寫 3 = 被挑中的機會是寫 1 的三倍
+#   entrypoint  呼叫哪個入口，預設 "default"
+#   input       送進去的 input，要符合那個 Agent 的 input_schema。
+#               只有 probe-agent 可以不寫：改用 ZENTRA_WORK_MS 等環境變數組出來（見 README.md）
+#
+# ⚠️ 會呼叫 LLM 的 Agent，壓測時要配假 LLM（ZENTRA_MOCK_LLM_URL），不然每一筆都是真的錢。
+#    換別的清單檔：ZENTRA_TARGETS=my-targets.toml .venv/bin/locust
+
+[[agent]]
+name = "probe-agent"
+weight = 1
+
+# 範例 Agent（examples/）註冊之後，把註解拿掉就會一起壓：
+#
+# [[agent]]
+# name = "my-agent"
+# weight = 1
+# input = { text = "Zentra 是一個 Agent 平台，每個 Agent 都跑在隔離容器裡。", top_n = 3 }
+#
+# [[agent]]
+# name = "llm-agent"          # 會呼叫 LLM
+# weight = 1
+# input = { text = "Zentra 是一個 Agent 平台，每個 Agent 都跑在隔離容器裡。" }
+#
+# [[agent]]
+# name = "stock-agent"        # 會呼叫 LLM
+# weight = 1
+# input = { question = "台積電最近的營收狀況如何？" }

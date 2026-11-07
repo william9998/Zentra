@@ -89,6 +89,15 @@ worker：zentra.run.execute
   6. 選路：常駐容器（預設）／一次性沙盒（退路）
 ```
 
+**「INSERT runs」和「送任務」是兩步，中間斷掉 Run 就會停在 `QUEUED`，沒有任務會來認領。** 兩道防線：
+
+- **呼叫端斷線不會打斷它。** REST（`/runs`、`runs:invoke`）與 MCP `tools/call` 都經 `services.runs.start_run`，
+  寫入加派工包在 `asyncio.shield` 裡：呼叫端斷線時請求被取消，這一段照樣做完。
+  （壓測停掉 Locust 時，MCP 留下過兩筆永遠的 `QUEUED`。）
+- **漏掉的會被補派。** 60 秒排程（`zentra.container.sweep_idle`）找出建立超過 **30 秒**還在 `QUEUED` 的 Run（最多 50 筆），
+  重送 `zentra.run.execute`。救的是 app 剛好在兩步之間掛掉、或 Redis 弄丟 `q.run` 任務的情況。
+  重送是安全的：第 1 步鎖住那一列、不是 `QUEUED` 就放棄，所以還在 Celery 佇列裡排著的原任務和補派的任務只有一個會真的執行。
+
 ### 路徑 A：常駐容器（預設）
 
 ```
@@ -193,5 +202,5 @@ SSE 端怎麼讀：從 `run_events` 依 `seq` 讀（去重和排序靠資料庫�
 ## 已知的缺口
 
 - `POST /v1/runs/{id}/cancel` 沒實作。
-- Redis 弄丟 `q.run` / `q.build` 的任務時：排隊中的 Run 會停在 `QUEUED`、`BUILDING` 的版本會卡住，**沒有自動恢復**（逾時清掃只處理 RUNNING）。
+- Redis 弄丟 `q.build` 的任務時：`BUILDING` 的版本會卡住，**沒有自動恢復**。（`q.run` 弄丟的 Run 會被補派，見 §派工主流程。）
 - 路徑 B（一次性沙盒）只在冷啟動失敗時才走，`make smoke` 不會觸發它，沒有自動化驗證。

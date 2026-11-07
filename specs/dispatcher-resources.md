@@ -35,7 +35,8 @@
 | `CONTAINER_START_TIMEOUT_SECONDS` | 180 | 冷啟動（含拉 image）最多等多久，逾時就退回一次性沙盒 |
 | `CONTAINER_IDLE_TIMEOUT_SECONDS` | 1800 | 閒置多久回收。`0` = 永不回收（**容器會自動啟動，所以不該設 0**） |
 | `RUN_TIMEOUT_SECONDS` | 900 | Run 預設逾時；每筆 Run 的 `timeout_seconds` 上限也是 900 |
-| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | 10 / 20 | `app` 的 asyncpg 連線池（最少 10、最多 30 條） |
+| `APP_WORKERS` | 2 | `app` 開幾個 uvicorn 行程（compose.yaml 的 `--workers`）。一個行程最多吃滿一顆 CPU |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | 5 / 10 | `app` **每個行程**的 asyncpg 連線池（最少 5、最多 15 條）。總數 = `APP_WORKERS` × 15 |
 
 對外請求與寄信的次數、大小上限看 [gateway.md](gateway.md)。
 
@@ -162,7 +163,8 @@ docker compose up -d registry
 | 項目 | 值 |
 |---|---|
 | Celery worker | 1 個，`--concurrency 10`、`prefetch 1`。常駐路徑派完就返回、不等結果，所以 10 個行程不會變成瓶頸 |
-| Postgres 連線 | app 連線池最多 30 + worker 每個子行程 1 條（共 10）+ migration 1 條。總和要低於 `max_connections`（預設 100） |
+| app | `APP_WORKERS` 個 uvicorn 行程（預設 2）。app 是所有 HTTP 的入口：REST、MCP、Console、容器的 Gateway 呼叫（長輪詢、事件、LLM 代打）都在這裡。壓測 2026-11-01（每筆輸入 300 KB、4 核心主機）：1 個行程 CPU 卡在 100%、同步呼叫中位數 22 秒；2 個是 11 秒、吞吐量 1.8 倍；4 個和 2 個一樣快、多吃約 250 MB —— 再多就換 Postgres 卡住。主機核心多才調大 |
+| Postgres 連線 | app `APP_WORKERS` × 15 條（預設 30）+ worker 每個子行程 1 條（共 10）+ migration 1 條。總和要低於 `max_connections`（預設 100）：`APP_WORKERS` 最多到 5 |
 | 交易內閒置 | app / worker 連線設 `idle_in_transaction_session_timeout = 60s`，看 [postgresql.md](postgresql.md) |
 
 ## 目標（NFR）

@@ -26,6 +26,14 @@ _PREFIX = "agent_work:"
 LONG_POLL_SECONDS = 25
 
 
+def _encode(item: dict[str, Any]) -> str:
+    """**`ensure_ascii=False`**：預設會把每個中文字寫成 `\\uXXXX`（6 bytes，UTF-8 是 3 bytes），
+    排隊中的輸入在 Redis 裡變成兩倍大 —— 壓測量到 300 KB 的中文輸入在佇列裡佔 600 KB。
+    兩個讀取端（`pop`、存活檢查放棄時讀整條佇列）都用 `json.loads`，兩種寫法都解得開。
+    """
+    return json.dumps(item, ensure_ascii=False)
+
+
 def queue_key(agent_id: uuid.UUID | str, version_id: uuid.UUID | str) -> str:
     """**一個版本一條佇列，不是一個 Agent 一條。**
 
@@ -46,7 +54,7 @@ def push_sync(
     item: dict[str, Any],
 ) -> None:
     """派工端用（Celery worker 是同步的）。"""
-    redis.lpush(queue_key(agent_id, version_id), json.dumps(item))
+    redis.lpush(queue_key(agent_id, version_id), _encode(item))
 
 
 async def pop(
@@ -84,7 +92,7 @@ async def push_front(
 
     放回尾巴會讓它重新排隊 —— 它本來就是最早來的，不該被後到的插隊。
     """
-    await redis.rpush(queue_key(agent_id, version_id), json.dumps(item))
+    await redis.rpush(queue_key(agent_id, version_id), _encode(item))
 
 
 async def depth(

@@ -5,7 +5,7 @@
 
 **與 REST 同源。** tool 的 `inputSchema` 用 `services.agents.mcp_tools()` —— 和 REST 驗證 `input`
 用的是同一份 `version.entrypoints`，不是另外生成一套 schema。`tools/call` 走同一個
-`services.runs.create_run` 與同一條 Celery 派工，只有 `trigger` 固定成 `MCP`，並記下 `mcp_key_id`。
+`services.runs.start_run`（寫入 + 派工），只有 `trigger` 固定成 `MCP`，並記下 `mcp_key_id`。
 規格：`specs/mcp.md`。
 
 > **P1 提醒**：這裡沒有任何載入或執行使用者程式碼的路徑。MCP 只是另一個門面，
@@ -42,8 +42,7 @@ from apps.api.rows import Agent, McpKey
 from apps.api.schemas import CreateRunRequest
 from apps.api.services import agents as agents_service
 from apps.api.services import mcp_keys
-from apps.api.services.runs import create_run
-from apps.api.tasks import dispatch_run
+from apps.api.services.runs import start_run
 
 logger = logging.getLogger(__name__)
 
@@ -82,24 +81,20 @@ class _EntrypointTool(Tool):
         args = dict(arguments)
         wants_async = bool(args.pop(ASYNC_FLAG, False))
 
-        async with db.transaction() as conn:
-            # create_run 會驗 input、解析已發布版本、寫入 Run（與 REST 同一條路）
-            run, version = await create_run(
-                conn,
-                self.agent_id,
-                CreateRunRequest(entrypoint=self.entrypoint_name, input=args),
-                trigger=RunTrigger.MCP,
-                mcp_key_id=self.mcp_key_id,
-            )
-            run_id = str(run.id)
+        # 驗 input、解析已發布版本、寫入 Run、派工 —— 與 REST 同一條路。
+        # 呼叫端斷線也會做完（start_run）：外部 AI 平台中途放棄呼叫很常見。
+        run, version = await start_run(
+            self.agent_id,
+            CreateRunRequest(entrypoint=self.entrypoint_name, input=args),
+            trigger=RunTrigger.MCP,
+            mcp_key_id=self.mcp_key_id,
+        )
+        run_id = str(run.id)
 
         # 版本被存活檢查放棄：Run 建出來就是 FAILED（AGENT_NOT_RUNNING），不派工，
         # 直接走終態那條路回 isError —— 跟 REST 的 409 是同一件事。
         if RunStatus(run.status).is_terminal:
             return _terminal_result(run, run_id)
-
-        # Broker I/O 是同步的，不要跑在事件迴圈上（與 routers/runs.py 同樣的理由）
-        await asyncio.to_thread(dispatch_run, run_id)
 
         if wants_async:
             return ToolResult(structured_content={

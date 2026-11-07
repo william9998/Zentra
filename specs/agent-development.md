@@ -277,7 +277,7 @@ COPY agent.py /opt/zentra/app/agent.py
 ```
 
 base image 預設用非 root 身分，所以安裝套件前要先切 `USER root`、裝完再切回 `USER 65534:65534`。
-（這點我是依 base image 的設定推斷的，沒有實際用額外套件驗證過。）
+（`examples/stock-suite/` 用這個寫法裝了 pandas、matplotlib、mplfinance，2026-11 實測可以註冊、發布、執行。）
 
 ⚠️ **Dockerfile 不要宣告 `VOLUME`。** Docker 會因此建出可寫的匿名 volume，繞過唯讀檔案系統，而且容器刪掉後 volume 還留在主機上。這是已知的隔離缺陷（ZEN008-ISO-01），還沒修。
 
@@ -357,9 +357,10 @@ print(app.invoke({"name": "小明"}))      # 就是你的 input
 | `examples/my-agent/` | **起點**。多節點 + 條件分支、`ctx.logger` / `ctx.emit`、最小 Dockerfile |
 | `examples/llm-agent/` | 呼叫 LLM（`ctx.llm()`），沒有金鑰也能寫 |
 | `examples/stock-agent/` | 完整的實戰例子：多輪搜尋、判斷是否足夠、可重複的流程 |
-| `examples/crypto-quant-agent/` | 連外部 API（`ctx.http`）+ 寄信（`ctx.send_email()`） |
-| `examples/demo-echo/` | 最簡單的回聲 Agent，驗證流程用 |
-| `examples/probe-agent/` | 平台的測試 Agent（`make smoke`、壓測打它）。`asyncio.sleep` 模擬等待外部服務、用 input 的 `mode` 在同一張 graph 裡分流 |
+| `examples/stock-suite/` | **`ctx.http` 的實戰例子**：五個 Agent 共用一包程式碼與一份 Dockerfile（`--build-arg AGENT=`）、同步節點裡打 egress、主源失敗換備援（`.TW` → `.TWO`）、額外套件（pandas / mplfinance）、在唯讀檔案系統用 matplotlib、視覺模型看圖、`deploy.sh` 一次設好 egress 規則 |
+| `examples/probe-agent/` | 平台的測試 Agent（`make smoke`、壓測打它）。`asyncio.sleep` 模擬等待外部服務、`context_kb`／`reply_kb` 模擬 state 與回答的大小、用 input 的 `mode` 在同一張 graph 裡分流 |
+
+寄信（`ctx.send_email()`）目前**沒有範例**，寫法看本文件對應的章節。
 
 ## 開發前檢查清單
 

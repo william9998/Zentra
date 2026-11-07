@@ -51,26 +51,90 @@ cd test/performance
 
 權重 1:3:3 的意思是：開 70 個使用者時，大約 10 個在讀 API、30 個在用 REST 呼叫 Agent、30 個在打 MCP。
 
-## 打的是哪個 Agent
+## 打哪些 Agent：`targets.toml`
 
-預設是測試 Agent **`probe-agent`**（[`examples/probe-agent`](../../examples/probe-agent)）。它和使用者寫的 Agent 走一模一樣的路：
+**要壓哪些 Agent，寫在 [`targets.toml`](targets.toml)。** 每個 `[[agent]]` 一個，想加幾個就加幾個：
+
+```toml
+[[agent]]
+name = "probe-agent"     # Agent 名稱（Console 上看到的），要已經發布
+weight = 3               # 被挑中的比重，預設 1。這裡是下面那個的三倍
+
+[[agent]]
+name = "my-agent"
+weight = 1
+entrypoint = "default"   # 呼叫哪個入口，預設 default
+input = { text = "Zentra 是一個 Agent 平台", top_n = 3 }   # 要符合這個 Agent 的 input_schema
+```
+
+- 每次呼叫前依 `weight` 隨機挑一個 Agent。結果表**按 Agent 分開列**（`runs:invoke [my-agent]`、`mcp tools/call [my-agent]`），看得出是哪一個慢。
+- 只有 `probe-agent` 可以不寫 `input`，改用下面的 `ZENTRA_WORK_MS` 等環境變數組出來。
+- 同一個 Agent 可以列好幾次、給不同的 `input`，例如短問題和長問題各佔多少。
+- 清單寫錯（Agent 不存在、少了 `input`）會在開始前就停下來，不會壓出一堆失敗。
+- 想準備好幾份清單輪流用：`ZENTRA_TARGETS=heavy.toml .venv/bin/locust`。
+- ⚠️ **會呼叫 LLM 的 Agent，壓測時要配假 LLM**（見下面），不然每一筆都是真的錢。
+
+### 預設的 probe-agent
+
+預設只有測試 Agent **`probe-agent`**（[`examples/probe-agent`](../../examples/probe-agent)）。它和使用者寫的 Agent 走一模一樣的路：
 `FROM zentra/agent-base` + SDK、push 註冊、驗證、發布、跑在**常駐容器**裡。
 
 - 它不打 LLM，所以不花錢、結果固定。
 - 每筆 Run 預設等 **1 秒**（`ZENTRA_WORK_MS`），模擬「等 LLM 回應」—— 真實 Agent 的時間大多花在這裡。
   設成 `0` 量的是平台本身的開銷；設成 `5000` 模擬比較慢的 Agent。
 
+## 量記憶體：讓每筆 Run 像真的一樣重
+
+光是「等 1 秒」量不出記憶體壓力 —— 一筆只帶幾個字的 Run 幾乎不佔記憶體。
+真實 Agent 會佔記憶體的每個來源都有一個旋鈕：
+
+| 真實 Agent | 怎麼模擬 | 記憶體佔在哪裡 |
+|---|---|---|
+| 使用者貼一大段文字 | `ZENTRA_QUESTION_CHARS=100000` | app（解析、驗證）、排隊時的 Redis、Postgres |
+| 文件、對話歷史、工具結果放在 state 裡 | `ZENTRA_CONTEXT_KB=10240` | 常駐容器（等待期間一直留著） |
+| LLM 回來的長文字 | `ZENTRA_REPLY_KB=64` | 容器、回應、Postgres 的 output |
+| 等 LLM 時連線掛著 | `ZENTRA_MODE=llm` + 假 LLM（下面） | 容器 + app（Gateway 收完整段回覆才轉回容器） |
+
+壓測時另開一個終端機跑 `bash memwatch.sh`，每隔幾秒記一次容器、app、Redis 的記憶體與排隊筆數，存到 `results/mem.csv`。
+
+### 走真的 LLM 連線（假 LLM）
+
+```bash
+docker run -d --rm --name zentra-mock-llm --network zentra-net \
+  -v "$PWD/mock_llm.py:/mock_llm.py:ro" python:3.12-slim \
+  python /mock_llm.py --bind 0.0.0.0 --delay-ms 2000 --reply-kb 32
+
+ZENTRA_MODE=llm ZENTRA_MOCK_LLM_URL=http://zentra-mock-llm:8090/v1 ZENTRA_CONTEXT_KB=1024 .venv/bin/locust
+
+docker stop zentra-mock-llm      # 用完關掉
+```
+
+- 假 LLM 要**跑在 Docker 網路裡**，不要跑在主機上經 `host.docker.internal` 連回來：在 Colima 上實測會有一成的呼叫卡在剛好 70 秒。
+- 有給 `ZENTRA_MOCK_LLM_URL` 時，壓測開始會把 **`targets.toml` 裡每一個 Agent** 的 LLM 憑證指向假 LLM，
+  **等它們的 Run 全部跑完才撤掉**。提早撤掉的話，排隊中的 Run 會退回平台預設的真金鑰、打到真的供應商。
+  等超過 3 分鐘還沒跑完就不撤，會印出手動刪的指令。
+- 清單裡有任何 Agent 已經設了自己的 LLM 憑證，壓測會拒絕開始並列出是哪幾個（API 讀不回原本的金鑰，蓋掉就還原不了）。
+
+### 不要拿這個壓到正式環境
+
+`ZENTRA_CONTEXT_KB` 夠大時（例如 `61440`，50 筆 × 60 MB > 2 GB）**會把常駐容器撐爆**：
+跑到一半的 Run 全部失敗，10 分鐘內死 4 次平台就放棄這個版本，之後的 Run 一律 `AGENT_NOT_RUNNING`。
+要恢復：Console 的容器頁按「重啟」，或 `POST /v1/agents/{id}/containers/{container_id}/restart`。
+
 ## 設定（環境變數）
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
-| `ZENTRA_AGENT_NAME` | `probe-agent` | 要壓哪個 Agent（用名稱找） |
-| `ZENTRA_AGENT_ID` | （空） | 直接給 id，就不用名稱找 |
+| `ZENTRA_TARGETS` | `targets.toml` | 用哪份 Agent 清單 |
 | `ZENTRA_WORK_MS` | `1000` | probe-agent 每筆 Run 模擬等待幾毫秒 |
-| `ZENTRA_INPUT` | `{"question": "locust", "work_ms": <ZENTRA_WORK_MS>}` | 送進去的 `input`（JSON 字串）。**換別的 Agent 時一定要改**，要符合它的 `input_schema` |
-| `ZENTRA_ENTRYPOINT` | `default` | 呼叫哪個入口 |
-| `ZENTRA_MCP_KEY` | 自動發一把 | 沒給的話，開始時發一把只勾這個 Agent 的 key，結束時撤銷 |
-| `ZENTRA_MCP_TOOL` | `{agent 名稱}__{entrypoint}` | 通常不用設 |
+| `ZENTRA_QUESTION_CHARS` | `0` | 問題有多少字（`0` = 固定送 `"locust"`） |
+| `ZENTRA_CONTEXT_KB` | `0` | 每筆 Run 在 state 裡留多少 KB 的資料 |
+| `ZENTRA_REPLY_KB` | `0` | 回答多少 KB（`simulate` 模式） |
+| `ZENTRA_MODE` | `simulate` | `llm` = 真的呼叫 `ctx.llm()`，要配 `ZENTRA_MOCK_LLM_URL` |
+| `ZENTRA_MOCK_LLM_URL` | （空） | 假 LLM 的位址（從 app 容器看出去的）。有給，清單裡每個 Agent 都改用假 LLM |
+| `ZENTRA_MCP_KEY` | 自動發一把 | 沒給的話，開始時發一把勾選清單裡所有 Agent 的 key，結束時撤銷 |
+
+`ZENTRA_WORK_MS` 到 `ZENTRA_MODE` 這幾個只作用在**沒寫 `input` 的 probe-agent**。
 
 例：`ZENTRA_WORK_MS=3000 .venv/bin/locust`　換主機：`.venv/bin/locust --host http://其他主機:8000`
 

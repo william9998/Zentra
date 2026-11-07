@@ -483,7 +483,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10, container_memory_working_set_bytes{name!=\"\"})",
+          "expr": "topk(10, container_memory_working_set_bytes{name=~\"zentra-.*\"})",
           "legendFormat": "{{name}}"
         }
       ],
@@ -530,7 +530,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10, 100 * rate(container_cpu_usage_seconds_total{name!=\"\"}[5m]))",
+          "expr": "topk(10, 100 * rate(container_cpu_usage_seconds_total{name=~\"zentra-.*\"}[5m]))",
           "legendFormat": "{{name}}"
         }
       ],
@@ -566,9 +566,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 23
+        "y": 31
       },
       "targets": [
         {
@@ -577,7 +577,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "changes(container_start_time_seconds{name!=\"\"}[15m]) > 0",
+          "expr": "changes(container_start_time_seconds{name=~\"zentra-.*\"}[15m]) > 0",
           "legendFormat": "{{name}}"
         }
       ],
@@ -604,9 +604,56 @@
     },
     {
       "type": "timeseries",
-      "title": "Agent 容器記憶體 / 上限",
-      "description": "接近 100% 就會被 OOM 殺掉",
+      "title": "Agent 容器記憶體（實際用量）",
+      "description": "每個 Agent 容器實際用了多少記憶體。上限是 2 GB，超過會被 OOM 殺掉，正在跑的 Run 全部失敗",
       "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "container_memory_working_set_bytes{container_label_zentra_managed=\"true\"}",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent 容器 CPU（100% = 一顆核心）",
+      "description": "每個 Agent 容器用了多少 CPU。上限是 2 顆核心（200%）；長時間貼著 200% 代表 Agent 在算東西而不是在等 LLM",
+      "id": 22,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -624,7 +671,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "container_memory_working_set_bytes{container_label_zentra_managed=\"true\"} / (container_spec_memory_limit_bytes{container_label_zentra_managed=\"true\"} > 0)",
+          "expr": "100 * rate(container_cpu_usage_seconds_total{container_label_zentra_managed=\"true\"}[1m])",
           "legendFormat": "{{name}}"
         }
       ],
@@ -640,12 +687,11 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
+          "unit": "percent",
           "min": 0,
           "custom": {
             "fillOpacity": 10
-          },
-          "max": 1
+          }
         },
         "overrides": []
       }
@@ -659,7 +705,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 39
       },
       "panels": []
     },
@@ -676,7 +722,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 40
       },
       "targets": [
         {
@@ -723,7 +769,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 40
       },
       "targets": [
         {
@@ -775,7 +821,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 48
       },
       "panels": []
     },
@@ -792,7 +838,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 41
+        "y": 49
       },
       "targets": [
         {
@@ -848,7 +894,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 41
+        "y": 49
       },
       "targets": [
         {
@@ -904,7 +950,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 41
+        "y": 49
       },
       "targets": [
         {

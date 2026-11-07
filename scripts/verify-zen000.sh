@@ -35,7 +35,7 @@ for want in run.status node.start node.end; do
   echo "$EVENTS" | grep -q "^$want$" && ok "SSE 有 $want 事件" || no "SSE 缺 $want 事件"
 done
 # A3：平台 compile 時注入 hook —— 使用者只交 StateGraph，卻拿得到逐節點事件。
-# probe-agent 的 simulate 模式固定走 classify → wait → reply_short。
+# probe-agent 的 simulate 模式固定走 classify → load_context → wait → reply_short。
 # 不數總數：SDK 目前連條件分支的判斷函式也回報成節點（BOARD SDK-ROUTER-EVENTS）。
 nodes_of() {  # 列出某種事件（node.start / node.end）裡出現過的節點名，排序去重
   echo "$SSE" | awk -v want="event: $1" '$0 == want {getline; print}' \
@@ -45,8 +45,8 @@ print(' '.join(sorted({json.loads(line)['node'] for line in sys.stdin if line.st
 }
 for kind in node.start node.end; do
   GOT=$(nodes_of "$kind")
-  MISSING=$(for n in classify wait reply_short; do [[ " $GOT " == *" $n "* ]] || echo -n "$n "; done)
-  chk "A3 $kind 涵蓋 classify / wait / reply_short" "${MISSING:-none}" "none"
+  MISSING=$(for n in classify load_context wait reply_short; do [[ " $GOT " == *" $n "* ]] || echo -n "$n "; done)
+  chk "A3 $kind 涵蓋 classify / load_context / wait / reply_short" "${MISSING:-none}" "none"
 done
 
 FINAL=$(curl -s "$API/v1/runs/$RID")

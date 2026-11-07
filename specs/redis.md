@@ -149,7 +149,7 @@ worker（派工）  ──LPUSH──▶  agent_work:{agent_id}:{version_id}  �
 | | |
 |---|---|
 | 型別 | List，`LPUSH` + `BRPOP` = **先進先出**（先到的 Run 先處理） |
-| 每個項目 | JSON：`run_id`、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names`。**沒有 run token**——app 在容器取走時才發，加在回應裡 |
+| 每個項目 | JSON：`run_id`、`entrypoint`、`input`、`manifest`、`default_model`、`config`、`secret_names`。**沒有 run token**——app 在容器取走時才發，加在回應裡。**用 UTF-8 直接寫，不轉 `\uXXXX`**（`ensure_ascii=False`）：轉了的中文輸入在佇列裡是兩倍大 |
 | 誰寫 | `worker` 的 `q.run` 任務，**在 commit Run 的 `container_id` 和 `inflight_runs` 之後**才 LPUSH |
 | 誰讀 | `app` 收到容器的長輪詢時 `BRPOP`，最多等 25 秒；沒工作回 204，容器重新輪詢。取到後 container token 已撤銷（容器已死）→ `RPUSH` 放回最前面 |
 | 有效期 | 無 |

@@ -11,7 +11,8 @@
 | ZEN-019 | 每個 Agent 自己的設定、機密與對外能力（[gateway.md](../specs/gateway.md)） | `REVIEW` | — |
 | ZEN-008 | OCI image 型 Agent：digest 註冊 → validate → REST/MCP | `REVIEW` | 被 ZEN008-ISO-01 擋（見下） |
 | ZEN-000 / 002 / 009 / 012 / 013 / 014 / 015 / 018 | 已交付，未正式驗收 | `REVIEW` | 使用者自己用過沒問題就直接刪列 |
-| LIVENESS | 常駐容器存活檢查：死掉／卡死 → 自動重啟（10 分鐘內 3 次）→ 放棄後新 Run 一律 `409 AGENT_NOT_RUNNING` 並留 FAILED 紀錄、監控告警；GHOST-POLL；`inflight_runs` 冷啟動計數；逾時清掃改由 60 秒排程（[container-orchestration.md](../specs/container-orchestration.md) §存活檢查） | `REVIEW` | OOMKilled 的死因字串沒實測（測試用 `docker kill`／`docker pause`） |
+| RUN-PATH-FIXES | 壓測找到的三件（2026-11-01）：① 呼叫端斷線不再留下永遠的 `QUEUED`（`start_run` shield），漏掉的由 60 秒排程補派（[dispatch.md](../specs/dispatch.md) §派工主流程）② 工作佇列不再把中文轉 `\uXXXX`（Redis 用量減半）③ app 開 `APP_WORKERS`（預設 2）個行程，連線池改成每個行程 15 條 | `REVIEW` | 斷線那條原本就不是每次重現，事後 3 次硬停都沒留下，只算佐證；補派用 SQL 造孤兒實測過 |
+| LIVENESS | 常駐容器存活檢查：死掉／卡死 → 自動重啟（10 分鐘內 3 次）→ 放棄後新 Run 一律 `409 AGENT_NOT_RUNNING` 並留 FAILED 紀錄、監控告警；GHOST-POLL；`inflight_runs` 冷啟動計數；逾時清掃改由 60 秒排程（[container-orchestration.md](../specs/container-orchestration.md) §存活檢查） | `REVIEW` | OOMKilled 已實測（2026-11-01 壓測撐爆）：死因字串、Run 標 `SANDBOX_ERROR`、第 4 次放棄、佇列標 `AGENT_NOT_RUNNING`、手動重啟恢復，全部照規格 |
 
 ## 待辦
 
@@ -31,6 +32,8 @@
 | AGENT-D1 | `agents.name` 無條件 `UNIQUE` + 軟刪除 → 刪掉的名稱永久被佔。ZEN-018 改硬刪後可能已不成立 |
 | REDIS-GROWTH | Redis 用量隨流量線性成長、跑完不會降。每筆 Run 留下 `celery-task-meta-*`（每個任務約 376 B，保留 1 天，**平台不讀**；一筆 Run 至少兩個任務）與 `run:*` Stream（約 4.8 KB，保留 1 小時）。壓測 2026-11-01：約 2,900 筆 Run 讓 Redis 從 16 MB 漲到 30 MB。持續每秒 50 筆時估計穩定在約 4 GB，而 `maxmemory` 是 0（沒上限），會吃到主機記憶體。修法方向：`task_ignore_result=True`（或縮短 `result_expires`）、檢討 Stream 的保留時間、設 `maxmemory`。要先改 specs/redis.md §4 |
 | SDK-ROUTER-EVENTS | SDK（`image_runtime.py` 的 `astream_events` 迴圈）把**條件分支的判斷函式**也回報成 `node.start` / `node.end`，Run 觀測頁會多出不是節點的「節點」。重現：跑 `probe-agent`，事件裡有 `pick_mode`、`pick_reply`。修法方向：只回報 `metadata.langgraph_node == name` 的事件。冒煙測試目前改成「真節點都在」而不數總數 |
+| INPUT-NO-LIMIT | `input` 沒有大小上限（只有寄信有 256 KB）。一筆 50 MB 的輸入會被照收，並在 Postgres、排隊時的 Redis、容器、output 各存一份。要不要設、設多少要使用者決定，先改 api.md |
+| OOM-GAP | 容器撐爆後，存活檢查最多 60 秒才發現。這段期間沒有容器在取工作，佇列暴增（壓測 24 → 275 筆）、同步呼叫等滿 60 秒逾時。重啟後立刻拿到同樣重的工作會再死，直到第 4 次放棄 |
 | CANCEL-404 | `POST /v1/runs/{id}/cancel` 沒有後端路由，Console 的「停止」按了會 404（整理規格時發現） |
 | MANUAL-STOP-RUNS | 手動停止／重啟常駐容器（`POST …/restart`、`DELETE …/containers/{id}`）時，裡面跑到一半的 Run 不會立即 FAILED，要等逾時清掃收成 `SANDBOX_TIMEOUT`。存活檢查那條路已經會立即收（`SANDBOX_ERROR`），可共用 `_fail_runs` |
 | CONTAINER-API-FIELDS | `last_death_reason` / `last_died_at` / `restarts_in_window` 只在 DB，容器 API 和 Console 看不到，排查要下 SQL。要露出得先改 api.md 的容器回應 |
