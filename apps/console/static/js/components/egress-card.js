@@ -38,8 +38,9 @@ const FRAME = `
                  spellcheck="false" placeholder="api.binance.com"
                  aria-describedby="egress-host-hint">
           <p class="field-hint" id="egress-host-hint">
-            小寫 DNS 名稱。<strong>沒有萬用字元</strong>，不能帶 scheme、port 或路徑，
-            也不能是 IP。每個 Agent 最多 20 條。
+            小寫主機名或 IP（<code class="mono">localhost</code> 是平台自己，連本機服務用
+            <code class="mono">host.docker.internal</code>）。<strong>沒有萬用字元</strong>，
+            不能帶 scheme、port 或路徑，一條規則放行該主機所有 port。每個 Agent 最多 20 條。
           </p>
         </div>
         <div class="field">

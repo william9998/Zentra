@@ -11,8 +11,7 @@
   · 預設拒絕（E1）：沒有規則就一個都不准連
   · 只有 GET／POST（E2），POST 要在那一條規則上明列
   · 沙盒不得自帶認證（E3）：`headers` 只准 Accept 與 Content-Type
-  · 只准 https、不跟隨 redirect（E4）：跟隨的話對方一行 302 就繞過白名單
-  · 解析後的位址落在內網一律擋（E5）
+  · 只准 http／https、不跟隨 redirect（E4）：跟隨的話對方一行 302 就繞過白名單
   · 大小與次數上限（E6）
   · **每一個通過認證的請求都寫一列 `egress_calls`**，`422` 與被擋下的都要寫（E7 / U3）
 
@@ -24,30 +23,21 @@
 
 **次數上限排在 DNS 之前**：DNS 是最貴的一步，而超過上限的請求無論如何都不會送出。
 
-## SSRF：解析一次，直接連那個 IP
+## 不檢查目的位址是不是內網（gateway.md 硬規則第 5 點）
 
-proxy 是從 `app` 發出去的，而 `app` **同時掛在 `zentra-net` 上** ——
-它連得到 postgres 與 redis。所以「解析完再讓 http client 自己解析第二次」
-等於沒檢查（DNS rebinding）。這裡的做法是：解析一次 → 檢查**每一個**位址 →
-**連那個 IP**，並帶上 `Host` header 與 SNI（憑證仍以原主機名驗證）。
+IP、`localhost`、內網位址都放行，**白名單是唯一的防線**。
+proxy 是從 `app` 發出去的，而 `app` 掛在 `zentra-net` 上 —— 白名單加了
+`postgres`／`redis` 就連得到它們；`localhost` 指的是 `app` 容器自己。
 
-## 沒有旁路（契約 §4.2 第 9 點 / U8）
+## 沒有旁路（gateway.md 硬規則第 6 點）
 
-**這個檔案裡沒有任何旗標、環境變數或參數可以關掉 scheme／redirect／私有位址
-三項檢查，連預設關閉的都沒有。** 一個存在的旁路遲早會有人打開，而它打開時
-沒有任何症狀。
+**這個檔案裡沒有任何旗標、環境變數或參數可以關掉 redirect 檢查，連預設關閉的
+都沒有。** 一個存在的旁路遲早會有人打開，而它打開時沒有任何症狀。
 
-可測性是**做進結構裡**的，不是開後門：
-  · `first_blocked_address()` 是純函式，吃「已解析的 IP 清單」→ 可以表格測試窮舉
-  · `resolve_addresses()` 是 module 層函式 → 測試 monkeypatch 它
-  · `build_transport()` 回 `None`（httpx 用預設）→ 測試換成 `httpx.MockTransport`
-這三個縫都**不改變任何檢查**，只決定「名字怎麼變成 IP」與「位元組從哪個
-socket 出去」。
+可測性是做進結構裡的：`build_transport()` 回 `None`（httpx 用預設）→
+測試換成 `httpx.MockTransport`。它不改變任何檢查，只決定位元組從哪個 socket 出去。
 """
 
-import asyncio
-import ipaddress
-import socket
 import time
 import uuid
 from dataclasses import dataclass
@@ -190,77 +180,13 @@ async def attempt_count(
     return int(value or 0)
 
 
-def is_public_address(address: str) -> bool:
-    """這個 IP 是不是公網位址。**純函式，不碰網路**（U8）。
-
-    用 `ipaddress` 的分類，不是自己寫網段表 —— 少一個 `fc00::/7` 就是一個洞。
-
-    判準是 **`is_global`，不是 `not is_private`**：`100.64.0.0/10`（CGNAT）
-    在 Python 裡 `is_private` 是 `False` 但 `is_global` 也是 `False`，
-    用前者會把它放行。同理 `192.0.2.0/24`（文件用網段）也是。
-    白名單式的判斷（只放行明確是公網的）比黑名單式的安全。
-
-    IPv4-mapped 的 `::ffff:127.0.0.1` 要**先攤平再判斷**，
-    不然它會被當成一個普通的 IPv6 位址放行。
-
-    解析不出來的字串一律不安全 —— fail closed。
-    """
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError:
-        return False
-    if parsed.version == 6 and parsed.ipv4_mapped is not None:
-        parsed = parsed.ipv4_mapped
-    if (parsed.is_private or parsed.is_loopback or parsed.is_link_local
-            or parsed.is_reserved or parsed.is_multicast or parsed.is_unspecified):
-        return False
-    return bool(parsed.is_global)
-
-
-def first_blocked_address(addresses: list[str]) -> str | None:
-    """回第一個不該連的位址，全部安全時回 `None`。**純函式**（U8）。
-
-    **任何一個位址不安全就整個擋掉**：round-robin 的 DNS 可以把一個內網位址
-    藏在第二筆裡，只看第一筆等於沒檢查。
-    """
-    for address in addresses:
-        if not is_public_address(address):
-            return address
-    return None
-
-
-async def resolve_addresses(host: str, port: int) -> list[str]:
-    """名字 → IP 清單。**module 層函式，測試會 monkeypatch 它**（U8）。
-
-    它只做解析，不做判斷 —— 判斷在 `first_blocked_address()`。
-    """
-    loop = asyncio.get_running_loop()
-    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    seen: list[str] = []
-    for info in infos:
-        address = info[4][0]
-        if address not in seen:
-            seen.append(address)
-    return seen
-
-
 def build_transport():
     """httpx 的 transport。正式環境回 `None`（用預設），測試換成 `MockTransport`。
 
     **這不是旁路。** 它不改變任何檢查，只決定位元組從哪個 socket 出去 ——
-    白名單、scheme、redirect、私有位址四項檢查在這之前就跑完了。
+    白名單、scheme、redirect 檢查在這之前就跑完了。
     """
     return None
-
-
-def _authority(host: str, port: int) -> str:
-    return host if port == 443 else f"{host}:{port}"
-
-
-def _connect_url(scheme: str, address: str, port: int, path: str, query: str) -> str:
-    literal = f"[{address}]" if ":" in address else address
-    target = f"{scheme}://{literal}:{port}{path or '/'}"
-    return f"{target}?{query}" if query else target
 
 
 def filter_response_headers(headers) -> dict[str, str]:
@@ -362,21 +288,21 @@ async def perform(
             "this agent has no egress rules, so it cannot reach any external host. "
             "Add one in the console (Agent > 對外出口).")
 
-    # ── 5. scheme ────────────────────────────────────────────────────
-    # 比對的是**原始字串**，不是 `urlsplit` 正規化過的 scheme：後者會把
-    # `HTTPS://` 小寫成 `https` 而放行。契約寫的是「只准 `https`」，
-    # 這裡 fail closed。
+    # ── 5. scheme：http 或 https ─────────────────────────────────────
     raw_scheme = body.url.split(":", 1)[0] if ":" in body.url else ""
-    if parts.scheme != "https" or raw_scheme != "https":
+    if parts.scheme not in ("http", "https"):
         raise await block(
             EgressReason.SCHEME_NOT_ALLOWED,
-            f"only https is proxied, got {raw_scheme or '(none)'}")
+            f"only http and https are proxied, got {raw_scheme or '(none)'}")
     if not host:
         raise await block(EgressReason.HOST_NOT_ALLOWED, "the URL has no host")
 
     # ── 6. host 命中哪一條規則 ────────────────────────────────────────
+    # IP 用標準寫法比對，跟規則存的寫法一致（`0:0::1` 與 `::1` 是同一條）。
+    rule_host = egress_rules.normalize_ip(host) or host
     async with db.connection() as conn:
-        rule: AgentEgressRule | None = await egress_rules.match_rule(conn, agent_id, host)
+        rule: AgentEgressRule | None = await egress_rules.match_rule(
+            conn, agent_id, rule_host)
     if rule is None:
         raise await block(
             EgressReason.HOST_NOT_ALLOWED,
@@ -416,32 +342,9 @@ async def perform(
             "gets the whole host banned, not just this agent)",
             rule=rule)
 
-    # ── 10. DNS 解析 → 位址是不是內網 ─────────────────────────────────
-    port = parts.port or 443
-    try:
-        addresses = await resolve_addresses(host, port)
-    except OSError as exc:
-        await write(method=method, rule_id=rule.rule_id, request_bytes=len(raw_body),
-                    latency_ms=0,
-                    error=f"{ErrorCode.EGRESS_FAILED}: DNS {type(exc).__name__}: {exc}")
-        raise failed(f"cannot resolve {host}: {exc}", run_id_text) from exc
-    if not addresses:
-        raise await block(EgressReason.PRIVATE_ADDRESS,
-                          f"{host} did not resolve to any address", rule=rule)
-    unsafe = first_blocked_address(addresses)
-    if unsafe is not None:
-        raise await block(
-            EgressReason.PRIVATE_ADDRESS,
-            f"{host} resolves to a private/loopback/link-local address ({unsafe}); "
-            "the proxy runs on the platform network, so that would reach the "
-            "platform's own services",
-            rule=rule, resolved=unsafe)
-
-    # ── 11. 送出。**連解析出來的那個 IP**，帶上 Host header 與 SNI ──────
-    #      交給 http client 自己再解析一次等於沒做第 10 步（DNS rebinding）。
-    address = addresses[0]
+    # ── 10. 送出。不檢查目的位址是不是內網（白名單就是全部的政策）──────
+    #      DNS 解析失敗、連線被拒都會在下面變成 EGRESS_FAILED。
     send_headers = dict(body.headers)
-    send_headers["Host"] = _authority(host, port)
     send_headers["User-Agent"] = USER_AGENT
     if rule.auth_secret_name and rule.auth_header:
         # **平台注入認證。** 機密從頭到尾沒進過沙盒（E3）。
@@ -455,7 +358,6 @@ async def perform(
                 rule=rule)
         send_headers[rule.auth_header] = value
 
-    target = _connect_url(parts.scheme, address, port, parts.path, parts.query)
     started = time.monotonic()
     max_response = settings.egress_max_response_bytes
     try:
@@ -464,11 +366,7 @@ async def perform(
             trust_env=False, transport=build_transport(),
         ) as client:
             request = client.build_request(
-                method, target, headers=send_headers,
-                content=raw_body or None,
-                # httpcore 用它做 TLS 的 server_hostname，憑證因此仍以原主機名驗證。
-                extensions={"sni_hostname": host},
-            )
+                method, body.url, headers=send_headers, content=raw_body or None)
             response = await client.send(request, stream=True)
             try:
                 chunks: list[bytes] = []
@@ -518,7 +416,7 @@ async def perform(
             "redirects: the destination would bypass the whitelist",
             run_id_text, location=location)
 
-    # ── 12. 送出去了。**`error` 是 None，即使上游回 4xx／5xx** ──────────
+    # ── 11. 送出去了。**`error` 是 None，即使上游回 4xx／5xx** ──────────
     await write(method=method, rule_id=rule.rule_id,
                 status_code=response.status_code, request_bytes=len(raw_body),
                 response_bytes=len(payload_bytes), latency_ms=latency)

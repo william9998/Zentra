@@ -18,8 +18,9 @@ const REASON_TEXT = {
   HOST_NOT_ALLOWED: '主機不在白名單',
   METHOD_NOT_ALLOWED: '那條規則沒開這個 method',
   PATH_NOT_ALLOWED: '不符合那條規則的路徑前綴',
-  SCHEME_NOT_ALLOWED: '不是 https',
-  PRIVATE_ADDRESS: '解析到內網／loopback／link-local 位址',
+  SCHEME_NOT_ALLOWED: '不是 http / https',
+  // 已不會再產生，只為了舊稽核紀錄還讀得懂（gateway.md 硬規則第 5 點已拿掉內網檢查）。
+  PRIVATE_ADDRESS: '解析到內網／loopback／link-local 位址（舊規則）',
   REDIRECT: '上游回 3xx，平台不跟隨 redirect',
   REQUEST_TOO_LARGE: '送出的內容超過上限',
   RESPONSE_TOO_LARGE: '回應超過上限（不截斷，直接當錯誤）',

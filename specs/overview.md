@@ -74,7 +74,8 @@ compose 的 5 個長駐服務：`postgres` · `redis` · `registry` · `app` · 
 3. 平台**不對外**代理、轉發、嵌入 Registry 的 HTTP 端點（`/v2/*`）。
    原因：`app` 同時在兩個網路上，任何「幫你查 registry」的端點都會變成容器的跳板。
    平台內部只有兩處會用 registry API：push 通知進來時 `app` 回頭確認 tag；刪版本時 worker 刪 manifest。
-4. 代替容器對外發的請求，是從 `app` 送出的，所以防止 SSRF（被騙去打內網）的檢查也在 `app` 這一側（見 [gateway.md](gateway.md)）。
+4. 代替容器對外發的請求，是從 `app` 送出的。平台**不檢查目的位址是不是內網**，能連到哪裡全看那個 Agent 的白名單（見 [gateway.md](gateway.md)）。
+   所以**不要把 `postgres` / `redis` / `registry` 加進白名單**：加了就等於讓容器繞過第 1、3 條。
 5. 只有 `worker` 掛 `docker.sock`。這等於主機 root 權限，是一直存在的風險，這裡誠實記著。
 6. Console 沒有自己的容器，由 `app` 提供網頁，和 API 同源（見 [console-ui.md](console-ui.md)）。
 
