@@ -57,7 +57,7 @@ Mac 上的 Docker（Colima 或 Docker Desktop）其實跑在一台 Linux 虛擬�
 ### A-1. 起平台
 
 ```bash
-make up
+docker compose up -d --build     # 在 repo 根目錄
 curl -s localhost:8000/healthz          # 要回 200
 ```
 
@@ -168,7 +168,7 @@ DB 拆到獨立主機後，改在那台用 DBA 帳號執行同一句 SQL，並�
 ### B-2. AP 主機
 
 ```bash
-# 平台要先跑著（make up）
+# 平台要先跑著（docker compose up -d）
 cd monitoring/app-server
 cp env.example .env                     # 填 B-1 的監控帳號密碼
 

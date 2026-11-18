@@ -16,7 +16,7 @@ from psycopg.rows import dict_row
 
 from apps.api.config import normalize_database_url
 
-# Session-level advisory lock；與 scripts/adopt-legacy-schema.sh 共用同一個常數。
+# Session-level advisory lock。
 MIGRATION_LOCK_KEY = 820020
 
 SCHEMA_MIGRATIONS_DDL = """CREATE TABLE schema_migrations (
@@ -30,9 +30,8 @@ _FILE_NAME = re.compile(r"^(\d{4})_(.+)\.sql$")
 _MIGRATIONS_DIR = Path(__file__).resolve().parent
 
 _LEGACY_HINT = (
-    "資料庫已有資料表但沒有 schema_migrations。既有資料庫請先跑一次：\n"
-    "  bash scripts/adopt-legacy-schema.sh --dry-run\n"
-    "  確認輸出後去掉 --dry-run 再跑，然後重跑 make migrate。"
+    "資料庫已有資料表但沒有 schema_migrations（舊版資料庫）。"
+    "最簡單的做法是清空重來：docker compose down -v，再重新啟動並跑 migration。"
 )
 
 

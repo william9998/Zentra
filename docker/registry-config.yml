@@ -1,7 +1,7 @@
 # 內部 registry 的設定：上游 registry:2 的預設值 + push 通知。
 #
 # push 一個 <agent 名>:<版號> 就等於註冊那個版本 —— registry 每次 push 完會通知 app，
-# app 向 registry 確認 tag 真的指向那個 digest 之後才註冊（specs/agent-registry.md §push 即註冊）。
+# app 向 registry 確認 tag 真的指向那個 digest 之後才註冊（specs/agent.md §發布與版本）。
 # 通知送不到（app 沒起來）不會讓 push 失敗：registry 會在記憶體裡排隊重試。
 version: 0.1
 log:

@@ -1,6 +1,6 @@
 # 效能測試（Locust）
 
-對本機跑起來的 Zentra（`make up`）做壓力測試。腳本是 [`locustfile.py`](locustfile.py)，預設值在 [`locust.conf`](locust.conf)。
+對本機跑起來的 Zentra（`docker compose up -d`）做壓力測試。腳本是 [`locustfile.py`](locustfile.py)，預設值在 [`locust.conf`](locust.conf)。
 
 壓的是**你正在用的那套服務**，不是另外起一套：Run 會寫進同一個資料庫，跑完記得收尾（見最後一節）。
 
@@ -12,7 +12,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
 cd ../..
-make fixture        # build → push（= 註冊）→ 等 probe-agent 發布
+docker build -t zentra/agent-base:1.0 -f docker/agent-base.Dockerfile .
+docker build -t localhost:6000/probe-agent:1.1.0 examples/probe-agent
+docker push localhost:6000/probe-agent:1.1.0   # push 就是註冊；Console 看到 PUBLISHED 再開始
 ```
 
 `.venv/` 已經在 `.gitignore` 裡，不會被提交。
@@ -140,17 +142,18 @@ docker stop zentra-mock-llm      # 用完關掉
 
 ## 看結果時要知道的
 
-- **一個版本只有一個常駐容器，同時最多跑 50 筆**（`SANDBOX_RUNS_PER_CONTAINER`，見 `specs/dispatcher-resources.md`）。
+- **一個版本只有一個常駐容器，同時最多跑 50 筆**（`SANDBOX_RUNS_PER_CONTAINER`）。
   超過的在 Redis 排隊、等容器空出位子，所以人數拉高時你會看到**回應時間變長，而不是馬上失敗**。
   估算：每筆等 1 秒、同時 50 筆，大約每秒 50 筆就是上限，再多就開始排隊。
 - **同步呼叫最多等 60 秒**。排隊加執行超過 60 秒會回 `SANDBOX_TIMEOUT`（Run 本身會繼續跑完）。
 - **第一筆會慢幾秒**：容器是第一筆 Run 進來時才啟動的（冷啟動）。閒置 30 分鐘沒人用，平台會把容器收掉，下一次又是冷啟動。
-- 規格裡的目標：API 額外延遲 P95 < 100ms（`specs/dispatcher-resources.md`）。
+- 目標：API 額外延遲 P95 < 100ms。
 
 ## 跑完收尾
 
-壓測會在平台上留下大量 Run，跑完清掉（probe-agent 本身會留著）：
+壓測會在平台上留下大量 Run。最簡單的清法是刪掉 probe-agent（硬刪，連同它的 Run），下次再 push 一次：
 
 ```bash
-make clean-test-data
+AID=$(curl -s 'localhost:8000/v1/agents?limit=100' | python3 -c "import sys,json;print(next(a['agent_id'] for a in json.load(sys.stdin)['items'] if a['name']=='probe-agent'))")
+curl -X DELETE localhost:8000/v1/agents/$AID
 ```

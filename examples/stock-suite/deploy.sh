@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 部署 stock-suite 的五個 Agent：build → push（= 註冊）→ 等發布 → 設 egress 規則。
 #
-#   前置：make up（在 repo 根目錄）
+#   前置：平台已啟動（見根目錄 README）
 #   用法：examples/stock-suite/deploy.sh                    # 全部
 #         examples/stock-suite/deploy.sh stock-technical    # 只做一個
 #         FINMIND_TOKEN='Bearer xxx' examples/stock-suite/deploy.sh   # 順便設 FinMind token
@@ -114,7 +114,7 @@ print(v['status'], v['artifact']['digest'], (v.get('error') or {}).get('message'
     fi
     sleep 2
   done
-  [ "$STATUS" = PUBLISHED ] || { say "  ✖ ${WAIT_SECONDS}s 內沒有發布（make logs S=app）"; exit 1; }
+  [ "$STATUS" = PUBLISHED ] || { say "  ✖ ${WAIT_SECONDS}s 內沒有發布（docker compose logs app）"; exit 1; }
   say "  ✔ 已發布 agent_id=$AGENT"
   ensure_rules "$AGENT" "$NAME"
   printf '%s\t%s\n' "$NAME" "$AGENT"

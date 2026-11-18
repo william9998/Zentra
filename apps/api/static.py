@@ -2,7 +2,7 @@
 
 `api` 同時是 Console 的 web server —— 沒有 console 容器、沒有 BFF、沒有 CORS。
 瀏覽器拿到 HTML 後用同源 fetch 打 `/v1`，走的就是外部系統那份 API
-（Console 是 `specs/api-contract.md` 的第一個真實消費者）。
+（Console 是 `specs/api.md` 的第一個真實消費者）。
 
 三條紀律：
 1. 全部 `include_in_schema=False` —— OpenAPI 是 Agent 的對外契約，UI 路由不准污染它。

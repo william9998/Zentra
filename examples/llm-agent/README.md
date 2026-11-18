@@ -297,4 +297,4 @@ def route(state):
 | 用 OpenAI Agents SDK 編排 | ❌ P2：框架統一 LangChain + LangGraph |
 
 `build()` 必須回傳未 compile 的 `StateGraph`，runtime 會實際檢查型別。
-理由與代價評估見 [ADR-0010](../../specs/overview.md)。
+

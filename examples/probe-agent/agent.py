@@ -1,4 +1,4 @@
-"""平台的測試 Agent —— 冒煙測試（`make smoke`）與壓測（`test/performance/`）都打它。
+"""平台的測試 Agent —— 壓測（`test/performance/`）打它。
 
 它走的是**和使用者 Agent 完全一樣的路**：`FROM zentra/agent-base` + `zentra_sdk`、
 `docker push localhost:6000/probe-agent:<版號>` 註冊、驗證、發布、跑在常駐容器裡。
@@ -12,7 +12,7 @@
 | `llm` | 分類 → 載入資料 → 真的呼叫 `ctx.llm()`，把資料和問題一起送過去 | 手動測 LLM 路徑；壓測時配 `test/performance/mock_llm.py` |
 
 不用兩個 entrypoint：不管呼叫哪個入口，平台跑的都是同一張 graph
-（specs/agent-development.md §entrypoint），分流本來就得寫在 graph 裡。
+（specs/agent.md §規則），分流本來就得寫在 graph 裡。
 
 ## 模擬真實 Agent 的記憶體用量
 
@@ -27,9 +27,9 @@
 | 等 LLM 時連線掛著、回覆在路上 | `mode=llm` 時是真的連線：容器 → Gateway → LLM，Gateway 收完整段回覆才轉回容器 |
 
 等待用 `asyncio.sleep`，**不卡住同一個容器裡的其他 Run** ——
-這也是真實 Agent 該有的寫法（specs/agent-development.md §容器裡的限制）。
+這也是真實 Agent 該有的寫法（specs/agent.md §容器限制）。
 
-## 冒煙測試依賴的固定行為（改了要一起改 scripts/verify-zen000.sh）
+## 固定行為
 
 - `simulate` 一定經過 `classify` → `load_context` → `wait` → `reply_short`（問題 ≤ 40 字）或 `reply_long`
 - output 的 `echo` 一定等於輸入的 `question`

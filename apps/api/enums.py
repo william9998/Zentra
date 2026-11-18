@@ -1,4 +1,4 @@
-"""全平台的枚舉常數 —— 照抄 specs/SPEC.md §9 與 specs/api-contract.md。
+"""全平台的枚舉常數 —— 見 specs/api.md。
 
 **不得自創。** 前端、後端、QA 的狀態顯示與斷言都必須引用這裡，
 不要在別處寫字串字面值（spec-keeper 會 grep）。
@@ -55,7 +55,7 @@ class AgentSourceType(StrEnum):
 
 
 class ErrorCode(StrEnum):
-    """api-contract.md §0 的錯誤 code 枚舉。要加先改契約。"""
+    """錯誤 code 枚舉（specs/api.md）。要加先改 spec。"""
 
     UNAUTHENTICATED = "UNAUTHENTICATED"
     PERMISSION_DENIED = "PERMISSION_DENIED"
@@ -120,7 +120,7 @@ class EgressKind(StrEnum):
 
 
 class EventType(StrEnum):
-    """api-contract.md §1 的 SSE 事件型別枚舉。
+    """SSE 事件型別枚舉（specs/api.md）。
 
     `tool.call` / `tool.result` / `interrupt` 已於 v0.2.0 移除，不要加回來。
     """

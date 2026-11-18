@@ -101,7 +101,7 @@ curl -s $B/v1/runs/<run_id>     # status 為終態後，output 就是上面的�
 ## 部署
 
 ```bash
-make up
+docker compose up -d --build                  # 平台先跑著（見根目錄 README）
 examples/stock-suite/deploy.sh                 # build → push（= 註冊）→ 等發布 → 設 egress 規則
 ```
 
@@ -146,5 +146,5 @@ FinMind 匿名就能用，但有流量限制。要用 token：`FINMIND_TOKEN='Be
 pip install -e packages/sdk "langgraph>=0.2.50" "langchain-openai>=0.2" pandas mplfinance six
 ```
 
-用 [agent-development.md](../../specs/agent-development.md) §本機先測邏輯 的假 ctx，再加一個用 httpx 實作
+用 一個假的 ctx（`logger` / `config` / `secret_names` / `emit`），再加一個用 httpx 實作
 `ctx.http.get()` 的物件即可。沒有 LLM 時，`use_llm=false` 的 chart / technical / fundamental 都能在本機跑。
