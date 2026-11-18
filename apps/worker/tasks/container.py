@@ -348,7 +348,7 @@ def _sweep_idle(redis: Redis, manager: SandboxManager) -> dict:
     return {"swept": len(swept), "containers": swept}
 
 
-# ── 存活檢查（specs/container-orchestration.md §存活檢查）────────────────
+# ── 存活檢查（specs/agent.md §執行流程）────────────────
 #
 # 常駐容器的 restart policy 是 `no`：死掉就停在那裡，Docker 不會拉它。
 # 沒有這段的話 DB 會一直寫著 READY，新工作照樣派進它的佇列卻沒人取。

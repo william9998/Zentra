@@ -1,4 +1,4 @@
-"""全平台唯一的錯誤格式 —— api-contract.md §0。
+"""全平台唯一的錯誤格式 —— specs/api.md §錯誤格式。
 
 後端不准自創回應格式：一律 raise ZentraError。
 """

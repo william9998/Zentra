@@ -293,7 +293,7 @@ REDISPATCH_AFTER_SECONDS = 30
 
 
 def _redispatch_orphans() -> int:
-    """補派停在 QUEUED、沒有任務會來認領的 Run（specs/dispatch.md §派工主流程）。
+    """補派停在 QUEUED、沒有任務會來認領的 Run（specs/agent.md §執行流程）。
 
     app 建 Run 是「寫 DB → 送任務」兩步。呼叫端斷線已由 `start_run` 的 shield 擋住，
     剩下的是 app 剛好在兩步之間掛掉、或 Redis 弄丟了 q.run 的任務 —— 那筆 Run 永遠停在 QUEUED。

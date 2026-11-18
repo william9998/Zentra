@@ -10,7 +10,7 @@
 
 **要打哪些 Agent 寫在 `targets.toml`**：可以列很多個，各自設比重、入口、輸入。
 每次呼叫前依比重隨機挑一個，結果表按 Agent 分開列。預設只有測試 Agent `probe-agent`
-（`make fixture` 註冊），它走的是和使用者 Agent 一樣的常駐容器路線。
+（build + push `examples/probe-agent` 註冊，見 README.md），它走的是和使用者 Agent 一樣的常駐容器路線。
 probe-agent 每筆 Run 預設模擬等待 1 秒（`ZENTRA_WORK_MS`），代表「等 LLM 回應」這種真實 Agent 的主要耗時。
 
 要量記憶體，就讓每筆 Run 帶得像真的一樣重：`ZENTRA_QUESTION_CHARS`（輸入多長）、
@@ -185,7 +185,7 @@ def _find_agent(host: str, name: str) -> str:
             if item["name"] == name:
                 return item["agent_id"]
         if not page.get("next_cursor"):
-            hint = "（先跑 make fixture）" if name == FIXTURE_NAME else ""
+            hint = "（先 build + push examples/probe-agent，見 README.md）" if name == FIXTURE_NAME else ""
             raise RuntimeError(f"agent {name!r} not found{hint}")
         params["cursor"] = page["next_cursor"]
 

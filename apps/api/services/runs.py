@@ -87,7 +87,7 @@ async def start_run(
     寫入 DB 和送 Celery 任務是兩步。呼叫端在中間斷線時請求會被取消，
     沒送出去的 Run 就永遠停在 QUEUED —— 沒有任務會來認領它（壓測停掉 Locust 時實際留下過）。
     所以兩步包在 `shield` 裡：呼叫端拿到 CancelledError，這一段照樣跑完。
-    app 剛好在中間掛掉的那種，由 worker 的排程補派（specs/dispatch.md §派工主流程）。
+    app 剛好在中間掛掉的那種，由 worker 的排程補派（specs/agent.md §執行流程）。
 
     版本被存活檢查放棄時 Run 建出來就是終態，不派工；呼叫端用 `creation_rejection` 決定怎麼回。
     """

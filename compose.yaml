@@ -44,8 +44,7 @@ services:
       - registrydata:/var/lib/registry
     environment:
       # true：刪 Agent、同版號取代時要能刪掉不再用的 manifest，否則磁碟只增不減。
-      # 刪 manifest 只是標記可回收，blob 要停機跑 `registry garbage-collect` 才真的消失
-      # （程序見 specs/dispatcher-resources.md）。
+      # 刪 manifest 只是標記可回收，blob 要停機跑 `registry garbage-collect` 才真的消失。
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     # 只綁 loopback。這不是文件規定，是「只限同機」的執行手段本身 ——
     # 這個 registry 沒有 TLS、沒有認證，綁 0.0.0.0 等於把它放上網。
@@ -79,7 +78,7 @@ services:
     # 多個行程：app 是所有 HTTP 的入口（REST、MCP、Console、容器的 Gateway 呼叫），
     # 單一行程最多吃滿一顆 CPU。長輸入壓測時它是瓶頸（容器反而閒著）。
     # 預設 2：4 核心的主機上 2 和 4 一樣快（再多就換 Postgres 卡住），2 少用約 250 MB。
-    # 每個行程有自己的 DB 連線池 —— 調大前先看 specs/dispatcher-resources.md §其他行程與連線。
+    # 每個行程有自己的 DB 連線池 —— 總數要低於 Postgres 的 100（見 specs/db.md）。
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000",
               "--workers", "${APP_WORKERS:-2}"]
     environment:

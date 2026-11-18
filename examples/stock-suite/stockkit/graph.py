@@ -4,7 +4,7 @@
 （同步阻塞），LangGraph 會把同步節點丟到 worker thread 跑，不會卡住同一個常駐
 容器裡的其他 Run。
 
-輸出 = 最終 state（agent-development.md §4），所以 state 只放輸入欄位與信封欄位，
+輸出 = 最終 state（specs/agent.md），所以 state 只放輸入欄位與信封欄位，
 中間產物不進 state。
 """
 

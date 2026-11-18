@@ -42,6 +42,21 @@ def _invalid(message: str, field: str) -> ZentraError:
     return ZentraError(ErrorCode.VALIDATION_ERROR, message, 422, details={"field": field})
 
 
+#: 平台自己（compose 的服務名，加上 `app` 容器自己的 `localhost`）。代打從 `app`
+#: 發出，白名單放了這些，容器就能借 `app` 的手碰到資料層或管理 API。
+#:
+#: ⚠️ **只擋名字**（gateway.md 硬規則第 5 點）：平台的內網 IP、
+#: `host.docker.internal:<平台 port>` 仍然繞得過，這是使用者選的取捨。
+PLATFORM_HOSTS = frozenset({"postgres", "redis", "registry", "app", "worker", "localhost"})
+
+
+def _platform_host(host: str) -> ZentraError:
+    return _invalid(
+        f"host {host!r} is the platform itself -- the proxy runs inside the app "
+        "container, so this would let the agent reach the platform's own services. "
+        "To reach a service on the Docker host, use host.docker.internal", "host")
+
+
 def normalize_ip(host: str) -> str | None:
     """IP 字面值 → 標準寫法；不是 IP 回 `None`。
 
@@ -70,7 +85,11 @@ def validate_host(host: str) -> str:
     # 先判 port 的話 `2606:4700::1111` 會得到一句關於 port 的錯誤訊息。
     ip = normalize_ip(host)
     if ip is not None:
+        if ipaddress.ip_address(ip).is_loopback:
+            raise _platform_host(host)
         return ip
+    if host.lower() in PLATFORM_HOSTS:
+        raise _platform_host(host)
     if ":" in host:
         raise _invalid("host must not include a port -- a rule allows every port "
                        "on its host", "host")

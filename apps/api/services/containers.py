@@ -25,7 +25,7 @@ from apps.api.rows import AgentContainer, AgentVersion, Run
 LIVE_STATUSES = ("STARTING", "READY", "UNHEALTHY")
 
 #: 存活檢查的自動重啟上限：10 分鐘內 3 次，第 4 次死掉就放棄這個版本、等人處理
-#: （specs/container-orchestration.md §存活檢查）。api 與 worker 共用這一份。
+#: （specs/agent.md §執行流程）。api 與 worker 共用這一份。
 RESTART_WINDOW_SECONDS = 600
 MAX_RESTARTS_IN_WINDOW = 3
 

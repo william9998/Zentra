@@ -111,8 +111,8 @@ export function mount(root, props = {}) {
   const renderSummary = () => {
     summary.replaceChildren();
     if (!current || !current.configured) {
-      // 未設定是**剛建立 Agent 時的預設狀態**（建立對話框刻意不收金鑰，
-      // 見 BOARD/ZEN-012），所以這裡要說得夠清楚可以直接動手，
+      // 未設定是**剛建立 Agent 時的預設狀態**（建立對話框刻意不收金鑰），
+      // 所以這裡要說得夠清楚可以直接動手，
       // 而不只是陳述「沒有設定」。
       summary.append(el('span', 'status-dot'));
       summary.append(' 尚未設定。這個 Agent 呼叫 LLM 時會用');

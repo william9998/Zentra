@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- ui-contract.md §3 的圖示 sprite。Lucide 線性圖示，stroke-width 1.5，viewBox 統一 0 0 24 24。
+<!-- 圖示 sprite。Lucide 線性圖示，stroke-width 1.5，viewBox 統一 0 0 24 24。
      顏色一律 currentColor（由 .icon 控制），尺寸靠 CSS。
      用法：<svg class="icon"><use href="/console/static/icons.svg#i-bot"/></svg>
      禁止 emoji、彩色圖示、填充式圖示。要新增圖示 → 開 SPEC-QUESTION，不要多抓。 -->

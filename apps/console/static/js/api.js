@@ -1,4 +1,4 @@
-// api.js —— specs/api-contract.md v0.8.0 的唯一出口（ui-contract §6.2）。
+// api.js —— specs/api.md 的唯一出口。
 //
 // 規則：契約的欄位名（snake_case）**只准出現在這個檔案裡**。
 // 這一層把回應正規化成 Console 自己的 camelCase view model，頁面拿到的是那個物件。

@@ -8,7 +8,7 @@
 # 這幾個 port 沒有登入機制：防火牆只開給監控主機的 IP（見 monitoring/README.md）。
 # 它們不接 zentra-sandbox-net —— 沙盒的唯一對端仍然只有 app（P4）。
 #
-# 前提：平台已經 `make up`（redis / postgres exporter 要加入平台的 zentra-net）。
+# 前提：平台已經 `docker compose up -d`（redis / postgres exporter 要加入平台的 zentra-net）。
 #
 # 啟動：
 #   DB 還在這台（現在）：  cp env.example .env（填監控帳號）→ docker compose --profile db up -d
