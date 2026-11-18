@@ -25,5 +25,8 @@
       "Bash(terraform apply:*)",
       "Bash(terraform destroy:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "notion"
+  ]
 }
