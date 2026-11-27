@@ -19,10 +19,21 @@ disable-model-invocation: true
 - 對話裡做過的決定和原因。
 
 ## 步驟
-1. fetch 系統開發頁面與底下的資料庫，對照快取表，判斷這次工作該寫到哪個（或哪幾個）資料庫。分不出來先問使用者。
-2. 同一個分支／功能已經有列 → 更新；沒有才新增。
-3. 有狀態、日期、分支、PR 這類欄位就填（狀態依實際情況：開發中／已合併…，照欄位既有選項）。
-4. 內文：
+1. fetch 系統開發頁面，確認分類（inline 資料庫）有沒有變，對照快取表選分類：
+
+   | 主要改到 | 分類 |
+   |---|---|
+   | `apps/api/routers`、`schemas.py`、`services/`、`errors.py` | API |
+   | `/internal/*`、LLM 代理、出口白名單、寄信 | Gateway |
+   | `apps/api/mcp.py`、MCP key | MCP |
+   | `apps/sandbox`、`apps/worker`、`docker/`、`packages/sdk` | 沙盒 |
+
+   - 一次工作跨好幾個分類 → 主分類寫完整內容，其他分類各記一列，內文用 mention 連回主列。
+   - 頁面最後那個**未命名**的資料庫不要寫入。
+   - Console、資料表 migration、部署這類目前沒有分類的工作 → 照 `.claude/notion-workspace.md`〈分類模型〉提出新分類（例：Console、資料庫），等使用者同意再建。分不出來先問使用者。
+2. 一列 = 一個功能或一個分支的工作。標題寫做了什麼（例：`常駐容器：閒置回收`），不要用分支名。同一個功能已經有列 → 更新；沒有才新增。
+3. 分類目前只有 `Name` 欄位：狀態、日期、分支、PR 寫在內文開頭的 `## 摘要` 表格（狀態用文字：開發中／已合併／已放棄）。
+4. 內文（`## 摘要` 之後）：
    - **目標**：為什麼做
    - **改了什麼**：依服務列出（`apps/api`、`apps/worker`、`apps/sandbox`、`apps/console`、`packages/sdk`、`examples/`、`docker/`），附主要檔案路徑
    - **設計決定與取捨**；有碰到 `CLAUDE.md`〈底線〉的地方特別說明

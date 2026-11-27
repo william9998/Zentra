@@ -1,30 +1,34 @@
 ---
 name: notion-spec
-description: 把 REST API、MCP、Gateway、Agent 執行流程、PostgreSQL／Redis 等設計內容同步到 Notion「系統設計」底下對應的 inline 資料庫；也可以檢查這些資料庫的分類是否重複並提出調整
+description: 把 REST API、MCP、Gateway、Agent 執行流程、PostgreSQL／Redis 等設計內容同步到 Notion「系統規格」底下對應的 inline 資料庫；也可以檢查這些資料庫的分類是否重複並提出調整
 argument-hint: [要記錄的設計主題；或「檢查分類」]
 disable-model-invocation: true
 ---
 
-把系統設計內容同步到 Notion「系統設計」。
+把系統規格內容同步到 Notion「系統規格」。
 
 使用者補充說明：$ARGUMENTS
 
 ## 先讀
 - `.claude/notion-workspace.md`：位置、資料庫快取、共用規則（一定要照著做，特別是**不使用任何表情符號**）。
-- 系統設計頁面：https://app.notion.com/p/41c2dbee508080eb85e4ca280f8e872e
+- 系統規格頁面：https://app.notion.com/p/41c2dbee508080eb85e4ca280f8e872e
 
 ## 來源對照
 
-repo 的 `specs/` 有五份規格，Notion 的資料庫以這五塊為骨架（實際資料庫名稱以 fetch 結果為準，對應關係記進快取表）：
+repo 的 `specs/` 有五份規格。先 fetch 系統規格頁面確認分類（inline 資料庫）沒變，再照下表放（分類模型見 `.claude/notion-workspace.md`）：
 
-| 主題 | spec | 程式碼（以這裡為準） |
-|---|---|---|
-| REST API | `specs/api.md` | `apps/api/routers/agents.py`、`runs.py`、`mcp_keys.py`；`apps/api/schemas.py`；`apps/api/errors.py` |
-| MCP 接口 `/mcp` | `specs/mcp.md` | `apps/api/mcp.py` |
-| Gateway（`/internal/*`、LLM、出口、寄信） | `specs/gateway.md` | `apps/api/routers/internal.py`、`apps/api/services/` |
-| Agent 撰寫、發布、執行流程 | `specs/agent.md` | `apps/worker/tasks/`、`apps/sandbox/`、`packages/sdk/`、`docker/` |
-| PostgreSQL + Redis | `specs/db.md` | `apps/api/migrations/*.sql`、`apps/api/enums.py` |
-| 架構與部署 | `CLAUDE.md`、`README.md` | `compose.yaml` |
+| 主題 | spec | 程式碼（以這裡為準） | Notion 分類 |
+|---|---|---|---|
+| REST API | `specs/api.md` | `apps/api/routers/agents.py`、`runs.py`、`mcp_keys.py`；`apps/api/schemas.py`；`apps/api/errors.py` | API |
+| MCP 接口 `/mcp` | `specs/mcp.md` | `apps/api/mcp.py` | API（`MCP Keys` 列；協定本身另開一列 `MCP 接口 /mcp`） |
+| Gateway（`/internal/*`、LLM、出口、寄信） | `specs/gateway.md` | `apps/api/routers/internal.py`、`apps/api/services/` | API（端點，`Gateway：/internal/*…` 列）；隔離與出口設計放部署與架構 |
+| Agent 撰寫、發布、執行流程 | `specs/agent.md` | `apps/worker/tasks/`、`apps/sandbox/`、`packages/sdk/`、`docker/` | 背景任務＆Redis（流程）；映像規格與容器限制放部署與架構 |
+| PostgreSQL | `specs/db.md` | `apps/api/migrations/*.sql`、`apps/api/enums.py` | PostgreSQL設計 |
+| Redis | `specs/db.md` | `apps/worker/`、`apps/api/services/` | 背景任務＆Redis |
+| 架構與部署 | `README.md`（本機有 `CLAUDE.md` 也參考） | `compose.yaml`、`docker/` | 部署與架構 |
+| 設計問答、決策 | 對話 | — | 問題 |
+
+MCP 或 Gateway 的內容大到不適合放在 API 分類時，照〈分類模型〉提出新分類（例：MCP、Gateway），等使用者同意再建。
 
 ## 範圍判斷
 - 有補充說明 → 照說明。
@@ -65,7 +69,7 @@ repo 的 `specs/` 有五份規格，Notion 的資料庫以這五塊為骨架（�
 使用者在對話裡問「為什麼／要不要／怎麼選」並做出決定時，若有對應的資料庫（例如「問題」「決策」），記成一列，標題用問句，內文：問題背景、選項比較、結論、影響到的檔案。沒有對應資料庫就問使用者要放哪。
 
 ## 寫入規則
-1. fetch 系統設計頁面與目標資料庫，對照 `.claude/notion-workspace.md` 的快取表。
+1. fetch 系統規格頁面與目標資料庫，對照 `.claude/notion-workspace.md` 的快取表。
 2. 用 `notion-search` 找既有列：有就更新對應段落，沒有才新增。
 3. 不給頁面 icon、不用 callout、不用任何表情符號。
 4. 寫完抽查：fetch 一頁確認表格、toggle、mermaid 正常。
