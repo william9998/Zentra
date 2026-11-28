@@ -8,6 +8,8 @@ from typing import Any
 
 from uuid import UUID
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apps.api.enums import AgentSourceType, AgentVersionStatus, ErrorCode, EventType
@@ -214,11 +216,17 @@ class ValidationPayload(StrictRequest):
                 raise ValueError("invalid payload requires only an error")
             if self.error.get("code") != ErrorCode.BUILD_FAILED:
                 raise ValueError("validation error code must be BUILD_FAILED")
+        # 容器可以用任何語言寫（specs/runtime.md），不能假設它跑過 Python SDK 的檢查，
+        # 所以入口的形狀在平台這側完整再驗一次。
         names: set[str] = set()
         for entrypoint in self.entrypoints or []:
             required = {"name", "description", "input_schema", "output_schema"}
-            if set(entrypoint) != required or not isinstance(entrypoint["name"], str):
+            if not isinstance(entrypoint, dict) or set(entrypoint) != required:
                 raise ValueError("entrypoint shape is invalid")
+            if not isinstance(entrypoint["name"], str) or not entrypoint["name"]:
+                raise ValueError("entrypoint name must be a non-empty string")
+            if not isinstance(entrypoint["description"], str) or not entrypoint["description"]:
+                raise ValueError("entrypoint description must be a non-empty string")
             if entrypoint["name"] in names:
                 raise ValueError("entrypoint names must be unique")
             names.add(entrypoint["name"])
@@ -226,6 +234,10 @@ class ValidationPayload(StrictRequest):
                 schema = entrypoint[key]
                 if not isinstance(schema, dict) or schema.get("type") != "object":
                     raise ValueError(f"{key} must be an object JSON Schema")
+                try:
+                    Draft202012Validator.check_schema(schema)
+                except SchemaError as exc:
+                    raise ValueError(f"{key} is not a valid JSON Schema: {exc.message}") from exc
         return self
 
 

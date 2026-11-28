@@ -2,6 +2,8 @@
 
 一個 Agent = `agent.py` + 兩行 Dockerfile。平台負責 HTTP、認證、事件、API 文件、MCP。
 
+這份文件是 **Python + LangGraph** 的寫法（用 `zentra/agent-base` 與 `zentra_sdk`）。平台本身不限語言：任何語言照 `specs/runtime.md` 的容器約定做也能發布，例子是 `examples/node-agent/`。下面的「規則」只適用 Python SDK；不論哪種語言，平台都會再驗入口格式與 output。
+
 ## 最小範例（`examples/my-agent/` 是起點）
 
 ```python
@@ -160,3 +162,4 @@ worker finalize → SUCCEEDED / FAILED、撤銷 token、inflight-1
 | `examples/stock-agent/` | 多輪搜尋迴圈 |
 | `examples/stock-suite/` | `ctx.http`、備援來源、額外套件、`deploy.sh` 一次部署五個 Agent |
 | `examples/probe-agent/` | 壓測用的測試 Agent |
+| `examples/node-agent/` | 不用 Python：Node.js 照 `specs/runtime.md` 實作，兩個入口 |

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from jsonschema import Draft202012Validator, ValidationError
 
 from apps.api import db
 from apps.api.enums import ErrorCode, RunStatus, RunTrigger
@@ -149,8 +150,9 @@ async def save_result(conn: asyncpg.Connection, run_id: UUID, body: SandboxResul
     run = await lock_run(conn, run_id)
     require_active(run)
     usage = await llm.aggregate_usage(conn, run_id)
+    output, error = await _checked_output(conn, run, body)
     if run.result_received_at is not None:
-        if (run.output, run.error) != (body.output, body.error):
+        if (run.output, run.error) != (output, error):
             raise ZentraError(ErrorCode.VALIDATION_ERROR, "result has already been submitted", 422,
                               run_id=str(run_id), details={"field": "output/error"})
         await conn.execute(
@@ -161,9 +163,43 @@ async def save_result(conn: asyncpg.Connection, run_id: UUID, body: SandboxResul
         UPDATE runs SET output = $2, error = $3, usage = $4, result_received_at = $5
         WHERE id = $1
         """,
-        run_id, body.output, body.error, usage, datetime.now(UTC),
+        run_id, output, error, usage, datetime.now(UTC),
     )
     return run.container_id is not None
+
+
+async def _checked_output(
+    conn: asyncpg.Connection, run: Run, body: SandboxResult,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """平台自己用入口的 `output_schema` 驗 output，不信任容器說它驗過。
+
+    容器可以用任何語言寫（specs/runtime.md），Python SDK 會先驗，別的實作不一定。
+    不符合 → 改記成 `USER_CODE_ERROR`，Run 以失敗結束，而不是把不合格式的 output 交出去。
+    同一份 body 重送時算出來的結果一樣，所以不影響上面的冪等比對。
+    """
+    if body.output is None or run.agent_version_id is None:
+        return body.output, body.error
+    entrypoints = await conn.fetchval(
+        "SELECT entrypoints FROM agent_versions WHERE id = $1", run.agent_version_id)
+    schema = next(
+        (item.get("output_schema") for item in entrypoints or []
+         if isinstance(item, dict) and item.get("name") == run.entrypoint),
+        None,
+    )
+    if not isinstance(schema, dict):
+        return body.output, body.error
+    try:
+        Draft202012Validator(schema).validate(body.output)
+    except ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path)
+        return None, {
+            "code": str(ErrorCode.USER_CODE_ERROR),
+            "message": f"output does not match the entrypoint output_schema: {exc.message}"[:4000],
+            "run_id": str(run.id),
+            "retryable": False,
+            "details": {"stage": "OUTPUT", "field": f"output{'.' + path if path else ''}"},
+        }
+    return body.output, body.error
 
 
 async def load_run(conn: asyncpg.Connection, run_id: UUID) -> Run | None:

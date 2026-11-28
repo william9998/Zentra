@@ -52,7 +52,8 @@
 
 - `POST /result`：`{output, error, usage}` → `202 {"accepted": true}`。相同內容重送 OK，不同內容 → `422`。最終狀態由 worker 決定。
 - `POST /events`：頂層陣列 `[{event_id, type, payload}]` → `202 {accepted, last_seq}`。`event_id` 重送沿用；容器不能送 `run.status`。
-- `POST /validation`：`{valid, runtime_contract, manifest, entrypoints, error}`，只保存。
+- `POST /validation`：`{valid, runtime_contract, manifest, entrypoints, error}`。平台先驗入口格式（每項恰好四個欄位、名稱不重複、兩個 schema 是合法的 JSON Schema 且最外層是 object），不合格 `422`；通過才保存。
+- `POST /result` 的 `output` 平台會用入口的 `output_schema` 再驗，不符合改記成 `USER_CODE_ERROR`（`details.stage = "OUTPUT"`）。容器不一定是 Python SDK，見 `specs/runtime.md`。
 
 ## LLM 代打
 
