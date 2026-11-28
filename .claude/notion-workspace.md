@@ -12,6 +12,9 @@
 | 系統規格 | https://app.notion.com/p/41c2dbee508080eb85e4ca280f8e872e | `/notion-spec` |
 | 系統開發 | https://app.notion.com/p/3e72dbee50808020b710e6a4331d3163 | `/notion-dev` |
 | 系統測試 | https://app.notion.com/p/40a2dbee508080fa9a37cbad61a863c6 | `/notion-test` |
+| 筆記 | https://app.notion.com/p/40a2dbee50808075bf33ea1b1b284094 | 只讀（`/notion-read`），沒有寫入 skill |
+
+`/notion-read` 可以讀以上全部五個頁面，但只讀不寫；寫入只走上面四個 skill。
 
 根頁面只放專案簡介和這四個區塊的連結；要更新根頁面（例如專案簡介過時）時，內容取自 `README.md`（本機有 `CLAUDE.md` 時也參考它的開頭），只改簡介段落，不動子頁面。
 
