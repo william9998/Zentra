@@ -40,7 +40,7 @@
 | `LLM_ERROR` | — | 是 | Gateway 打供應商失敗 |
 | `EGRESS_BLOCKED` | 403 | 否 | 對外請求被政策擋，原因在 `details.reason` |
 | `EGRESS_FAILED` | 502 | 是 | 政策放行但打不通 |
-| `USER_CODE_ERROR` | — | 否 | Agent 程式拋例外 |
+| `USER_CODE_ERROR` | — | 否 | Agent 程式拋例外，或 output 不符合 `output_schema`（`details.stage = "OUTPUT"`） |
 | `INTERNAL_ERROR` | 500 | 是 | |
 
 HTTP 是 `—` 的只出現在 Run / 版本的 `error` 物件裡。
